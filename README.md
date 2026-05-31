@@ -184,7 +184,7 @@ around the engine.
 | QUIC / HTTP-3 over SOCKS5                                     | ✅ stable end-to-end via UDP relay | ⚠️ implemented but unstable — falls back to TCP / drops mid-session | ❌ disabled when proxy is set |
 | WebRTC over SOCKS5 (no real-IP leak via STUN)                 | ✅ proxy UDP relay or synth candidates | ⚠️ same UDP relay path, same instability | ⚠️ disable-only            |
 | Consistency of generated profiles                             | ✅ coherent device (GPU ↔ CPU ↔ RAM ↔ UA ↔ fonts) | ❌ frequent contradictions (Win UA + Mac GPU, mobile UA + desktop screen, etc.) | ⚠️ varies |
-| Bundled fingerprint library                                   | 170 device profiles           | none — bring your own JSON    | catalog (subscription)                         |
+| Bundled fingerprint library                                   | 170 real-device profiles      | ❌ random generator — incoherent fingerprints (Win UA + Mac GPU, mobile UA + desktop screen, etc.) | catalog (subscription) |
 | Pricing                                                       | **Free** — only proxy costs   | **Free** — engine only        | Paid / freemium                                |
 | Management UI                                                 | ✅ desktop app (this launcher) | ⚠️ CLI only — no GUI, profiles managed by hand / scripts | ✅ desktop app                |
 | Launcher source                                               | **Open** (MIT, this repo)     | **Open** (CLI)                | Closed                                         |

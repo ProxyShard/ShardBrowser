@@ -99,16 +99,12 @@ jobs:
       - name: npm install
         run: npm ci
 
-      - name: Build Tauri bundle
-        env:
-          # Bundles are unsigned — explicit empty strings stop the
-          # Tauri bundler from trying to invoke missing codesign /
-          # signtool on the CI runners.
-          APPLE_SIGNING_IDENTITY: ''
-          APPLE_CERTIFICATE: ''
-          APPLE_CERTIFICATE_PASSWORD: ''
-          WINDOWS_CERTIFICATE: ''
-          WINDOWS_CERTIFICATE_PASSWORD: ''
+      - name: Build Tauri bundle (unsigned)
+        # Bundles are produced unsigned; the Tauri bundler skips
+        # codesign / signtool only when the relevant env vars are
+        # UNSET — empty strings cause it to call `security import` /
+        # `signtool` with no cert and crash, so we deliberately don't
+        # set any signing variable here.
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Collect bundles
