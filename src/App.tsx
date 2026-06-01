@@ -198,6 +198,10 @@ type ProfileMeta = {
   created_at: string | null;
   pinned: boolean;
   folder: string;
+  /// Cumulative engine uptime in ms across every launch.  Increased when
+  /// the engine exits — for the currently-running session add `running[id]`
+  /// (Date.now() - sessionStartTs) on top.
+  total_runtime_ms: number;
 };
 type ProxyEntry = {
   id: string;
@@ -911,7 +915,18 @@ function BrowsersView() {
   const [folder, setFolder] = useState("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
-  const [running, setRunning] = useState<Record<string, boolean>>({});
+  // Value = epoch ms at which the engine was first observed running. Used
+  // both as a truthy flag (any number = running) and as the anchor for the
+  // ticking uptime display in the Status column.
+  const [running, setRunning] = useState<Record<string, number>>({});
+  // Re-render trigger so the uptime label ticks every second without
+  // re-fetching the process list (which polls every 2s).
+  const [, setUptimeTick] = useState(0);
+  useEffect(() => {
+    if (Object.keys(running).length === 0) return;
+    const h = setInterval(() => setUptimeTick((t) => t + 1), 1000);
+    return () => clearInterval(h);
+  }, [running]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [fingerprints, setFingerprints] = useState<FingerprintEntry[]>([]);
@@ -922,6 +937,9 @@ function BrowsersView() {
     catch { return []; }
   });
   const [folderModal, setFolderModal] = useState<{ profileId: string | null } | null>(null);
+  // Folder name currently highlighted as a drag-and-drop target ("__all__"
+  // for the All tab).  Cleared in dragleave/drop.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const rememberFolder = (f: string) =>
     setFolderRegistry((r) => {
       const next = r.includes(f) ? r : [...r, f];
@@ -953,14 +971,36 @@ function BrowsersView() {
     return () => clearTimeout(t);
   }, [expanded]);
 
-  // 2s poll for real child status; not optimistic UI state.
+  // 2s poll for real child status; not optimistic UI state.  Uptime is
+  // anchored to the moment the engine actually started (now - uptime_ms),
+  // preserved across polls so the displayed clock doesn't jitter.  When a
+  // profile transitions running → not-running, the backend has just bumped
+  // its persisted `total_runtime_ms` — re-fetch profile_list so the Time
+  // column reflects the new total (otherwise it shows whatever was on
+  // disk before this session started, looking like a "reset").
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
-        const list = await invoke<{ profile_id: string; pid: number }[]>("process_list");
+        const list = await invoke<{ profile_id: string; pid: number; uptime_ms: number }[]>("process_list");
         if (cancelled) return;
-        setRunning(Object.fromEntries(list.map((r) => [r.profile_id, true])));
+        const now = Date.now();
+        setRunning((prev) => {
+          const next: Record<string, number> = {};
+          for (const r of list) {
+            next[r.profile_id] = prev[r.profile_id] ?? (now - r.uptime_ms);
+          }
+          // Detect any profile that was running on the previous tick but
+          // dropped off this one — those need a profile_list refresh so
+          // the freshly-accumulated total_runtime_ms appears in the UI.
+          const justExited = Object.keys(prev).some((id) => !(id in next));
+          if (justExited) {
+            // Defer to next tick so React commits `next` before reload()
+            // races against it.
+            setTimeout(() => { if (!cancelled) reload(); }, 0);
+          }
+          return next;
+        });
       } catch {}
     };
     tick();
@@ -1020,8 +1060,12 @@ function BrowsersView() {
 
   const runningCount = Object.values(running).filter(Boolean).length;
 
-  // 5s debounce on Start to avoid SingletonLock fight on double-tap.
-  const [startCooldown, setStartCooldown] = useState<Set<string>>(new Set());
+  // Block the Start button until `invoke("launch")` returns (success or
+  // failure).  The launch includes pre-flight steps that can take real time
+  // — UDP probe, geo lookup, Widevine pre-warm — and surfacing the busy
+  // state for the whole window is what the user sees as "did it work?".
+  // On failure we unlock immediately and toast the error.
+  const [startBusy, setStartBusy] = useState<Set<string>>(new Set());
   const startStop = async (p: ProfileMeta) => {
     if (running[p.id]) {
       try {
@@ -1031,21 +1075,20 @@ function BrowsersView() {
       }
       return;
     }
-    if (startCooldown.has(p.id)) return;
-    setStartCooldown((s) => new Set([...s, p.id]));
-    setTimeout(() => {
-      setStartCooldown((s) => {
+    if (startBusy.has(p.id)) return;
+    setStartBusy((s) => new Set([...s, p.id]));
+    try {
+      await invoke<number>("launch", { profileId: p.id });
+      // Don't optimistically flip `running` here; the 2s poll above picks
+      // up the new child immediately and anchors the uptime clock.
+    } catch (e) {
+      toast.err(String(e));
+    } finally {
+      setStartBusy((s) => {
         const n = new Set(s);
         n.delete(p.id);
         return n;
       });
-    }, 5000);
-    try {
-      setRunning((s) => ({ ...s, [p.id]: true }));
-      await invoke<number>("launch", { profileId: p.id });
-    } catch (e) {
-      toast.err(String(e));
-      setRunning((s) => ({ ...s, [p.id]: false }));
     }
   };
 
@@ -1231,6 +1274,14 @@ function BrowsersView() {
       const fp = fingerprints.find((g) => g.id === draft.gpu_preset_id) ?? null;
       const saved = await invoke<ProfileMeta>("profile_save", { payload: toStored(draft, fp) });
       await invoke("profile_bind_proxy", { profileId: saved.id, proxyId: draft.proxy_id });
+      // A profile created while a folder tab is active should land in that
+      // folder (otherwise it pops into "All" and the user has to drag it
+      // back themselves).  `__new__` test scopes this to creations only —
+      // edits preserve whatever folder the profile already had.
+      if (!draft.id && folder && folder !== "all") {
+        try { await invoke("profile_set_folder", { id: saved.id, folder }); }
+        catch (e) { console.warn("auto-assign folder failed:", e); }
+      }
       setExpanded(null);
       setDraft(null);
       reload();
@@ -1262,22 +1313,63 @@ function BrowsersView() {
           <h1>Browsers</h1>
           <div className="folder-tabs" ref={folderTabsRef}>
             <button
-              className={`folder-tab ${folder === "all" ? "active" : ""}`}
+              className={`folder-tab ${folder === "all" ? "active" : ""} ${dropTarget === "__all__" ? "folder-tab-drop" : ""}`}
               onClick={() => setFolder("all")}
+              // Unconditional preventDefault on dragover is the *only* way
+              // HTML5 marks the element as a valid drop target — any extra
+              // logic inside the handler is fine, but the preventDefault
+              // itself must fire on every event or `drop` never lands.
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (dropTarget !== "__all__") setDropTarget("__all__");
+              }}
+              onDragLeave={(e) => {
+                // Ignore enter-into-child events: relatedTarget will be a
+                // descendant of the button, in which case the drag is still
+                // over us — clearing the highlight here would steal the drop.
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDropTarget(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDropTarget(null);
+                const id = e.dataTransfer.getData("application/x-shardx-profile")
+                        || e.dataTransfer.getData("text/plain");
+                if (id) setProfileFolder(id, "");           // "" = unassign folder
+              }}
             >
               All<span className="tab-count">{profiles.length}</span>
             </button>
             {folders.map((f) => (
               <button
                 key={f}
-                className={`folder-tab ${folder === f ? "active" : ""}`}
+                className={`folder-tab ${folder === f ? "active" : ""} ${dropTarget === f ? "folder-tab-drop" : ""}`}
                 onClick={() => setFolder(f)}
-                title="Right-click for folder actions"
+                title="Right-click for folder actions · drop profiles to move them"
                 onContextMenu={(e) =>
                   ctx.open(e, [
                     { label: "Delete folder…", onClick: () => deleteFolder(f), danger: true },
                   ])
                 }
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dropTarget !== f) setDropTarget(f);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setDropTarget(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDropTarget(null);
+                  const id = e.dataTransfer.getData("application/x-shardx-profile")
+                          || e.dataTransfer.getData("text/plain");
+                  if (id) setProfileFolder(id, f);
+                }}
               >
                 {f}
                 <span className="tab-count">
@@ -1312,6 +1404,7 @@ function BrowsersView() {
       </div>
       {templatePickerOpen && (
         <TemplatePicker
+          fingerprints={fingerprints}
           onPick={async (tplId) => {
             try {
               const meta = await invoke<ProfileMeta>("profile_create_from_template", { templateId: tplId });
@@ -1380,7 +1473,7 @@ function BrowsersView() {
               }}
             />
           </div>
-          <div>Name</div><div>Status</div><div>Proxy</div><div>Notes</div><div className="head-lastrun">Last run</div><div></div>
+          <div>Name</div><div>Status</div><div>Proxy</div><div>Notes</div><div className="head-time">Time</div><div className="head-lastrun">Last run</div><div></div>
         </div>
         {expanded === "__new__" && draft && (
           <div className="row-wrap row-expanded row-new">
@@ -1404,6 +1497,28 @@ function BrowsersView() {
               key={p.id}
               className={`row-wrap ${isRunning ? "row-running" : ""} ${isExpanded ? "row-expanded" : ""} ${p.pinned ? "row-pinned" : ""}`}
               onContextMenu={(e) => ctx.open(e, profileMenu(p))}
+              draggable={!isExpanded}
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = "move";
+                // Set BOTH a custom MIME (so non-folder drop zones can ignore
+                // it) and text/plain (because Firefox refuses to start a
+                // drag at all without text/plain, and some Chromium variants
+                // hide custom MIME values from `dataTransfer.types` during
+                // dragover for cross-origin reasons).
+                e.dataTransfer.setData("application/x-shardx-profile", p.id);
+                e.dataTransfer.setData("text/plain", p.id);
+                // Replace the default full-row ghost (it obscures the folder
+                // tabs and stops the drop event firing on them) with a tiny
+                // chip that floats next to the cursor.
+                const chip = document.createElement("div");
+                chip.className = "drag-chip";
+                chip.textContent = p.name || p.id.slice(0, 8);
+                document.body.appendChild(chip);
+                e.dataTransfer.setDragImage(chip, 12, 12);
+                // The ghost is rasterised synchronously from the live DOM,
+                // so we can safely remove it on the next tick.
+                setTimeout(() => chip.remove(), 0);
+              }}
             >
               <div className="row t-cols">
                 <div className="cell-strip">
@@ -1448,18 +1563,27 @@ function BrowsersView() {
                 >
                   {p.notes || <span className="muted">—</span>}
                 </div>
+                <div className="cell-time">
+                  <span className={`small ${isRunning ? "" : "muted"}`}>
+                    {(() => {
+                      const live = isRunning ? Date.now() - running[p.id] : 0;
+                      const total = p.total_runtime_ms + live;
+                      return total > 0 ? fmtUptime(total) : "—";
+                    })()}
+                  </span>
+                </div>
                 <div className="cell-lastrun"><span className="muted small">{p.last_launched_at ? fmtTs(p.last_launched_at) : "never"}</span></div>
                 <div className="row-actions">
                   <button
                     className={`btn-launch ${isRunning ? "btn-launch-stop" : ""}`}
                     onClick={() => startStop(p)}
-                    disabled={!isRunning && startCooldown.has(p.id)}
-                    title={!isRunning && startCooldown.has(p.id) ? "Cooling down (5s)…" : undefined}
+                    disabled={!isRunning && startBusy.has(p.id)}
+                    title={!isRunning && startBusy.has(p.id) ? "Starting (UDP probe + geo + spawn)…" : undefined}
                   >
                     {isRunning ? (
                       <><span className="btn-launch-ico"><Icon.Stop size={10} /></span><span>Stop</span></>
-                    ) : startCooldown.has(p.id) ? (
-                      <><span className="btn-launch-ico"><Icon.Play size={10} /></span><span>…</span></>
+                    ) : startBusy.has(p.id) ? (
+                      <><span className="btn-launch-ico spin"><Icon.Play size={10} /></span><span>Starting…</span></>
                     ) : (
                       <><span className="btn-launch-ico"><Icon.Play size={10} /></span><span>Start</span></>
                     )}
@@ -2140,18 +2264,45 @@ function ProxiesView() {
   const [proxySel, setProxySel] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
+  const [search, setSearch] = useState("");
   const ctx = useContextMenu();
 
-  // Pagination of the proxy list.
+  // Search filter: matches name / host / port / country tag / notes / username
+  // *and* the exit IP from the latest snapshot (so the user can find a proxy
+  // by "last seen exiting at X.X.X.X").  Whitespace-trimmed, case-insensitive.
+  const filteredProxies = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return proxies;
+    return proxies.filter((p) => {
+      const ip = (snapshots[p.id]?.ip ?? "").toLowerCase();
+      const city = (snapshots[p.id]?.city ?? "").toLowerCase();
+      const isp = (snapshots[p.id]?.isp ?? "").toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.host.toLowerCase().includes(q) ||
+        String(p.port).includes(q) ||
+        p.country.toLowerCase().includes(q) ||
+        p.notes.toLowerCase().includes(q) ||
+        p.username.toLowerCase().includes(q) ||
+        ip.includes(q) ||
+        city.includes(q) ||
+        isp.includes(q)
+      );
+    });
+  }, [proxies, snapshots, search]);
+
+  // Pagination over the filtered list.
   const PROXY_PAGE_SIZE = 20;
   const [proxyPage, setProxyPage] = useState(1);
-  const proxyPageCount = Math.max(1, Math.ceil(proxies.length / PROXY_PAGE_SIZE));
+  const proxyPageCount = Math.max(1, Math.ceil(filteredProxies.length / PROXY_PAGE_SIZE));
   useEffect(() => {
     if (proxyPage > proxyPageCount) setProxyPage(proxyPageCount);
   }, [proxyPageCount, proxyPage]);
+  // Reset to page 1 when the search narrows the list to fewer pages.
+  useEffect(() => { setProxyPage(1); }, [search]);
   const pagedProxies = useMemo(
-    () => proxies.slice((proxyPage - 1) * PROXY_PAGE_SIZE, proxyPage * PROXY_PAGE_SIZE),
-    [proxies, proxyPage],
+    () => filteredProxies.slice((proxyPage - 1) * PROXY_PAGE_SIZE, proxyPage * PROXY_PAGE_SIZE),
+    [filteredProxies, proxyPage],
   );
 
   const commitRename = async () => {
@@ -2290,7 +2441,7 @@ function ProxiesView() {
 
   return (
     <section className="page">
-      <Topbar crumbs={["Workspace", "Proxies"]} search="" onSearch={() => {}} />
+      <Topbar crumbs={["Workspace", "Proxies"]} search={search} onSearch={setSearch} />
       <div className="page-title">
         <h1>Proxies</h1>
         <div className="page-actions">
@@ -2634,6 +2785,17 @@ function fmtTs(stamp: string): string {
   if (!Number.isFinite(n)) return stamp;
   const d = new Date(n * 1000);
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+/// Format ms uptime as "1h 23m" / "12m 30s" / "45s".
+function fmtUptime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec.toString().padStart(2, "0")}s`;
+  return `${sec}s`;
 }
 
 type BulkRowState = {
@@ -3118,13 +3280,25 @@ function FolderModal({
   );
 }
 
-function TemplatePicker({ onPick, onClose }: { onPick: (id: string) => void; onClose: () => void }) {
-  const [lib, setLib] = useState<FingerprintEntry[]>([]);
+function TemplatePicker({
+  fingerprints,
+  onPick,
+  onClose,
+}: {
+  /** When passed in, skip the fingerprint_list IO and the visible mount
+   *  flash that used to happen while the 170-entry list streamed back. */
+  fingerprints?: FingerprintEntry[];
+  onPick: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [lib, setLib] = useState<FingerprintEntry[]>(fingerprints ?? []);
   const [host, setHost] = useState<string>("");
   useEffect(() => {
-    invoke<FingerprintEntry[]>("fingerprint_list").then(setLib).catch(() => {});
+    if (!fingerprints) {
+      invoke<FingerprintEntry[]>("fingerprint_list").then(setLib).catch(() => {});
+    }
     invoke<string>("host_platform").then(setHost).catch(() => {});
-  }, []);
+  }, [fingerprints]);
   // Only host-matching fingerprints (UA/fonts/WebGL renderer are host-coupled).
   const tpls = host ? lib.filter((e) => e.platform === host) : [];
   return (

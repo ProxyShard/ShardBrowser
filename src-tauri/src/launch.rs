@@ -162,7 +162,12 @@ pub async fn launch_profile(
             eprintln!("[launcher] WebRTC: TCP-only (servers stripped, mDNS host only, UDP off)");
         }
         _ => {
-            if !proxy_udp_ok {
+            if bound_proxy.is_none() {
+                // No proxy bound — let WebRTC use the host network natively
+                // (real IP shows in ICE candidates, which is what the user wants
+                // when they explicitly didn't bind a proxy).
+                eprintln!("[launcher] WebRTC auto -> native (no proxy bound)");
+            } else if !proxy_udp_ok {
                 cmd.arg("--force-webrtc-ip-handling-policy=disable_non_proxied_udp");
                 cmd.arg("--shardx-webrtc-policy=tcp_only");
                 if let Some(ip) = proxy_public_ip.as_deref() {
@@ -193,6 +198,13 @@ pub async fn launch_profile(
     }
 
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        // 0x08000000 = CREATE_NO_WINDOW — suppress the brief console flash
+        // when a Tauri GUI app spawns the engine binary.
+        cmd.creation_flags(0x08000000);
+    }
     let child = cmd.spawn().context("spawn ShardX")?;
     let pid = Tracker::shared().track(profile_id.to_string(), child, stored.meta.temporary);
 

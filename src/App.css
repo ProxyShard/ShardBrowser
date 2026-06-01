@@ -461,6 +461,41 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
   color: var(--tx-4); padding: 8px 12px;
 }
 .folder-tab-add:hover { color: var(--accent-hi); }
+/* Highlight a folder tab while a profile is being dragged over it. */
+.folder-tab-drop {
+  background: var(--accent-dim) !important;
+  color: var(--accent-hi) !important;
+  outline: 1px dashed var(--accent-hi);
+  outline-offset: -2px;
+}
+/* During a drag, swallow pointer events on the tab's children so dragenter /
+   dragleave / drop ALL fire on the button itself.  Without this the
+   .tab-count span steals enter/leave events when the cursor crosses it,
+   the dragleave handler nulls dropTarget mid-drag, and drop never lands
+   on the parent button.  pointer-events: none doesn't affect clicks
+   because folder tabs already handle onClick on the button. */
+.folder-tab > * { pointer-events: none; }
+/* Make every profile row indicate it can be picked up. */
+.row-wrap[draggable="true"] .cell-name { cursor: grab; }
+.row-wrap[draggable="true"]:active .cell-name { cursor: grabbing; }
+/* Drag preview chip — small pill that floats next to the cursor instead of
+   the default full-row ghost (which would obscure drop targets).  Positioned
+   off-screen because the browser rasterises it synchronously then we can
+   delete the node; the rasterised image is what actually follows the cursor. */
+.drag-chip {
+  position: absolute; top: -1000px; left: -1000px;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--accent); color: var(--bg-1);
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+/* Spin animation on the "Starting…" play icon. */
+.btn-launch-ico.spin svg { animation: shardx-spin 0.9s linear infinite; }
+@keyframes shardx-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 
 /* Folder picker (inside FolderModal "move" mode) */
 .folder-pick-list {
@@ -702,6 +737,7 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
     100px                  /* status */
     minmax(160px, 1.4fr)  /* proxy */
     minmax(120px, 1.1fr)  /* notes */
+    minmax(70px, 90px)    /* time (cumulative uptime) */
     minmax(110px, 130px)  /* last run */
     minmax(280px, auto);  /* row actions (Start + 4 icons) */
   gap: 10px;
@@ -725,6 +761,7 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
       90px
       minmax(140px, 1.3fr)
       minmax(100px, 1fr)
+      minmax(60px, 80px)
       minmax(260px, auto);
   }
   .t-cols > .cell-lastrun, .t-cols > .head-lastrun { display: none; }

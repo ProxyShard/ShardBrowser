@@ -195,8 +195,12 @@ fn host_ram_gb() -> Option<u32> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // 0x08000000 = CREATE_NO_WINDOW — suppress the brief console flash a GUI
+        // app gets when shelling out to a console-subsystem binary.
         let out = std::process::Command::new("wmic")
             .args(["ComputerSystem", "get", "TotalPhysicalMemory"])
+            .creation_flags(0x08000000)
             .output()
             .ok()?;
         let txt = String::from_utf8_lossy(&out.stdout);
@@ -419,6 +423,7 @@ pub fn save_profile_core(
         created_at: stored.meta.created_at,
         pinned: stored.meta.pinned,
         folder: stored.meta.folder,
+        total_runtime_ms: stored.meta.total_runtime_ms,
     })
 }
 

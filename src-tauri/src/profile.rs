@@ -15,6 +15,10 @@ pub struct ProfileMeta {
     pub created_at: Option<String>,
     pub pinned: bool,
     pub folder: String,
+    /// Accumulated runtime across every launch; UI shows this plus the
+    /// current-session uptime when the profile is running.
+    #[serde(default)]
+    pub total_runtime_ms: u64,
 }
 
 /// On-disk `<profiles_dir>/<id>.json`: FingerprintConfig + `_meta` envelope.
@@ -43,6 +47,10 @@ pub struct StoredMeta {
     /// Empty = unfiled (All tab).
     #[serde(default)]
     pub folder: String,
+    /// Cumulative engine uptime in milliseconds; bumped by the Tracker
+    /// when the child exits.  Persists across launcher restarts.
+    #[serde(default)]
+    pub total_runtime_ms: u64,
     /// Source library fingerprint id; MUST round-trip — drives the editor GPU select.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gpu_preset_id: Option<String>,
@@ -118,6 +126,7 @@ pub fn list_all() -> Result<Vec<ProfileMeta>> {
             created_at: stored.meta.created_at,
             pinned: stored.meta.pinned,
             folder: stored.meta.folder,
+            total_runtime_ms: stored.meta.total_runtime_ms,
         });
     }
     // Pinned first, then newest-first by created_at; name fallback for same-second ties.
@@ -184,6 +193,11 @@ pub fn save_raw(stored: &mut StoredProfile) -> Result<()> {
             if stored.meta.last_launched_at.is_none() {
                 stored.meta.last_launched_at = existing.meta.last_launched_at;
             }
+            // total_runtime_ms is owned by the Tracker — every save (edit /
+            // proxy bind / folder move) carries the existing counter through.
+            if stored.meta.total_runtime_ms == 0 {
+                stored.meta.total_runtime_ms = existing.meta.total_runtime_ms;
+            }
         }
     }
     if stored.meta.created_at.is_none() {
@@ -205,6 +219,15 @@ pub fn delete(id: &str) -> Result<()> {
     if udd.exists() {
         let _ = fs::remove_dir_all(udd);
     }
+    Ok(())
+}
+
+/// Add `ms` to the persisted total_runtime_ms counter.  Called by the
+/// process Tracker when the engine exits — totals survive launcher restarts.
+pub fn add_runtime(id: &str, ms: u64) -> Result<()> {
+    let mut p = load_raw(id)?;
+    p.meta.total_runtime_ms = p.meta.total_runtime_ms.saturating_add(ms);
+    save_raw(&mut p)?;
     Ok(())
 }
 
@@ -252,6 +275,7 @@ pub fn clone_profile(id: &str) -> Result<ProfileMeta> {
         created_at: src.meta.created_at,
         pinned: false,
         folder: src.meta.folder,
+        total_runtime_ms: 0,
     })
 }
 
