@@ -110,6 +110,13 @@ struct Manifest {
     /// independent of the fingerprint-library seed.
     #[serde(default)]
     applied_chromium_version: Option<String>,
+    /// Signature (`<version>|<grease_brand>|<grease_version>`) of the engine
+    /// descriptor the profiles/fingerprints were last migrated against. Migration
+    /// re-runs whenever this changes — so adding grease (or any future field) to
+    /// the manifest auto-triggers a re-migration even for users already on the
+    /// current `applied_chromium_version`. No bump-the-constant ceremony.
+    #[serde(default)]
+    applied_signature: Option<String>,
     /// Chromium version of the engine binary currently extracted on disk.
     /// The engine update is detected by comparing THIS to the manifest's
     /// `chromium_version` — robust where the etag check failed (e.g. a user who
@@ -196,6 +203,11 @@ pub struct RuntimeStatus {
 struct RemoteManifest {
     archives: std::collections::HashMap<String, String>,
     chromium_version: Option<String>,
+    /// GREASE brand/version the engine emits in `sec-ch-ua`. Not derivable from
+    /// the version number (it rotates per major release), so it travels in the
+    /// manifest as data — migration writes it into every profile/fingerprint.
+    grease_brand: Option<String>,
+    grease_version: Option<String>,
 }
 
 /// Fetch the version manifest (GitHub raw) — one request yielding every
@@ -217,24 +229,30 @@ async fn fetch_manifest() -> RemoteManifest {
                     .collect()
             })
             .unwrap_or_default();
-        let chromium_version = v
-            .get("chromium_version")
-            .and_then(|s| s.as_str())
-            .map(String::from);
+        let str_field = |k: &str| v.get(k).and_then(|s| s.as_str()).map(String::from);
         Some(RemoteManifest {
             archives,
-            chromium_version,
+            chromium_version: str_field("chromium_version"),
+            grease_brand: str_field("grease_brand"),
+            grease_version: str_field("grease_version"),
         })
     }
     inner().await.unwrap_or_default()
 }
 
-/// Migrate every `*.json` in `dir` to a new engine version: bump
-/// `navigator.user_agent` (Chrome/<major>.0.0.0) and the chrome-version fields
-/// in `client_hints` (brand_version / brand_full_version / chrome_build /
-/// chrome_patch). Leaves platform_version, architecture, grease, webgl, etc.
-/// intact. Returns the number of files actually changed.
-fn migrate_dir_to(dir: &Path, chromium_version: &str) -> Result<usize> {
+/// Migrate every `*.json` in `dir` to a new engine descriptor: bump
+/// `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
+/// `client_hints` — `brand_version` / `brand_full_version` / `chrome_build` /
+/// `chrome_patch` (derived from the version), plus `grease_brand` /
+/// `grease_version` / `grease_full_version` (from the manifest, since GREASE
+/// can't be derived from the version number). Leaves platform_version,
+/// architecture, webgl, etc. intact. Returns the number of files changed.
+fn migrate_dir_to(
+    dir: &Path,
+    chromium_version: &str,
+    grease_brand: Option<&str>,
+    grease_version: Option<&str>,
+) -> Result<usize> {
     let parts: Vec<&str> = chromium_version.split('.').collect();
     if parts.len() != 4 {
         return Ok(0);
@@ -273,12 +291,21 @@ fn migrate_dir_to(dir: &Path, chromium_version: &str) -> Result<usize> {
         }
 
         if let Some(ch) = cfg.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
-            for (k, want) in [
+            let mut wants: Vec<(&str, serde_json::Value)> = vec![
                 ("brand_version", serde_json::json!(major)),
                 ("brand_full_version", serde_json::json!(chromium_version)),
                 ("chrome_build", serde_json::json!(build)),
                 ("chrome_patch", serde_json::json!(patch)),
-            ] {
+            ];
+            // GREASE — only when the manifest carries it (rotates per release).
+            if let Some(gb) = grease_brand {
+                wants.push(("grease_brand", serde_json::json!(gb)));
+            }
+            if let Some(gv) = grease_version {
+                wants.push(("grease_version", serde_json::json!(gv)));
+                wants.push(("grease_full_version", serde_json::json!(format!("{gv}.0.0.0"))));
+            }
+            for (k, want) in wants {
                 if ch.get(k) != Some(&want) {
                     ch.insert(k.to_string(), want);
                     changed = true;
@@ -298,33 +325,46 @@ fn migrate_dir_to(dir: &Path, chromium_version: &str) -> Result<usize> {
 /// user-added) to `chromium_version`. Bundled templates are already at the new
 /// version after the seed; user-added fingerprints get their UA + client_hints
 /// bumped here (their custom fields are preserved).
-fn migrate_all_to(chromium_version: &str) -> usize {
+fn migrate_all_to(
+    chromium_version: &str,
+    grease_brand: Option<&str>,
+    grease_version: Option<&str>,
+) -> usize {
     let mut n = 0;
     if let Ok(d) = crate::store::profiles_dir() {
-        n += migrate_dir_to(&d, chromium_version).unwrap_or(0);
+        n += migrate_dir_to(&d, chromium_version, grease_brand, grease_version).unwrap_or(0);
     }
     if let Ok(d) = crate::store::fingerprints_dir() {
-        n += migrate_dir_to(&d, chromium_version).unwrap_or(0);
+        n += migrate_dir_to(&d, chromium_version, grease_brand, grease_version).unwrap_or(0);
     }
     n
 }
 
-/// Startup hook: migrate saved profiles + the fingerprint library to the
-/// manifest's chromium version when not already done. One GitHub-manifest GET
-/// (never S3); the migration itself runs once per version change, guarded by
-/// the stored `applied_chromium_version`. Also covers users whose engine
-/// auto-updated via the etag path without an explicit `runtime_install`.
+/// Startup hook: migrate saved profiles + the fingerprint library (bundled +
+/// user-added) to the manifest's engine descriptor when not already done. One
+/// GitHub-manifest GET (never S3). Guarded by a signature of
+/// `<version>|<grease_brand>|<grease_version>`, so a change to the grease (or any
+/// future manifest field) re-triggers migration even for users already on the
+/// current version — no version bump or constant needed. Also covers users
+/// whose engine auto-updated via the etag path without an explicit install.
 pub async fn ensure_profiles_migrated() {
-    let Some(target) = fetch_manifest().await.chromium_version else { return };
+    let m = fetch_manifest().await;
+    let Some(target) = m.chromium_version.clone() else { return };
+    let sig = format!(
+        "{target}|{}|{}",
+        m.grease_brand.as_deref().unwrap_or(""),
+        m.grease_version.as_deref().unwrap_or(""),
+    );
     let mut local = load_manifest();
-    if local.applied_chromium_version.as_deref() == Some(target.as_str()) {
+    if local.applied_signature.as_deref() == Some(sig.as_str()) {
         return;
     }
-    let n = migrate_all_to(&target);
+    let n = migrate_all_to(&target, m.grease_brand.as_deref(), m.grease_version.as_deref());
     if n > 0 {
-        eprintln!("[runtime] migrated {n} profile/fingerprint file(s) to {target}");
+        eprintln!("[runtime] migrated {n} profile/fingerprint file(s) to {sig}");
     }
     local.applied_chromium_version = Some(target);
+    local.applied_signature = Some(sig);
     let _ = save_manifest(&local);
 }
 
@@ -425,16 +465,25 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
         .or(local.fingerprints_etag);
 
     // Migrate already-created profiles AND the fingerprint library (incl.
-    // user-added) to the new engine version (UA + client_hints). Runs only when
-    // the target version changed since the last migration.
+    // user-added) to the new engine descriptor (UA + client_hints incl. grease).
+    // Runs only when the version-or-grease signature changed since last time.
     let target_ver = manifest
         .chromium_version
         .clone()
         .unwrap_or_else(|| CHROMIUM_VERSION.to_string());
-    if local.applied_chromium_version.as_deref() != Some(target_ver.as_str()) {
-        let n = migrate_all_to(&target_ver);
+    let sig = format!(
+        "{target_ver}|{}|{}",
+        manifest.grease_brand.as_deref().unwrap_or(""),
+        manifest.grease_version.as_deref().unwrap_or(""),
+    );
+    if local.applied_signature.as_deref() != Some(sig.as_str()) {
+        let n = migrate_all_to(
+            &target_ver,
+            manifest.grease_brand.as_deref(),
+            manifest.grease_version.as_deref(),
+        );
         if n > 0 {
-            eprintln!("[runtime] migrated {n} profile/fingerprint file(s) to {target_ver}");
+            eprintln!("[runtime] migrated {n} profile/fingerprint file(s) to {sig}");
         }
     }
 
@@ -443,6 +492,7 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
         widevine_etag,
         fingerprints_etag: fp_etag,
         applied_chromium_version: Some(target_ver.clone()),
+        applied_signature: Some(sig),
         // Record the version now on disk (ground truth where readable, else the
         // version we just installed) so the next launch's version check is exact.
         installed_chromium_version: installed_engine_version().or(Some(target_ver)),

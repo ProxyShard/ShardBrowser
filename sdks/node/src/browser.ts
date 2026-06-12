@@ -103,7 +103,7 @@ export class Browser {
     console.log(`[shardx] profile '${profile.id}' → ${udd}`);
     // Keep the spoofed Chrome version coherent with the installed engine,
     // regardless of where the profile config came from (library / file / dict).
-    applyEngineVersion(profile.config, this.runtime.chromiumVersion);
+    applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand, this.runtime.greaseVersion);
     const fpFile = join(udd, "fingerprint.json");
     writeFileSync(fpFile, JSON.stringify(profile.config));
 

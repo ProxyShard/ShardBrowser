@@ -96,6 +96,10 @@ export class Runtime {
   /** Engine chromium version from the manifest (fallback to the build-time
    *  constant). Used by launch to normalise profile UA + client_hints. */
   private _chromiumVersion: string = CHROMIUM_VERSION;
+  /** GREASE brand/version from the manifest (rotates per release; can't be
+   *  derived from the version number). Applied to profiles on launch. */
+  private _greaseBrand?: string;
+  private _greaseVersion?: string;
 
   constructor(opts: { cacheDir?: string; progress?: ProgressCb; profilesDir?: string } = {}) {
     this.root = opts.cacheDir ?? defaultCacheDir();
@@ -123,6 +127,10 @@ export class Runtime {
   get installed(): boolean    { return existsSync(this.binaryPath); }
   /** Engine chromium version (manifest-driven; set on install()). */
   get chromiumVersion(): string { return this._chromiumVersion; }
+  /** GREASE brand from the manifest (e.g. "Not)A;Brand"); set on install(). */
+  get greaseBrand(): string | undefined { return this._greaseBrand; }
+  /** GREASE version from the manifest (e.g. "24"); set on install(). */
+  get greaseVersion(): string | undefined { return this._greaseVersion; }
 
   /** Chromium version of the engine actually on disk (mac Framework
    *  `Versions/<ver>/`, win `<ver>.manifest`), or undefined on Linux. */
@@ -165,8 +173,10 @@ export class Runtime {
     if (this._checkedInProcess && !force) return;
     const local = this.loadManifest();
     const remote = await this.fetchManifest();
-    // Remember the engine version so launch can normalise profiles to it.
+    // Remember the engine version + grease so launch can normalise profiles.
     this._chromiumVersion = remote.chromiumVersion ?? CHROMIUM_VERSION;
+    this._greaseBrand = remote.greaseBrand;
+    this._greaseVersion = remote.greaseVersion;
 
     // Re-download the engine when its on-disk version differs from the
     // manifest's chromium version — VERSION-based, not etag, so it fires for
@@ -209,14 +219,17 @@ export class Runtime {
   /** Fetch the version manifest (GitHub raw) — one request that yields every
    *  archive's current etag + the chromium version, replacing per-archive HEADs
    *  against R2/S3. Empty archives / undefined version when unreachable. */
-  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string }> {
+  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; greaseBrand?: string; greaseVersion?: string }> {
     try {
       const r = await fetch(MANIFEST_URL);
       if (!r.ok) return { archives: {} };
-      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string };
+      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; grease_brand?: string; grease_version?: string };
+      const str = (v: unknown) => (typeof v === "string" ? v : undefined);
       return {
         archives: (data && typeof data.archives === "object" && data.archives) || {},
-        chromiumVersion: typeof data?.chromium_version === "string" ? data.chromium_version : undefined,
+        chromiumVersion: str(data?.chromium_version),
+        greaseBrand: str(data?.grease_brand),
+        greaseVersion: str(data?.grease_version),
       };
     } catch { return { archives: {} }; }
   }

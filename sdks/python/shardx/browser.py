@@ -118,7 +118,12 @@ class Browser:
         print(f"[shardx] profile '{profile.id}' → {udd}", flush=True)
         # Keep the spoofed Chrome version coherent with the installed engine,
         # regardless of where the profile config came from (library / file / dict).
-        apply_engine_version(profile.config, self.runtime.chromium_version)
+        apply_engine_version(
+            profile.config,
+            self.runtime.chromium_version,
+            self.runtime.grease_brand,
+            self.runtime.grease_version,
+        )
         fp_file = udd / "fingerprint.json"
         fp_file.write_text(json.dumps(profile.config))
 

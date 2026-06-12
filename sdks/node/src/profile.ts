@@ -83,13 +83,20 @@ export class FingerprintLibrary {
 /**
  * Normalise a profile config's spoofed Chrome version to `chromiumVersion`
  * (e.g. "149.0.7827.103") so it always matches the running engine — bumps
- * `navigator.user_agent` (Chrome/<major>.0.0.0) and the chrome-version fields
- * in `client_hints` (brand_version / brand_full_version / chrome_build /
- * chrome_patch). Leaves platform_version, architecture, grease, etc. intact.
- * Mutates `config` in place. This is the SDK equivalent of the launcher's
- * post-update profile migration.
+ * `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
+ * `client_hints`: brand_version / brand_full_version / chrome_build /
+ * chrome_patch (derived from the version) plus, when supplied, grease_brand /
+ * grease_version / grease_full_version (GREASE rotates per release, so it can't
+ * be derived — it comes from the manifest). Leaves platform_version,
+ * architecture, etc. intact. Mutates `config` in place. SDK equivalent of the
+ * launcher's post-update profile migration.
  */
-export function applyEngineVersion(config: Record<string, unknown>, chromiumVersion: string): void {
+export function applyEngineVersion(
+  config: Record<string, unknown>,
+  chromiumVersion: string,
+  greaseBrand?: string,
+  greaseVersion?: string,
+): void {
   const parts = chromiumVersion.split(".");
   if (parts.length !== 4) return;
   const major = parts[0];
@@ -114,6 +121,11 @@ export function applyEngineVersion(config: Record<string, unknown>, chromiumVers
     ch["brand_full_version"] = chromiumVersion;
     if (Number.isFinite(build)) ch["chrome_build"] = build;
     if (Number.isFinite(patch)) ch["chrome_patch"] = patch;
+    if (greaseBrand) ch["grease_brand"] = greaseBrand;
+    if (greaseVersion) {
+      ch["grease_version"] = greaseVersion;
+      ch["grease_full_version"] = `${greaseVersion}.0.0.0`;
+    }
   }
 }
 

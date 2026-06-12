@@ -89,14 +89,21 @@ FINGERPRINTS_TOP_DIR = "shardx-fingerprints"
 ProgressCb = Callable[[str, int, int], None]   # (label, received, total)
 
 
-def apply_engine_version(config: dict, chromium_version: str) -> None:
+def apply_engine_version(
+    config: dict,
+    chromium_version: str,
+    grease_brand: Optional[str] = None,
+    grease_version: Optional[str] = None,
+) -> None:
     """Normalise a profile config's spoofed Chrome version to `chromium_version`
     (e.g. "149.0.7827.103") so it always matches the running engine — bumps
-    `navigator.user_agent` (Chrome/<major>.0.0.0) and the chrome-version fields
-    in `client_hints` (brand_version / brand_full_version / chrome_build /
-    chrome_patch). Leaves platform_version, architecture, grease, etc. intact.
-    Mutates `config` in place. SDK equivalent of the launcher's post-update
-    profile migration."""
+    `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
+    `client_hints`: brand_version / brand_full_version / chrome_build /
+    chrome_patch (derived from the version) plus, when supplied, grease_brand /
+    grease_version / grease_full_version (GREASE rotates per release, so it
+    can't be derived — it comes from the manifest). Leaves platform_version,
+    architecture, etc. intact. Mutates `config` in place. SDK equivalent of the
+    launcher's post-update profile migration."""
     parts = chromium_version.split(".")
     if len(parts) != 4:
         return
@@ -125,6 +132,11 @@ def apply_engine_version(config: dict, chromium_version: str) -> None:
             ch["chrome_build"] = build
         if patch is not None:
             ch["chrome_patch"] = patch
+        if grease_brand:
+            ch["grease_brand"] = grease_brand
+        if grease_version:
+            ch["grease_version"] = grease_version
+            ch["grease_full_version"] = f"{grease_version}.0.0.0"
 
 
 class Runtime:
@@ -148,6 +160,10 @@ class Runtime:
         # Engine chromium version (manifest-driven; set on install()). Used by
         # launch to normalise profile UA + client_hints to the running engine.
         self._chromium_version = CHROMIUM_VERSION
+        # GREASE brand/version from the manifest (rotates per release; can't be
+        # derived from the version number). Applied to profiles on launch.
+        self._grease_brand: Optional[str] = None
+        self._grease_version: Optional[str] = None
         # Set to True after a successful in-process install() so subsequent
         # launches in the same process skip the R2 HEAD round-trip (~1 s
         # over a clean connection).  Cleared by `install(force=True)`.
@@ -183,6 +199,16 @@ class Runtime:
     def chromium_version(self) -> str:
         """Engine chromium version (manifest-driven; set on install())."""
         return self._chromium_version
+
+    @property
+    def grease_brand(self) -> Optional[str]:
+        """GREASE brand from the manifest (e.g. "Not)A;Brand"); set on install()."""
+        return self._grease_brand
+
+    @property
+    def grease_version(self) -> Optional[str]:
+        """GREASE version from the manifest (e.g. "24"); set on install()."""
+        return self._grease_version
 
     def _installed_engine_version(self) -> Optional[str]:
         """Chromium version of the engine actually on disk — read from the
@@ -233,6 +259,8 @@ class Runtime:
         remote = manifest.get("archives") if isinstance(manifest.get("archives"), dict) else {}
         # Remember the engine version so launch can normalise profiles to it.
         self._chromium_version = manifest.get("chromium_version") or CHROMIUM_VERSION
+        self._grease_brand = manifest.get("grease_brand") or None
+        self._grease_version = manifest.get("grease_version") or None
         # Browser. Re-download when the engine's on-disk version differs from
         # the manifest's chromium version — VERSION-based, not etag, so it fires
         # for users who updated the SDK but whose stored etag already matched.

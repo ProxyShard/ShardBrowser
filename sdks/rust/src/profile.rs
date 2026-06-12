@@ -146,11 +146,19 @@ impl FingerprintLibrary {
 
 /// Normalise a profile config's spoofed Chrome version to `chromium_version`
 /// (e.g. "149.0.7827.103") so it always matches the running engine — bumps
-/// `navigator.user_agent` (Chrome/<major>.0.0.0) and the chrome-version fields
-/// in `client_hints` (brand_version / brand_full_version / chrome_build /
-/// chrome_patch). Leaves platform_version, architecture, grease, etc. intact.
-/// SDK equivalent of the launcher's post-update profile migration.
-pub fn apply_engine_version(config: &mut Value, chromium_version: &str) {
+/// `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
+/// `client_hints`: brand_version / brand_full_version / chrome_build /
+/// chrome_patch (derived from the version) plus, when supplied, grease_brand /
+/// grease_version / grease_full_version (GREASE rotates per release, so it can't
+/// be derived — it comes from the manifest). Leaves platform_version,
+/// architecture, etc. intact. SDK equivalent of the launcher's post-update
+/// profile migration.
+pub fn apply_engine_version(
+    config: &mut Value,
+    chromium_version: &str,
+    grease_brand: Option<&str>,
+    grease_version: Option<&str>,
+) {
     let parts: Vec<&str> = chromium_version.split('.').collect();
     if parts.len() != 4 {
         return;
@@ -181,6 +189,13 @@ pub fn apply_engine_version(config: &mut Value, chromium_version: &str) {
         }
         if let Some(p) = patch {
             ch.insert("chrome_patch".into(), serde_json::json!(p));
+        }
+        if let Some(gb) = grease_brand {
+            ch.insert("grease_brand".into(), serde_json::json!(gb));
+        }
+        if let Some(gv) = grease_version {
+            ch.insert("grease_version".into(), serde_json::json!(gv));
+            ch.insert("grease_full_version".into(), serde_json::json!(format!("{gv}.0.0.0")));
         }
     }
 }

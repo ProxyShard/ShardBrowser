@@ -1,6 +1,6 @@
 {
   "archives": {
-    "ShardX-Fingerprints.zip": "3c1547a8aff0fee6ed475f559f473bc4",
+    "ShardX-Fingerprints.zip": "68b048725229994f0a96a6131391b7e7",
     "ShardX-Linux.zip": "d085876b60cd8946f0762d3b1a29ff5f-4",
     "ShardX-Mac-arm64.zip": "10315725e5992e3b775f4f37795ec129-3",
     "ShardX-Widevine-Linux.zip": "9b7d2697bc8ede2bd9fe72ccaaa2f15f-3",
@@ -9,5 +9,7 @@
     "ShardX-Windows.zip": "ec9b9550570b75914a49caeacfc63a45-4"
   },
   "chromium_version": "149.0.7827.103",
-  "revision": 2
+  "grease_brand": "Not)A;Brand",
+  "grease_version": "24",
+  "revision": 3
 }

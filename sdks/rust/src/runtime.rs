@@ -140,6 +140,9 @@ pub struct Runtime {
     checked: AtomicBool,
     /// Engine chromium version (manifest-driven; set on install()).
     engine_version: std::sync::Mutex<String>,
+    /// GREASE brand/version from the manifest (rotates per release; can't be
+    /// derived from the version). `(brand, version)`, set on install().
+    grease: std::sync::Mutex<(Option<String>, Option<String>)>,
 }
 
 impl Runtime {
@@ -157,7 +160,13 @@ impl Runtime {
             progress,
             checked: AtomicBool::new(false),
             engine_version: std::sync::Mutex::new(CHROMIUM_VERSION.to_string()),
+            grease: std::sync::Mutex::new((None, None)),
         })
+    }
+
+    /// GREASE `(brand, version)` from the manifest (set on install()).
+    pub fn grease(&self) -> (Option<String>, Option<String>) {
+        self.grease.lock().unwrap().clone()
     }
 
     /// Engine chromium version (manifest-driven; set on install()).
@@ -261,11 +270,13 @@ impl Runtime {
         }
         let mut local = self.load_manifest();
         let remote = fetch_manifest().await;
-        // Remember the engine version so launch can normalise profiles to it.
+        // Remember the engine version + grease so launch can normalise profiles.
         *self.engine_version.lock().unwrap() = remote
             .chromium_version
             .clone()
             .unwrap_or_else(|| CHROMIUM_VERSION.to_string());
+        *self.grease.lock().unwrap() =
+            (remote.grease_brand.clone(), remote.grease_version.clone());
 
         // Re-download when the engine's on-disk version differs from the
         // manifest's chromium version — VERSION-based, not etag, so it fires for
@@ -419,6 +430,10 @@ impl Runtime {
 struct RemoteManifest {
     archives: std::collections::HashMap<String, String>,
     chromium_version: Option<String>,
+    /// GREASE brand/version (rotates per release; travels in the manifest as
+    /// data since it can't be derived from the version number).
+    grease_brand: Option<String>,
+    grease_version: Option<String>,
 }
 
 /// Fetch the version manifest (GitHub raw) — one request that yields every
@@ -440,13 +455,12 @@ async fn fetch_manifest() -> RemoteManifest {
                     .collect()
             })
             .unwrap_or_default();
-        let chromium_version = v
-            .get("chromium_version")
-            .and_then(|s| s.as_str())
-            .map(String::from);
+        let str_field = |k: &str| v.get(k).and_then(|s| s.as_str()).map(String::from);
         Some(RemoteManifest {
             archives,
-            chromium_version,
+            chromium_version: str_field("chromium_version"),
+            grease_brand: str_field("grease_brand"),
+            grease_version: str_field("grease_version"),
         })
     }
     inner().await.unwrap_or_default()

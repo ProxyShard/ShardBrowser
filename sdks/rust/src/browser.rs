@@ -135,7 +135,13 @@ impl Browser {
         eprintln!("[shardx] profile '{}' → {}", profile.id, udd.display());
         // Keep the spoofed Chrome version coherent with the installed engine,
         // regardless of where the profile config came from (library / file / value).
-        crate::profile::apply_engine_version(&mut profile.config, &self.runtime.chromium_version());
+        let (grease_brand, grease_version) = self.runtime.grease();
+        crate::profile::apply_engine_version(
+            &mut profile.config,
+            &self.runtime.chromium_version(),
+            grease_brand.as_deref(),
+            grease_version.as_deref(),
+        );
         let fp_file = udd.join("fingerprint.json");
         std::fs::write(&fp_file, serde_json::to_string(&profile.config)?)?;
 
