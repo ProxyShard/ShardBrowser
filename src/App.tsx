@@ -3507,8 +3507,10 @@ function FirstRunGate({ children }: { children: ReactNode }) {
         setInstalled(true);
         return;
       }
-      // Need both browser AND fingerprints installed.
-      if (status.installed && status.fingerprints_installed) {
+      // Reveal only when the engine + fingerprints are installed AND up to
+      // date. An available engine update (chromium version bump) falls through
+      // to the install path below, which re-downloads the changed archives.
+      if (status.installed && status.fingerprints_installed && !status.update_available) {
         setInstalled(true);
         return;
       }

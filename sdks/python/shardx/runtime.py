@@ -184,6 +184,31 @@ class Runtime:
         """Engine chromium version (manifest-driven; set on install())."""
         return self._chromium_version
 
+    def _installed_engine_version(self) -> Optional[str]:
+        """Chromium version of the engine actually on disk — read from the
+        mac Framework `Versions/<ver>/` dir or the win `<ver>.manifest` file.
+        Returns None on Linux (no on-disk version marker) or when unreadable."""
+        try:
+            if sys.platform == "darwin":
+                versions = self.root / "ShardX-Mac-arm64" / "ShardX.app" / "Contents" / \
+                    "Frameworks" / "ShardX Framework.framework" / "Versions"
+                for entry in versions.iterdir():
+                    if entry.name != "Current" and entry.name[:1].isdigit():
+                        return entry.name
+                return None
+            if sys.platform == "win32":
+                for entry in (self.root / "ShardX-Windows").iterdir():
+                    if entry.suffix == ".manifest":
+                        return entry.stem
+                return None
+            return None
+        except OSError:
+            return None
+
+    def _effective_installed_version(self, local: dict) -> Optional[str]:
+        """On-disk engine version if readable, else the last recorded one."""
+        return self._installed_engine_version() or local.get("installed_chromium_version")
+
     # ---- manifest ----
 
     def _load_manifest(self) -> dict:
@@ -208,12 +233,13 @@ class Runtime:
         remote = manifest.get("archives") if isinstance(manifest.get("archives"), dict) else {}
         # Remember the engine version so launch can normalise profiles to it.
         self._chromium_version = manifest.get("chromium_version") or CHROMIUM_VERSION
-        # Browser. A None remote (manifest unreachable) must NOT force a
-        # re-download when we're already installed — only a *differing* etag does.
+        # Browser. Re-download when the engine's on-disk version differs from
+        # the manifest's chromium version — VERSION-based, not etag, so it fires
+        # for users who updated the SDK but whose stored etag already matched.
+        # A None manifest (unreachable) must NOT force a re-download when installed.
         need_browser = force or not self.installed
-        if not need_browser:
-            rb = remote.get(self._spec.browser.key)
-            need_browser = rb is not None and local.get("browser_etag") != rb
+        if not need_browser and manifest.get("chromium_version"):
+            need_browser = self._effective_installed_version(local) != manifest["chromium_version"]
         if need_browser:
             local["browser_etag"] = self._download_and_extract(self._spec.browser, self.root)
         # Widevine — only re-pull when browser changed (versions must match).
@@ -229,6 +255,9 @@ class Runtime:
             self._install_fingerprints()
             if fp_remote is not None:
                 local["fingerprints_etag"] = fp_remote
+        # Record the engine version now on disk so subsequent runs compare
+        # file-vs-manifest even if etags happen to line up.
+        local["installed_chromium_version"] = self._installed_engine_version() or self._chromium_version
         self._save_manifest(local)
         # Linux/mac archives produced on Windows lose every Unix exec bit;
         # restore +x on every ELF/Mach-O file under the engine tree (not

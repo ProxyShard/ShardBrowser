@@ -78,6 +78,10 @@ interface Manifest {
   browser_etag?: string;
   widevine_etag?: string;
   fingerprints_etag?: string;
+  /** Chromium version of the engine binary last extracted on disk. The update
+   *  is detected by comparing this (or the on-disk version) to the manifest's
+   *  chromium version — robust where the etag check failed. */
+  installed_chromium_version?: string;
 }
 
 export class Runtime {
@@ -120,6 +124,30 @@ export class Runtime {
   /** Engine chromium version (manifest-driven; set on install()). */
   get chromiumVersion(): string { return this._chromiumVersion; }
 
+  /** Chromium version of the engine actually on disk (mac Framework
+   *  `Versions/<ver>/`, win `<ver>.manifest`), or undefined on Linux. */
+  private installedEngineVersion(): string | undefined {
+    try {
+      const plat = osPlatform();
+      if (plat === "darwin") {
+        const versions = join(this.root, "ShardX-Mac-arm64", "ShardX.app", "Contents",
+          "Frameworks", "ShardX Framework.framework", "Versions");
+        const v = readdirSync(versions).find((n) => n !== "Current" && /^\d/.test(n));
+        return v;
+      }
+      if (plat === "win32") {
+        const m = readdirSync(join(this.root, "ShardX-Windows")).find((f) => f.endsWith(".manifest"));
+        return m ? m.replace(/\.manifest$/, "") : undefined;
+      }
+      return undefined; // linux: no on-disk version marker
+    } catch { return undefined; }
+  }
+
+  /** On-disk engine version if readable, else the last recorded one. */
+  private effectiveInstalledVersion(local: Manifest): string | undefined {
+    return this.installedEngineVersion() ?? local.installed_chromium_version;
+  }
+
   // ---- manifest ----
 
   private loadManifest(): Manifest {
@@ -140,12 +168,13 @@ export class Runtime {
     // Remember the engine version so launch can normalise profiles to it.
     this._chromiumVersion = remote.chromiumVersion ?? CHROMIUM_VERSION;
 
-    // An undefined remote (manifest unreachable) must NOT force a re-download
-    // when already installed — only a *differing* etag does.
+    // Re-download the engine when its on-disk version differs from the
+    // manifest's chromium version — VERSION-based, not etag, so it fires for
+    // users who updated the SDK but whose stored etag already matched. Manifest
+    // unreachable (undefined) → don't force a re-download when installed.
     let needBrowser = force || !this.installed;
-    if (!needBrowser) {
-      const rb = remote.archives[this.spec.browser.key];
-      needBrowser = rb !== undefined && local.browser_etag !== rb;
+    if (!needBrowser && remote.chromiumVersion !== undefined) {
+      needBrowser = this.effectiveInstalledVersion(local) !== remote.chromiumVersion;
     }
     if (needBrowser) {
       local.browser_etag = await this.downloadAndExtract(this.spec.browser, this.root);
@@ -160,6 +189,9 @@ export class Runtime {
       await this.installFingerprints();
       if (remoteFp !== undefined) local.fingerprints_etag = remoteFp;
     }
+    // Record the engine version now on disk so subsequent runs compare
+    // file-vs-manifest even if etags happen to line up.
+    local.installed_chromium_version = this.installedEngineVersion() ?? this._chromiumVersion;
     this.saveManifest(local);
 
     // Linux/mac archives produced on Windows lose every Unix exec bit;

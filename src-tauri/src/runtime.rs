@@ -110,6 +110,59 @@ struct Manifest {
     /// independent of the fingerprint-library seed.
     #[serde(default)]
     applied_chromium_version: Option<String>,
+    /// Chromium version of the engine binary currently extracted on disk.
+    /// The engine update is detected by comparing THIS to the manifest's
+    /// `chromium_version` — robust where the etag check failed (e.g. a user who
+    /// updated the app but whose stored etag already matched).
+    #[serde(default)]
+    installed_chromium_version: Option<String>,
+}
+
+/// Chromium version of the engine actually on disk (ground truth), read from
+/// the bundle layout: the macOS Framework `Versions/<ver>/` dir, the Windows
+/// `<ver>.manifest` file. Returns `None` on Linux (no on-disk marker) — callers
+/// fall back to the stored `installed_chromium_version`.
+fn installed_engine_version() -> Option<String> {
+    let base = runtime_dir().ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        let versions = base
+            .join("ShardX-Mac-arm64")
+            .join("ShardX.app")
+            .join("Contents")
+            .join("Frameworks")
+            .join("ShardX Framework.framework")
+            .join("Versions");
+        for ent in fs::read_dir(&versions).ok()?.flatten() {
+            let name = ent.file_name().to_string_lossy().to_string();
+            if name != "Current" && name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                return Some(name);
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let dir = base.join("ShardX-Windows");
+        for ent in fs::read_dir(&dir).ok()?.flatten() {
+            let p = ent.path();
+            if p.extension().and_then(|s| s.to_str()) == Some("manifest") {
+                return p.file_stem().and_then(|s| s.to_str()).map(String::from);
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        let _ = base;
+        None
+    }
+}
+
+/// Effective installed engine version: the on-disk version if readable, else
+/// the version we last recorded in the manifest.
+fn effective_installed_version(local: &Manifest) -> Option<String> {
+    installed_engine_version().or_else(|| local.installed_chromium_version.clone())
 }
 
 fn load_manifest() -> Manifest {
@@ -284,12 +337,15 @@ pub async fn runtime_status() -> Result<RuntimeStatus, String> {
     let remote = spec
         .as_ref()
         .and_then(|s| manifest.archives.get(&s.browser.key).cloned());
-    let update_available = match (&m.browser_etag, &remote) {
-        (Some(a), Some(b)) => a != b,
-        // Don't flag update when R2 unreachable but binary exists.
-        (None, _) => !installed,
-        _ => false,
-    };
+    // Update is detected by VERSION (engine on disk vs manifest's
+    // chromium_version), not by etag — robust for users whose stored etag
+    // already matched but whose binary never actually updated. Manifest
+    // unreachable (chromium_version None) → assume up to date.
+    let update_available = installed
+        && manifest
+            .chromium_version
+            .as_deref()
+            .is_some_and(|rv| effective_installed_version(&m).as_deref() != Some(rv));
     // Stamp present AND dir has ≥1 .json (catches user-nuked dir).
     let fingerprints_installed = m.fingerprints_etag.is_some()
         && crate::store::fingerprints_dir()
@@ -325,13 +381,15 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
     let local = load_manifest();
     let manifest = fetch_manifest().await;
 
-    // Skip browser when binary on disk and etag matches the manifest (unless
-    // forced). Manifest unreachable → don't force a re-download.
+    // Re-download the engine when its on-disk version differs from the
+    // manifest's chromium_version (or when missing / forced). VERSION-based,
+    // not etag — so the update actually fires for already-installed users on a
+    // bump. Manifest unreachable (None) → don't force a re-download.
     let need_browser = if force || !installed_now {
         true
     } else {
-        match manifest.archives.get(&spec.browser.key) {
-            Some(rb) => local.browser_etag.as_deref() != Some(rb.as_str()),
+        match &manifest.chromium_version {
+            Some(rv) => effective_installed_version(&local).as_deref() != Some(rv.as_str()),
             None => false,
         }
     };
@@ -384,7 +442,10 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
         browser_etag: Some(browser_etag),
         widevine_etag,
         fingerprints_etag: fp_etag,
-        applied_chromium_version: Some(target_ver),
+        applied_chromium_version: Some(target_ver.clone()),
+        // Record the version now on disk (ground truth where readable, else the
+        // version we just installed) so the next launch's version check is exact.
+        installed_chromium_version: installed_engine_version().or(Some(target_ver)),
     })
     .map_err(|e| e.to_string())?;
 

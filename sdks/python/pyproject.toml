@@ -1,6 +1,6 @@
 [project]
 name = "shardx"
-version = "0.1.6"
+version = "0.1.7"
 description = "Self-contained Python SDK for the ShardX anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
 authors = [{ name = "ProxyShard", email = "support@proxyshard.com" }]
 license = { text = "MIT" }
