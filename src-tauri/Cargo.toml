@@ -1,6 +1,6 @@
 [package]
 name = "shardx-launcher"
-version = "0.1.7"
+version = "0.1.8"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"

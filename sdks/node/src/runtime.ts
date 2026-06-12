@@ -144,16 +144,23 @@ export class Runtime {
         return v;
       }
       if (plat === "win32") {
-        const m = readdirSync(join(this.root, "ShardX-Windows")).find((f) => f.endsWith(".manifest"));
-        return m ? m.replace(/\.manifest$/, "") : undefined;
+        // Only accept a `<version>.manifest` whose stem parses as a version,
+        // so a stray/leftover manifest can't feed a bogus version.
+        return readdirSync(join(this.root, "ShardX-Windows"))
+          .filter((f) => f.endsWith(".manifest"))
+          .map((f) => f.replace(/\.manifest$/, ""))
+          .find((s) => /^\d/.test(s) && s.includes("."));
       }
       return undefined; // linux: no on-disk version marker
     } catch { return undefined; }
   }
 
-  /** On-disk engine version if readable, else the last recorded one. */
+  /** Effective installed version. Trusts the version recorded at install time
+   *  (authoritative — written only after a successful extract) over re-reading
+   *  it off disk, which can carry stale files from a previous version. On-disk
+   *  detection is the fallback for legacy installs with no recorded version. */
   private effectiveInstalledVersion(local: Manifest): string | undefined {
-    return this.installedEngineVersion() ?? local.installed_chromium_version;
+    return local.installed_chromium_version ?? this.installedEngineVersion();
   }
 
   // ---- manifest ----
@@ -187,6 +194,10 @@ export class Runtime {
       needBrowser = this.effectiveInstalledVersion(local) !== remote.chromiumVersion;
     }
     if (needBrowser) {
+      // Wipe the old engine tree first so a leftover `<old>.manifest` / stale
+      // libs can't linger beside the new ones (that pinned the detected version
+      // → endless re-download). binarySubpath[0] is the engine root dir.
+      rmSync(join(this.root, this.spec.binarySubpath[0]), { recursive: true, force: true });
       local.browser_etag = await this.downloadAndExtract(this.spec.browser, this.root);
     }
     if (this.spec.widevine && (needBrowser || !local.widevine_etag)) {
@@ -199,9 +210,9 @@ export class Runtime {
       await this.installFingerprints();
       if (remoteFp !== undefined) local.fingerprints_etag = remoteFp;
     }
-    // Record the engine version now on disk so subsequent runs compare
-    // file-vs-manifest even if etags happen to line up.
-    local.installed_chromium_version = this.installedEngineVersion() ?? this._chromiumVersion;
+    // Authoritative: we just extracted exactly this version (old tree wiped
+    // first). Recording the known value beats re-reading it off disk.
+    local.installed_chromium_version = this._chromiumVersion;
     this.saveManifest(local);
 
     // Linux/mac archives produced on Windows lose every Unix exec bit;

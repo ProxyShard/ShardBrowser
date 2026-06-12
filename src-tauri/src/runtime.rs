@@ -96,6 +96,19 @@ fn manifest_path() -> Result<PathBuf> {
     Ok(runtime_dir()?.join("manifest.json"))
 }
 
+/// Top-level dir (under runtime_dir) the engine archive extracts into. Wiped
+/// before a re-extract so stale files from the previous version can't linger.
+fn engine_root_dir() -> &'static str {
+    #[cfg(target_os = "macos")]
+    return "ShardX-Mac-arm64";
+    #[cfg(target_os = "windows")]
+    return "ShardX-Windows";
+    #[cfg(target_os = "linux")]
+    return "ShardX-Linux";
+    #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+    return "ShardX-Engine";
+}
+
 // Bundled fingerprint library (cross-platform); seeds fingerprints dir on first run.
 const FINGERPRINTS_ARCHIVE_KEY: &str = "ShardX-Fingerprints.zip";
 const FINGERPRINTS_TOP_DIR: &str = "shardx-fingerprints";
@@ -151,10 +164,19 @@ fn installed_engine_version() -> Option<String> {
     #[cfg(target_os = "windows")]
     {
         let dir = base.join("ShardX-Windows");
+        // Marker is the `<version>.manifest` sidecar next to chrome.exe. Require
+        // the stem to parse as a dotted version so a stray/leftover file can't
+        // feed a bogus version into the update check.
+        let looks_like_version =
+            |s: &str| s.split('.').count() >= 2 && s.starts_with(|c: char| c.is_ascii_digit());
         for ent in fs::read_dir(&dir).ok()?.flatten() {
             let p = ent.path();
             if p.extension().and_then(|s| s.to_str()) == Some("manifest") {
-                return p.file_stem().and_then(|s| s.to_str()).map(String::from);
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    if looks_like_version(stem) {
+                        return Some(stem.to_string());
+                    }
+                }
             }
         }
         None
@@ -166,10 +188,17 @@ fn installed_engine_version() -> Option<String> {
     }
 }
 
-/// Effective installed engine version: the on-disk version if readable, else
-/// the version we last recorded in the manifest.
+/// Effective installed engine version. Trusts the version recorded at install
+/// time (authoritative — written only after a successful download+extract) over
+/// re-reading it off disk, whose layout varies per-OS and can carry stale files
+/// from a previous version (a leftover `<old>.manifest` made Windows re-download
+/// forever). On-disk detection is the fallback for legacy installs that predate
+/// `installed_chromium_version`.
 fn effective_installed_version(local: &Manifest) -> Option<String> {
-    installed_engine_version().or_else(|| local.installed_chromium_version.clone())
+    local
+        .installed_chromium_version
+        .clone()
+        .or_else(installed_engine_version)
 }
 
 fn load_manifest() -> Manifest {
@@ -434,6 +463,12 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
         }
     };
     let browser_etag = if need_browser {
+        // Wipe the old engine tree first. The archive extracts *over* the
+        // existing dir but never deletes files the new version dropped — most
+        // critically the previous `<version>.manifest`, which lingers beside the
+        // new one and poisons version detection into an endless re-download (and
+        // stale DLLs/.so could be loaded). Applies to win + linux + mac alike.
+        let _ = fs::remove_dir_all(base.join(engine_root_dir()));
         download_and_extract(&window, &spec.browser, &base)
             .await
             .map_err(|e| e.to_string())?
@@ -493,9 +528,11 @@ pub async fn runtime_install(window: Window, force: bool) -> Result<RuntimeStatu
         fingerprints_etag: fp_etag,
         applied_chromium_version: Some(target_ver.clone()),
         applied_signature: Some(sig),
-        // Record the version now on disk (ground truth where readable, else the
-        // version we just installed) so the next launch's version check is exact.
-        installed_chromium_version: installed_engine_version().or(Some(target_ver)),
+        // Authoritative: we just successfully extracted exactly target_ver (the
+        // old tree was wiped first). Recording the known value beats re-reading
+        // it off disk, which is what let a leftover `<old>.manifest` keep the
+        // version "stuck" and re-download every launch.
+        installed_chromium_version: Some(target_ver),
     })
     .map_err(|e| e.to_string())?;
 

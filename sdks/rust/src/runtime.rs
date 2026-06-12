@@ -230,10 +230,18 @@ impl Runtime {
         }
         #[cfg(target_os = "windows")]
         {
+            // Only accept a `<version>.manifest` whose stem parses as a version,
+            // so a stray/leftover manifest can't pin a bogus version.
             for ent in fs::read_dir(self.root.join("ShardX-Windows")).ok()?.flatten() {
                 let p = ent.path();
                 if p.extension().and_then(|s| s.to_str()) == Some("manifest") {
-                    return p.file_stem().map(|s| s.to_string_lossy().into_owned());
+                    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                        if stem.contains('.')
+                            && stem.starts_with(|c: char| c.is_ascii_digit())
+                        {
+                            return Some(stem.to_string());
+                        }
+                    }
                 }
             }
             None
@@ -244,10 +252,15 @@ impl Runtime {
         }
     }
 
-    /// On-disk engine version if readable, else the last recorded one.
+    /// Effective installed version. Trusts the version recorded at install time
+    /// (authoritative — written only after a successful extract) over re-reading
+    /// it off disk, which can carry stale files from a previous version. On-disk
+    /// detection is the fallback for legacy installs with no recorded version.
     fn effective_installed_version(&self, local: &Manifest) -> Option<String> {
-        self.installed_engine_version()
-            .or_else(|| local.installed_chromium_version.clone())
+        local
+            .installed_chromium_version
+            .clone()
+            .or_else(|| self.installed_engine_version())
     }
 
     fn load_manifest(&self) -> Manifest {
@@ -289,6 +302,13 @@ impl Runtime {
             }
         }
         if need_browser {
+            // Wipe the old engine tree first so a leftover `<old>.manifest` /
+            // stale libs can't linger beside the new ones (that pinned the
+            // detected version → endless re-download). binary_subpath[0] is the
+            // engine root dir.
+            if let Some(engine_dir) = self.spec.binary_subpath.first() {
+                let _ = fs::remove_dir_all(self.root.join(engine_dir));
+            }
             let etag = self
                 .download_and_extract(&self.spec.browser, &self.root)
                 .await?;
@@ -322,11 +342,9 @@ impl Runtime {
             }
         }
 
-        // Record the engine version now on disk so subsequent runs compare
-        // file-vs-manifest even if etags happen to line up.
-        local.installed_chromium_version = self
-            .installed_engine_version()
-            .or_else(|| Some(self.chromium_version()));
+        // Authoritative: we just extracted exactly this version (old tree wiped
+        // first). Recording the known value beats re-reading it off disk.
+        local.installed_chromium_version = Some(self.chromium_version());
 
         self.save_manifest(&local)?;
 

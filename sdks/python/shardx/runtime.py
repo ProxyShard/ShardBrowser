@@ -223,8 +223,10 @@ class Runtime:
                         return entry.name
                 return None
             if sys.platform == "win32":
+                # Only accept a `<version>.manifest` whose stem parses as a
+                # version, so a stray/leftover manifest can't pin a bogus version.
                 for entry in (self.root / "ShardX-Windows").iterdir():
-                    if entry.suffix == ".manifest":
+                    if entry.suffix == ".manifest" and entry.stem[:1].isdigit() and "." in entry.stem:
                         return entry.stem
                 return None
             return None
@@ -232,8 +234,11 @@ class Runtime:
             return None
 
     def _effective_installed_version(self, local: dict) -> Optional[str]:
-        """On-disk engine version if readable, else the last recorded one."""
-        return self._installed_engine_version() or local.get("installed_chromium_version")
+        """Effective installed version. Trusts the version recorded at install
+        time (authoritative — written only after a successful extract) over
+        re-reading it off disk, which can carry stale files from a previous
+        version. On-disk detection is the fallback for legacy installs."""
+        return local.get("installed_chromium_version") or self._installed_engine_version()
 
     # ---- manifest ----
 
@@ -269,6 +274,11 @@ class Runtime:
         if not need_browser and manifest.get("chromium_version"):
             need_browser = self._effective_installed_version(local) != manifest["chromium_version"]
         if need_browser:
+            # Wipe the old engine tree first so a leftover `<old>.manifest` /
+            # stale libs can't linger beside the new ones (that pinned the
+            # detected version → endless re-download). binary_subpath[0] is the
+            # engine root dir.
+            shutil.rmtree(self.root / self._spec.binary_subpath[0], ignore_errors=True)
             local["browser_etag"] = self._download_and_extract(self._spec.browser, self.root)
         # Widevine — only re-pull when browser changed (versions must match).
         if self._spec.widevine and (need_browser or not local.get("widevine_etag")):
@@ -283,9 +293,9 @@ class Runtime:
             self._install_fingerprints()
             if fp_remote is not None:
                 local["fingerprints_etag"] = fp_remote
-        # Record the engine version now on disk so subsequent runs compare
-        # file-vs-manifest even if etags happen to line up.
-        local["installed_chromium_version"] = self._installed_engine_version() or self._chromium_version
+        # Authoritative: we just extracted exactly this version (old tree wiped
+        # first). Recording the known value beats re-reading it off disk.
+        local["installed_chromium_version"] = self._chromium_version
         self._save_manifest(local)
         # Linux/mac archives produced on Windows lose every Unix exec bit;
         # restore +x on every ELF/Mach-O file under the engine tree (not
