@@ -25,8 +25,13 @@ const clip = {
 
 const readTextFile = (path: string) => invoke<string>("read_text_file", { path });
 
+// Single UTM tag appended to every outbound proxyshard.com link.
+const UTM_QS = "utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher";
+const withUtm = (url: string) => url + (url.includes("?") ? "&" : "?") + UTM_QS;
+// ProxyShard dashboard (account, billing, API key).
+const DASHBOARD_URL = withUtm("https://dashboard.proxyshard.com/");
 // Docs URL behind the proxy UDP/No-UDP pill.
-const UDP_DOCS_URL = "https://docs.proxyshard.com/eng/our-products/about-udp";
+const UDP_DOCS_URL = withUtm("https://docs.proxyshard.com/eng/our-products/about-udp");
 
 // ---- toasts (global queue, auto-expiry; push via toast.ok / toast.err) ----
 
@@ -129,6 +134,59 @@ function ConfirmHost() {
   );
 }
 
+// ---- first-run "star us" prompt ----
+
+const GH_REPO_URL = "https://github.com/ProxyShard/ShardBrowser";
+
+function GithubMark({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden>
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  );
+}
+
+/// One-time GitHub-star prompt shown after the app first loads. Dismissal is
+/// remembered in localStorage so it never nags again.
+function StarModal() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    if (localStorage.getItem("shardx-star-prompt") === "done") return;
+    // Let the UI settle before surfacing the prompt.
+    const t = setTimeout(() => setShow(true), 700);
+    return () => clearTimeout(t);
+  }, []);
+  const close = () => {
+    localStorage.setItem("shardx-star-prompt", "done");
+    setShow(false);
+  };
+  const star = () => {
+    openUrl(GH_REPO_URL).catch(() => {});
+    close();
+  };
+  if (!show) return null;
+  return (
+    <div className="dialog-bg" onClick={close}>
+      <div className="dialog star-dialog" onClick={(e) => e.stopPropagation()}>
+        <button className="icon-btn star-close" onClick={close} aria-label="Close">✕</button>
+        <div className="star-body">
+          <div className="star-badge"><GithubMark size={26} /><span className="star-spark">★</span></div>
+          <h2>Enjoying ShardX?</h2>
+          <p className="star-text">
+            ShardX is provided and supported <strong>completely free</strong>. If it's
+            useful to you, dropping a <strong>star on GitHub</strong> is the easiest way to
+            support us — and it helps other people find the project.
+          </p>
+          <div className="star-actions">
+            <button className="btn-ghost" onClick={close}>Maybe later</button>
+            <button className="btn-primary star-btn" onClick={star}><GithubMark /> Star on GitHub</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ---- context menu ----
 
 type ContextItem = { label: string; onClick: () => void; danger?: boolean; sep?: boolean };
@@ -198,6 +256,10 @@ type ProfileMeta = {
   created_at: string | null;
   pinned: boolean;
   folder: string;
+  /// Cumulative engine uptime in ms across every launch.  Increased when
+  /// the engine exits — for the currently-running session add `running[id]`
+  /// (Date.now() - sessionStartTs) on top.
+  total_runtime_ms: number;
 };
 type ProxyEntry = {
   id: string;
@@ -226,7 +288,7 @@ type ApiInfo = {
   base_url: string;
   token: string;
 };
-type Section = "browsers" | "proxies" | "fingerprints" | "settings";
+type Section = "browsers" | "proxies" | "proxyshard" | "fingerprints" | "settings";
 
 /// Library fingerprint backing the editor GPU select; payload supplies the coherent base.
 type FingerprintEntry = {
@@ -460,16 +522,12 @@ function fromStored(stored: any): ProfileForm {
   return f;
 }
 
-/// Deterministic per-profile per-slot 32-bit hash (stable noise seeds).
-function noiseSeed(profileId: string, slot: string): number {
-  const s = `${profileId || "new"}::${slot}`;
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
+// "Maximally soft" anti-fingerprint defaults: the smallest perturbation that
+// still shifts the fingerprint hash without visibly degrading rendering.
+// max_offset can't drop below 1 (0 = off), so client_rects is already at its
+// gentlest floor.
+const WEBGL_NOISE_INTENSITY = 0.0005;
+const CLIENT_RECTS_MAX_OFFSET = 1;
 
 /// Build on-disk FingerprintConfig from library payload + user-edited fields.
 function toStored(f: ProfileForm, lib: FingerprintEntry | null): any {
@@ -518,13 +576,18 @@ function toStored(f: ProfileForm, lib: FingerprintEntry | null): any {
       ? { mode: "manual", latitude: f.geo_lat, longitude: f.geo_lng, accuracy: f.geo_accuracy }
       : { mode: "auto" };
 
+  // seed: 0 is the "derive automatically" sentinel — the launcher fills each
+  // vector with a stable per-profile seed once the real profile id exists
+  // (see fill_noise_seeds in profile.rs).  Computing seeds here is impossible
+  // for new profiles (no id yet) and previously collapsed every new profile
+  // onto one shared seed, giving them all an identical fingerprint.
   base.noise = {
-    canvas:       { enabled: f.noise_canvas === "auto",       seed: noiseSeed(f.id, "canvas") },
-    webgl:        { enabled: f.noise_webgl === "auto",        seed: noiseSeed(f.id, "webgl"), intensity: f.noise_webgl === "auto" ? 0.0005 : 0 },
-    audio:        { enabled: f.noise_audio === "auto",        seed: noiseSeed(f.id, "audio") },
-    client_rects: { enabled: f.noise_client_rects === "auto", seed: noiseSeed(f.id, "client_rects"), max_offset: f.noise_client_rects === "auto" ? 1 : 0 },
-    sensors:      { enabled: f.noise_sensors === "auto",      seed: noiseSeed(f.id, "sensors") },
-    fonts:        { enabled: f.noise_fonts === "auto",        seed: noiseSeed(f.id, "fonts") },
+    canvas:       { enabled: f.noise_canvas === "auto",       seed: 0 },
+    webgl:        { enabled: f.noise_webgl === "auto",        seed: 0, intensity: f.noise_webgl === "auto" ? WEBGL_NOISE_INTENSITY : 0 },
+    audio:        { enabled: f.noise_audio === "auto",        seed: 0 },
+    client_rects: { enabled: f.noise_client_rects === "auto", seed: 0, max_offset: f.noise_client_rects === "auto" ? CLIENT_RECTS_MAX_OFFSET : 0 },
+    sensors:      { enabled: f.noise_sensors === "auto",      seed: 0 },
+    fonts:        { enabled: f.noise_fonts === "auto",        seed: 0 },
   };
   base.blocked_ports = [...f.blocked_ports].sort((a, b) => a - b);
 
@@ -597,11 +660,13 @@ export default function App() {
           <main className="main">
             {section === "browsers" && <BrowsersView />}
             {section === "proxies" && <ProxiesView />}
+            {section === "proxyshard" && <ProxyShardView />}
             {section === "fingerprints" && <FingerprintsView />}
             {section === "settings" && <SettingsView />}
           </main>
           <ToastHost />
           <ConfirmHost />
+          <StarModal />
         </div>
       </FirstRunGate>
     </>
@@ -622,6 +687,7 @@ function Sidebar({
       items: [
         { id: "browsers", label: "Browsers", svg: <IconShard /> },
         { id: "proxies", label: "Proxies", svg: <IconWire /> },
+        { id: "proxyshard", label: "ProxyShard", svg: <IconCart /> },
       ],
     },
     {
@@ -698,7 +764,7 @@ function Sidebar({
           <button
             className="side-auto-btn"
             onClick={() => {
-              openUrl("https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true").catch(() => {});
+              openUrl(withUtm("https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true")).catch(() => {});
             }}
             title="Open the full Automation API reference on docs.proxyshard.com"
           >
@@ -750,6 +816,14 @@ const IconWire = () => (
 const IconHex = () => (
   <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
     <path d="M7 1L12 4V10L7 13L2 10V4Z" stroke="currentColor" strokeWidth="1.4" strokeLinejoin="round"/>
+  </svg>
+);
+const IconCart = () => (
+  <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+    <path d="M1 1.5h1.6l1.2 7.2c.05.3.3.5.6.5h6.1c.3 0 .55-.2.6-.5l.9-4.7H3.3"
+          stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+    <circle cx="5" cy="12" r="1" fill="currentColor"/>
+    <circle cx="10.5" cy="12" r="1" fill="currentColor"/>
   </svg>
 );
 const IconCog = () => (
@@ -903,6 +977,34 @@ const Icon = {
   ),
 };
 
+// Reload when the backend signals an out-of-band store change — a profile or
+// proxy created/edited/removed through the automation API or MCP writes
+// straight to disk, so the React state never hears about it on its own.  The
+// backend emits "store-changed"; without this listener the new items only show
+// up after an app restart.  Bursts (e.g. MCP adding many proxies in a loop)
+// are coalesced into a single reload.
+function useStoreChanged(onChange: () => void) {
+  const cb = useRef(onChange);
+  cb.current = onChange;
+  useEffect(() => {
+    let disposed = false;
+    let un: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    listen("store-changed", () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => cb.current(), 200);
+    }).then((fn) => {
+      if (disposed) fn();
+      else un = fn;
+    });
+    return () => {
+      disposed = true;
+      if (timer) clearTimeout(timer);
+      un?.();
+    };
+  }, []);
+}
+
 // ---- Browsers view ----
 
 function BrowsersView() {
@@ -912,7 +1014,18 @@ function BrowsersView() {
   const [folder, setFolder] = useState("all");
   const [expanded, setExpanded] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProfileForm | null>(null);
-  const [running, setRunning] = useState<Record<string, boolean>>({});
+  // Value = epoch ms at which the engine was first observed running. Used
+  // both as a truthy flag (any number = running) and as the anchor for the
+  // ticking uptime display in the Status column.
+  const [running, setRunning] = useState<Record<string, number>>({});
+  // Re-render trigger so the uptime label ticks every second without
+  // re-fetching the process list (which polls every 2s).
+  const [, setUptimeTick] = useState(0);
+  useEffect(() => {
+    if (Object.keys(running).length === 0) return;
+    const h = setInterval(() => setUptimeTick((t) => t + 1), 1000);
+    return () => clearInterval(h);
+  }, [running]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   const [fingerprints, setFingerprints] = useState<FingerprintEntry[]>([]);
@@ -923,9 +1036,18 @@ function BrowsersView() {
     catch { return []; }
   });
   const [folderModal, setFolderModal] = useState<{ profileId: string | null } | null>(null);
+  // Folder name currently highlighted as a drag-and-drop target ("__all__"
+  // for the All tab).  Cleared in dragleave/drop.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const rememberFolder = (f: string) =>
     setFolderRegistry((r) => {
       const next = r.includes(f) ? r : [...r, f];
+      localStorage.setItem("shardx-folders", JSON.stringify(next));
+      return next;
+    });
+  const forgetFolder = (f: string) =>
+    setFolderRegistry((r) => {
+      const next = r.filter((x) => x !== f);
       localStorage.setItem("shardx-folders", JSON.stringify(next));
       return next;
     });
@@ -940,6 +1062,8 @@ function BrowsersView() {
     }
   };
   useEffect(() => { reload(); }, []);
+  // Pick up profiles/proxies created via the automation API or MCP live.
+  useStoreChanged(reload);
   useEffect(() => {
     invoke<FingerprintEntry[]>("fingerprint_list").then(setFingerprints).catch((e) => toast.err(String(e)));
   }, []);
@@ -954,14 +1078,36 @@ function BrowsersView() {
     return () => clearTimeout(t);
   }, [expanded]);
 
-  // 2s poll for real child status; not optimistic UI state.
+  // 2s poll for real child status; not optimistic UI state.  Uptime is
+  // anchored to the moment the engine actually started (now - uptime_ms),
+  // preserved across polls so the displayed clock doesn't jitter.  When a
+  // profile transitions running → not-running, the backend has just bumped
+  // its persisted `total_runtime_ms` — re-fetch profile_list so the Time
+  // column reflects the new total (otherwise it shows whatever was on
+  // disk before this session started, looking like a "reset").
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
-        const list = await invoke<{ profile_id: string; pid: number }[]>("process_list");
+        const list = await invoke<{ profile_id: string; pid: number; uptime_ms: number }[]>("process_list");
         if (cancelled) return;
-        setRunning(Object.fromEntries(list.map((r) => [r.profile_id, true])));
+        const now = Date.now();
+        setRunning((prev) => {
+          const next: Record<string, number> = {};
+          for (const r of list) {
+            next[r.profile_id] = prev[r.profile_id] ?? (now - r.uptime_ms);
+          }
+          // Detect any profile that was running on the previous tick but
+          // dropped off this one — those need a profile_list refresh so
+          // the freshly-accumulated total_runtime_ms appears in the UI.
+          const justExited = Object.keys(prev).some((id) => !(id in next));
+          if (justExited) {
+            // Defer to next tick so React commits `next` before reload()
+            // races against it.
+            setTimeout(() => { if (!cancelled) reload(); }, 0);
+          }
+          return next;
+        });
       } catch {}
     };
     tick();
@@ -1021,8 +1167,12 @@ function BrowsersView() {
 
   const runningCount = Object.values(running).filter(Boolean).length;
 
-  // 5s debounce on Start to avoid SingletonLock fight on double-tap.
-  const [startCooldown, setStartCooldown] = useState<Set<string>>(new Set());
+  // Block the Start button until `invoke("launch")` returns (success or
+  // failure).  The launch includes pre-flight steps that can take real time
+  // — UDP probe, geo lookup, Widevine pre-warm — and surfacing the busy
+  // state for the whole window is what the user sees as "did it work?".
+  // On failure we unlock immediately and toast the error.
+  const [startBusy, setStartBusy] = useState<Set<string>>(new Set());
   const startStop = async (p: ProfileMeta) => {
     if (running[p.id]) {
       try {
@@ -1032,21 +1182,20 @@ function BrowsersView() {
       }
       return;
     }
-    if (startCooldown.has(p.id)) return;
-    setStartCooldown((s) => new Set([...s, p.id]));
-    setTimeout(() => {
-      setStartCooldown((s) => {
+    if (startBusy.has(p.id)) return;
+    setStartBusy((s) => new Set([...s, p.id]));
+    try {
+      await invoke<number>("launch", { profileId: p.id });
+      // Don't optimistically flip `running` here; the 2s poll above picks
+      // up the new child immediately and anchors the uptime clock.
+    } catch (e) {
+      toast.err(String(e));
+    } finally {
+      setStartBusy((s) => {
         const n = new Set(s);
         n.delete(p.id);
         return n;
       });
-    }, 5000);
-    try {
-      setRunning((s) => ({ ...s, [p.id]: true }));
-      await invoke<number>("launch", { profileId: p.id });
-    } catch (e) {
-      toast.err(String(e));
-      setRunning((s) => ({ ...s, [p.id]: false }));
     }
   };
 
@@ -1120,6 +1269,14 @@ function BrowsersView() {
   };
 
   const setProfileFolder = async (id: string, f: string) => {
+    // Dropping a profile onto the folder it already lives in is a no-op —
+    // tell the user instead of silently doing nothing.
+    const p = profiles.find((x) => x.id === id);
+    if (p && p.folder === f) {
+      const who = p.name || id.slice(0, 8);
+      toast.info(f ? `“${who}” is already in “${f}”` : `“${who}” isn’t in any folder`);
+      return;
+    }
     try {
       await invoke("profile_set_folder", { id, folder: f });
       if (f) rememberFolder(f);
@@ -1153,6 +1310,10 @@ function BrowsersView() {
     const alsoDelete = choice === "delete";
     try {
       const n = await invoke<number>("folder_delete", { folder: f, deleteProfiles: alsoDelete });
+      // The folder lives in two places: profile tags (cleared by folder_delete)
+      // and the localStorage registry of empty folders.  Drop it from the
+      // registry too, otherwise the tab lingers after every profile is gone.
+      forgetFolder(f);
       if (folder === f) setFolder("all");
       reload();
       toast.ok(
@@ -1232,6 +1393,14 @@ function BrowsersView() {
       const fp = fingerprints.find((g) => g.id === draft.gpu_preset_id) ?? null;
       const saved = await invoke<ProfileMeta>("profile_save", { payload: toStored(draft, fp) });
       await invoke("profile_bind_proxy", { profileId: saved.id, proxyId: draft.proxy_id });
+      // A profile created while a folder tab is active should land in that
+      // folder (otherwise it pops into "All" and the user has to drag it
+      // back themselves).  `__new__` test scopes this to creations only —
+      // edits preserve whatever folder the profile already had.
+      if (!draft.id && folder && folder !== "all") {
+        try { await invoke("profile_set_folder", { id: saved.id, folder }); }
+        catch (e) { console.warn("auto-assign folder failed:", e); }
+      }
       setExpanded(null);
       setDraft(null);
       reload();
@@ -1263,22 +1432,63 @@ function BrowsersView() {
           <h1>Browsers</h1>
           <div className="folder-tabs" ref={folderTabsRef}>
             <button
-              className={`folder-tab ${folder === "all" ? "active" : ""}`}
+              className={`folder-tab ${folder === "all" ? "active" : ""} ${dropTarget === "__all__" ? "folder-tab-drop" : ""}`}
               onClick={() => setFolder("all")}
+              // Unconditional preventDefault on dragover is the *only* way
+              // HTML5 marks the element as a valid drop target — any extra
+              // logic inside the handler is fine, but the preventDefault
+              // itself must fire on every event or `drop` never lands.
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "move";
+                if (dropTarget !== "__all__") setDropTarget("__all__");
+              }}
+              onDragLeave={(e) => {
+                // Ignore enter-into-child events: relatedTarget will be a
+                // descendant of the button, in which case the drag is still
+                // over us — clearing the highlight here would steal the drop.
+                if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                  setDropTarget(null);
+                }
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                setDropTarget(null);
+                const id = e.dataTransfer.getData("application/x-shardx-profile")
+                        || e.dataTransfer.getData("text/plain");
+                if (id) setProfileFolder(id, "");           // "" = unassign folder
+              }}
             >
               All<span className="tab-count">{profiles.length}</span>
             </button>
             {folders.map((f) => (
               <button
                 key={f}
-                className={`folder-tab ${folder === f ? "active" : ""}`}
+                className={`folder-tab ${folder === f ? "active" : ""} ${dropTarget === f ? "folder-tab-drop" : ""}`}
                 onClick={() => setFolder(f)}
-                title="Right-click for folder actions"
+                title="Right-click for folder actions · drop profiles to move them"
                 onContextMenu={(e) =>
                   ctx.open(e, [
                     { label: "Delete folder…", onClick: () => deleteFolder(f), danger: true },
                   ])
                 }
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.dataTransfer.dropEffect = "move";
+                  if (dropTarget !== f) setDropTarget(f);
+                }}
+                onDragLeave={(e) => {
+                  if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                    setDropTarget(null);
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDropTarget(null);
+                  const id = e.dataTransfer.getData("application/x-shardx-profile")
+                          || e.dataTransfer.getData("text/plain");
+                  if (id) setProfileFolder(id, f);
+                }}
               >
                 {f}
                 <span className="tab-count">
@@ -1313,6 +1523,7 @@ function BrowsersView() {
       </div>
       {templatePickerOpen && (
         <TemplatePicker
+          fingerprints={fingerprints}
           onPick={async (tplId) => {
             try {
               const meta = await invoke<ProfileMeta>("profile_create_from_template", { templateId: tplId });
@@ -1381,7 +1592,7 @@ function BrowsersView() {
               }}
             />
           </div>
-          <div>Name</div><div>Status</div><div>Proxy</div><div>Notes</div><div className="head-lastrun">Last run</div><div></div>
+          <div>Name</div><div>Status</div><div>Proxy</div><div>Notes</div><div className="head-time">Time</div><div className="head-lastrun">Last run</div><div></div>
         </div>
         {expanded === "__new__" && draft && (
           <div className="row-wrap row-expanded row-new">
@@ -1405,6 +1616,28 @@ function BrowsersView() {
               key={p.id}
               className={`row-wrap ${isRunning ? "row-running" : ""} ${isExpanded ? "row-expanded" : ""} ${p.pinned ? "row-pinned" : ""}`}
               onContextMenu={(e) => ctx.open(e, profileMenu(p))}
+              draggable={!isExpanded}
+              onDragStart={(e) => {
+                e.dataTransfer.effectAllowed = "move";
+                // Set BOTH a custom MIME (so non-folder drop zones can ignore
+                // it) and text/plain (because Firefox refuses to start a
+                // drag at all without text/plain, and some Chromium variants
+                // hide custom MIME values from `dataTransfer.types` during
+                // dragover for cross-origin reasons).
+                e.dataTransfer.setData("application/x-shardx-profile", p.id);
+                e.dataTransfer.setData("text/plain", p.id);
+                // Replace the default full-row ghost (it obscures the folder
+                // tabs and stops the drop event firing on them) with a tiny
+                // chip that floats next to the cursor.
+                const chip = document.createElement("div");
+                chip.className = "drag-chip";
+                chip.textContent = p.name || p.id.slice(0, 8);
+                document.body.appendChild(chip);
+                e.dataTransfer.setDragImage(chip, 12, 12);
+                // The ghost is rasterised synchronously from the live DOM,
+                // so we can safely remove it on the next tick.
+                setTimeout(() => chip.remove(), 0);
+              }}
             >
               <div className="row t-cols">
                 <div className="cell-strip">
@@ -1449,18 +1682,27 @@ function BrowsersView() {
                 >
                   {p.notes || <span className="muted">—</span>}
                 </div>
+                <div className="cell-time">
+                  <span className={`small ${isRunning ? "" : "muted"}`}>
+                    {(() => {
+                      const live = isRunning ? Date.now() - running[p.id] : 0;
+                      const total = p.total_runtime_ms + live;
+                      return total > 0 ? fmtUptime(total) : "—";
+                    })()}
+                  </span>
+                </div>
                 <div className="cell-lastrun"><span className="muted small">{p.last_launched_at ? fmtTs(p.last_launched_at) : "never"}</span></div>
                 <div className="row-actions">
                   <button
                     className={`btn-launch ${isRunning ? "btn-launch-stop" : ""}`}
                     onClick={() => startStop(p)}
-                    disabled={!isRunning && startCooldown.has(p.id)}
-                    title={!isRunning && startCooldown.has(p.id) ? "Cooling down (5s)…" : undefined}
+                    disabled={!isRunning && startBusy.has(p.id)}
+                    title={!isRunning && startBusy.has(p.id) ? "Starting (UDP probe + geo + spawn)…" : undefined}
                   >
                     {isRunning ? (
                       <><span className="btn-launch-ico"><Icon.Stop size={10} /></span><span>Stop</span></>
-                    ) : startCooldown.has(p.id) ? (
-                      <><span className="btn-launch-ico"><Icon.Play size={10} /></span><span>…</span></>
+                    ) : startBusy.has(p.id) ? (
+                      <><span className="btn-launch-ico spin"><Icon.Play size={10} /></span><span>Starting…</span></>
                     ) : (
                       <><span className="btn-launch-ico"><Icon.Play size={10} /></span><span>Start</span></>
                     )}
@@ -2141,18 +2383,45 @@ function ProxiesView() {
   const [proxySel, setProxySel] = useState<Set<string>>(new Set());
   const [renaming, setRenaming] = useState<{ id: string; draft: string } | null>(null);
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
+  const [search, setSearch] = useState("");
   const ctx = useContextMenu();
 
-  // Pagination of the proxy list.
+  // Search filter: matches name / host / port / country tag / notes / username
+  // *and* the exit IP from the latest snapshot (so the user can find a proxy
+  // by "last seen exiting at X.X.X.X").  Whitespace-trimmed, case-insensitive.
+  const filteredProxies = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return proxies;
+    return proxies.filter((p) => {
+      const ip = (snapshots[p.id]?.ip ?? "").toLowerCase();
+      const city = (snapshots[p.id]?.city ?? "").toLowerCase();
+      const isp = (snapshots[p.id]?.isp ?? "").toLowerCase();
+      return (
+        p.name.toLowerCase().includes(q) ||
+        p.host.toLowerCase().includes(q) ||
+        String(p.port).includes(q) ||
+        p.country.toLowerCase().includes(q) ||
+        p.notes.toLowerCase().includes(q) ||
+        p.username.toLowerCase().includes(q) ||
+        ip.includes(q) ||
+        city.includes(q) ||
+        isp.includes(q)
+      );
+    });
+  }, [proxies, snapshots, search]);
+
+  // Pagination over the filtered list.
   const PROXY_PAGE_SIZE = 20;
   const [proxyPage, setProxyPage] = useState(1);
-  const proxyPageCount = Math.max(1, Math.ceil(proxies.length / PROXY_PAGE_SIZE));
+  const proxyPageCount = Math.max(1, Math.ceil(filteredProxies.length / PROXY_PAGE_SIZE));
   useEffect(() => {
     if (proxyPage > proxyPageCount) setProxyPage(proxyPageCount);
   }, [proxyPageCount, proxyPage]);
+  // Reset to page 1 when the search narrows the list to fewer pages.
+  useEffect(() => { setProxyPage(1); }, [search]);
   const pagedProxies = useMemo(
-    () => proxies.slice((proxyPage - 1) * PROXY_PAGE_SIZE, proxyPage * PROXY_PAGE_SIZE),
-    [proxies, proxyPage],
+    () => filteredProxies.slice((proxyPage - 1) * PROXY_PAGE_SIZE, proxyPage * PROXY_PAGE_SIZE),
+    [filteredProxies, proxyPage],
   );
 
   const commitRename = async () => {
@@ -2176,6 +2445,8 @@ function ProxiesView() {
     } catch (e) { toast.err(String(e)); }
   };
   useEffect(() => { reload(); }, []);
+  // Pick up proxies/profiles added via the automation API or MCP live.
+  useStoreChanged(reload);
 
   // proxy_id → bound-profile count (O(n) tally; n is small).
   const profileCountByProxy = useMemo(() => {
@@ -2291,7 +2562,7 @@ function ProxiesView() {
 
   return (
     <section className="page">
-      <Topbar crumbs={["Workspace", "Proxies"]} search="" onSearch={() => {}} />
+      <Topbar crumbs={["Workspace", "Proxies"]} search={search} onSearch={setSearch} />
       <div className="page-title">
         <h1>Proxies</h1>
         <div className="page-actions">
@@ -2310,7 +2581,7 @@ function ProxiesView() {
               proxy so it's discoverable without opening any dialog. */}
           <button
             className="proxy-buy-cta"
-            onClick={() => { openUrl("https://proxyshard.com").catch(() => {}); }}
+            onClick={() => { openUrl(withUtm("https://proxyshard.com")).catch(() => {}); }}
             title="Open proxyshard.com — residential SOCKS5 with UDP_ASSOCIATE + p0f-spoofed exit"
           >
             <ShardMini /> Buy proxies <span className="muted">— UDP + p0f</span>
@@ -2637,6 +2908,17 @@ function fmtTs(stamp: string): string {
   return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+/// Format ms uptime as "1h 23m" / "12m 30s" / "45s".
+function fmtUptime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${sec.toString().padStart(2, "0")}s`;
+  return `${sec}s`;
+}
+
 type BulkRowState = {
   entry: ProxyEntry;
   selected: boolean;
@@ -2843,9 +3125,39 @@ host:8080               # no auth
 
 function ProxyEditor({ initial, onClose }: { initial: ProxyEntry; onClose: () => void }) {
   const [p, setP] = useState<ProxyEntry>(initial);
+  // DC/ISP proxies imported from a ProxyShard order carry the order id in
+  // notes — enables editing their p0f OS signature here.
+  const orderId = useMemo(() => {
+    const m = initial.notes.match(/ProxyShard order (\d+)/);
+    return m ? Number(m[1]) : null;
+  }, [initial.notes]);
+  const [sig, setSig] = useState("");
+  const [curSig, setCurSig] = useState("");
+  // Pull the IP's currently-set p0f signature from the order's active list.
+  useEffect(() => {
+    if (!orderId) return;
+    invoke<any>("ps_active", { orderId })
+      .then((r) => {
+        const found = (r.data ?? []).find((d: any) => d.ip === initial.host);
+        const s = found?.signature ?? "";
+        setSig(s);
+        setCurSig(s);
+      })
+      .catch(() => {});
+  }, [orderId]);
   const save = async () => {
-    try { await invoke("proxy_save", { entry: p }); toast.ok(initial.id ? "Proxy saved" : "Proxy added"); onClose(); }
-    catch (e) { toast.err(String(e)); }
+    try {
+      await invoke("proxy_save", { entry: p });
+      // Apply the p0f signature only when it changed to a non-empty value.
+      if (orderId && sig && sig !== curSig) {
+        try {
+          await invoke("ps_signature_set", { orderId, items: [{ ip: p.host, signature: sig }] });
+          toast.ok(`p0f set to ${sig}`);
+        } catch (e) { toast.err("p0f: " + String(e)); }
+      }
+      toast.ok(initial.id ? "Proxy saved" : "Proxy added");
+      onClose();
+    } catch (e) { toast.err(String(e)); }
   };
   return (
     <div className="dialog-bg" onClick={onClose}>
@@ -2873,6 +3185,18 @@ function ProxyEditor({ initial, onClose }: { initial: ProxyEntry; onClose: () =>
             <Field label="Username" value={p.username} onChange={(v: string) => setP({ ...p, username: v })} />
             <Field label="Password" value={p.password} onChange={(v: string) => setP({ ...p, password: v })} type="password" />
           </div>
+          {orderId && (
+            <div className="form-row">
+              <label>
+                <span className="lbl">
+                  p0f signature · order #{orderId}
+                  <span className="muted"> · current: {curSig || "none"}</span>
+                </span>
+                <CSSelect value={sig} onChange={setSig} options={PS_SIGNATURES} placeholder="Don't change" />
+              </label>
+              <div />
+            </div>
+          )}
         </div>
         <footer className="dialog-foot">
           <button className="btn-ghost" onClick={onClose}>Cancel</button>
@@ -3119,13 +3443,25 @@ function FolderModal({
   );
 }
 
-function TemplatePicker({ onPick, onClose }: { onPick: (id: string) => void; onClose: () => void }) {
-  const [lib, setLib] = useState<FingerprintEntry[]>([]);
+function TemplatePicker({
+  fingerprints,
+  onPick,
+  onClose,
+}: {
+  /** When passed in, skip the fingerprint_list IO and the visible mount
+   *  flash that used to happen while the 170-entry list streamed back. */
+  fingerprints?: FingerprintEntry[];
+  onPick: (id: string) => void;
+  onClose: () => void;
+}) {
+  const [lib, setLib] = useState<FingerprintEntry[]>(fingerprints ?? []);
   const [host, setHost] = useState<string>("");
   useEffect(() => {
-    invoke<FingerprintEntry[]>("fingerprint_list").then(setLib).catch(() => {});
+    if (!fingerprints) {
+      invoke<FingerprintEntry[]>("fingerprint_list").then(setLib).catch(() => {});
+    }
     invoke<string>("host_platform").then(setHost).catch(() => {});
-  }, []);
+  }, [fingerprints]);
   // Only host-matching fingerprints (UA/fonts/WebGL renderer are host-coupled).
   const tpls = host ? lib.filter((e) => e.platform === host) : [];
   return (
@@ -3223,8 +3559,10 @@ function FirstRunGate({ children }: { children: ReactNode }) {
         setInstalled(true);
         return;
       }
-      // Need both browser AND fingerprints installed.
-      if (status.installed && status.fingerprints_installed) {
+      // Reveal only when the engine + fingerprints are installed AND up to
+      // date. An available engine update (chromium version bump) falls through
+      // to the install path below, which re-downloads the changed archives.
+      if (status.installed && status.fingerprints_installed && !status.update_available) {
         setInstalled(true);
         return;
       }
@@ -3368,6 +3706,1030 @@ function VersionPill() {
   );
 }
 
+// ---- ProxyShard billing integration ----
+//
+// Talks to https://user-api.proxyshard.com via the ps_* Tauri commands
+// (Bearer key stored locally in psapi.json).  Sub-user management is
+// intentionally omitted — residential traffic is shown/topped-up at the
+// account-owner level only.
+
+type PsMe = { email: string; active_orders: number; wallet_balance: number };
+type PsOrder = {
+  order_id: number;
+  product_name: string;
+  cycle_name: string;
+  expires_at: string | null;
+  auto_renewal: boolean | null;
+  tag: string | null;
+};
+type PsProduct = { name: string; description?: string | null; location?: string | null; cycles: string[] };
+type PsCalc = { original_price: number; final_price: number; discount_percent: number; addons_price?: number; total_with_addons?: number };
+
+const fmtCents = (c: number) => `$${(Number(c || 0) / 100).toFixed(2)}`;
+const fmtGB = (bytes: number) => {
+  const gb = Number(bytes || 0) / 1024 ** 3;
+  return `${gb >= 100 ? gb.toFixed(0) : gb.toFixed(2)} GB`;
+};
+const isDcIsp = (name: string) => /datacenter|isp/i.test(name);
+
+// Residential relay gateway hosts for generated proxy strings (port depends
+// on protocol — see PS_PORT).
+const PS_RELAYS = [
+  "relay-eu.proxyshard.com",
+  "relay-ru.proxyshard.net",
+  "relay-ua.proxyshard.com",
+];
+// Relay ports differ by protocol: HTTP 8080, SOCKS5 1080.
+const PS_PORT = { http: 8080, socks5: 1080 } as const;
+type ResiType = "standart" | "premium" | "unmetered";
+// Username plan token per residential tier.
+const PS_PLAN: Record<ResiType, string> = { standart: "limited", premium: "premium", unmetered: "unlimited" };
+// proxy_type query param accepted by /proxies/{profile,countries,regions,cities}.
+const PS_PROXY_TYPE: Record<ResiType, string> = { standart: "standart", premium: "premium", unmetered: "unlimited" };
+// p0f OS-fingerprint signatures (signature/set endpoint enum).
+const PS_SIGNATURES: { value: string; label: string }[] = [
+  { value: "", label: "Don't set" },
+  { value: "ios", label: "iOS" },
+  { value: "macos", label: "macOS" },
+  { value: "android", label: "Android" },
+  { value: "linux", label: "Linux" },
+  { value: "win10", label: "Windows 10" },
+  { value: "win11", label: "Windows 11" },
+];
+// 12-char lowercase alnum sticky-session id (matches ProxyShard's `sid` form).
+const randSid = () => {
+  const a = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let s = "";
+  for (let i = 0; i < 12; i++) s += a[Math.floor(Math.random() * a.length)];
+  return s;
+};
+
+function ProxyShardView() {
+  // null = still loading the saved key from disk.
+  const [key, setKey] = useState<string | null>(null);
+  const [draft, setDraft] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [me, setMe] = useState<PsMe | null>(null);
+  const [status, setStatus] = useState<"idle" | "checking" | "ok" | "err">("idle");
+  const [err, setErr] = useState("");
+
+  const connect = async () => {
+    setStatus("checking");
+    setErr("");
+    try {
+      const m = await invoke<PsMe>("ps_me");
+      setMe(m);
+      setStatus("ok");
+    } catch (e) {
+      setMe(null);
+      setStatus("err");
+      setErr(String(e));
+    }
+  };
+
+  useEffect(() => {
+    invoke<string>("ps_get_key")
+      .then((k) => {
+        setKey(k);
+        setDraft(k);
+        if (k) connect();
+        else setStatus("idle");
+      })
+      .catch(() => setKey(""));
+  }, []);
+
+  const saveKey = async () => {
+    const next = draft.trim();
+    try {
+      await invoke("ps_set_key", { key: next });
+      setKey(next);
+      toast.ok("API key saved");
+      if (next) connect();
+      else { setMe(null); setStatus("idle"); }
+    } catch (e) { toast.err(String(e)); }
+  };
+
+  const connected = status === "ok";
+
+  return (
+    <section className="page ps-page">
+      <Topbar crumbs={["Workspace", "ProxyShard"]} search="" onSearch={() => {}} />
+
+      <div className="metric-strip">
+        <Metric label="Account" value={connected ? "Connected" : "—"} accent={connected} pulse={connected} />
+        <Metric label="Balance" value={me ? fmtCents(me.wallet_balance) : "—"} />
+        <Metric label="Active orders" value={me ? String(me.active_orders) : "—"} />
+      </div>
+
+      <div className="page-title">
+        <h1>ProxyShard</h1>
+        <div className="page-actions">
+          <button
+            className="proxy-buy-cta"
+            onClick={() => { openUrl(DASHBOARD_URL).catch(() => {}); }}
+            title="Open the ProxyShard dashboard in your browser"
+          >
+            <ShardMini /> Open dashboard
+          </button>
+        </div>
+      </div>
+
+      {/* API key — kept first so it's always on view. */}
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>API key</h3>
+        <p className="muted small">
+          Paste your ProxyShard <strong>API key</strong> (from the{" "}
+          <a href="#" onClick={(e) => { e.preventDefault(); openUrl(DASHBOARD_URL).catch(() => {}); }}>dashboard</a>).
+          It's stored locally and sent as <code>Authorization: Bearer …</code> to user-api.proxyshard.com.
+        </p>
+        <div className="ps-key-row">
+          <div className="copy-field ps-key-input">
+            <input
+              type={showKey ? "text" : "password"}
+              placeholder="paste API key…"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") saveKey(); }}
+            />
+            <button
+              type="button"
+              className="copy-icon"
+              title={showKey ? "Hide" : "Show"}
+              onClick={() => setShowKey((v) => !v)}
+            >
+              {showKey ? "Hide" : "Show"}
+            </button>
+          </div>
+          <button className="btn-primary" onClick={saveKey} disabled={draft.trim() === (key ?? "")}>Save</button>
+          <button className="btn-ghost" onClick={connect} disabled={!key || status === "checking"}>
+            {status === "checking" ? "Checking…" : "Test"}
+          </button>
+        </div>
+        <div className="ps-key-status">
+          {status === "checking" && <span className="muted small">Validating…</span>}
+          {connected && me && <span className="status-pill status-active">Connected · {me.email}</span>}
+          {status === "err" && <span className="status-pill status-failed" title={err}>Not connected — {err}</span>}
+          {status === "idle" && !key && <span className="muted small">No key set yet.</span>}
+        </div>
+      </div>
+
+      {connected ? (
+        <>
+          <PsResidentialCard />
+          <PsOrdersCard onChanged={connect} />
+          <PsBuyCard onPurchased={connect} />
+        </>
+      ) : (
+        <div className="card">
+          <p className="muted small">Add a valid API key above to view traffic, manage orders, and buy proxies.</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+/// Residential card: tier toggle (Standard / Premium / Unmetered), metered
+/// traffic for Standard/Premium, in-place top-up, and the relay proxy
+/// generator. Unmetered is a flat plan, so it skips the GB meter.
+function PsResidentialCard() {
+  const [type, setType] = useState<ResiType>("standart");
+  const [data, setData] = useState<{ data: number; data_remain: number; data_spent: number } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [orders, setOrders] = useState<PsOrder[]>([]);
+  const [topup, setTopup] = useState<PsOrder | null>(null);
+  const [genOpen, setGenOpen] = useState(false);
+  const [renewing, setRenewing] = useState(false);
+
+  const loadTraffic = async (t: ResiType) => {
+    setData(null);
+    setErr("");
+    if (t === "unmetered") return; // flat plan — no GB meter
+    setLoading(true);
+    try {
+      const r = await invoke<any>("ps_profile_traffic", { proxyType: t });
+      setData({ data: r.data ?? 0, data_remain: r.data_remain ?? 0, data_spent: r.data_spent ?? 0 });
+    } catch (e) { setErr(String(e)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { loadTraffic(type); }, [type]);
+  // Orders back the top-up / renew targets (need an order id).
+  const loadOrders = () =>
+    invoke<any>("ps_orders", { status: "all", limit: 100 })
+      .then((r) => setOrders(r.orders ?? []))
+      .catch(() => {});
+  useEffect(() => { loadOrders(); }, []);
+
+  const re = { standart: /standart\s+residential/i, premium: /premium\s+residential/i, unmetered: /unmetered\s+residential/i }[type];
+  const order = orders.find((o) => re.test(o.product_name)) ?? null;
+
+  const renew = async () => {
+    if (!order) return;
+    setRenewing(true);
+    try {
+      await invoke("ps_renew", { id: order.order_id });
+      toast.ok(`Renewed order #${order.order_id}`);
+      loadOrders();
+    } catch (e) { toast.err(String(e)); }
+    finally { setRenewing(false); }
+  };
+  const pct = data && data.data > 0 ? Math.min(100, Math.round((data.data_spent / data.data) * 100)) : 0;
+
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="ps-card-head">
+        <h3>Residential</h3>
+        <div className="ps-seg-toggle">
+          {(["standart", "premium", "unmetered"] as ResiType[]).map((t) => (
+            <button key={t} className={`ps-seg ${type === t ? "active" : ""}`} onClick={() => setType(t)}>
+              {t === "standart" ? "Standard" : t === "premium" ? "Premium" : "Unmetered"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {type !== "unmetered" ? (
+        <>
+          {loading && <p className="muted small">Loading…</p>}
+          {err && !loading && <p className="muted small">{err}</p>}
+          {data && !loading && (
+            <>
+              <div className="ps-traffic-stats">
+                <div><span className="ps-stat-val">{fmtGB(data.data_remain)}</span><span className="ps-stat-lbl">Remaining</span></div>
+                <div><span className="ps-stat-val">{fmtGB(data.data_spent)}</span><span className="ps-stat-lbl">Used</span></div>
+                <div><span className="ps-stat-val">{fmtGB(data.data)}</span><span className="ps-stat-lbl">Total</span></div>
+              </div>
+              <div className="ps-bar"><div className="ps-bar-fill" style={{ width: `${pct}%` }} /></div>
+              <p className="muted small">{pct}% used.</p>
+            </>
+          )}
+        </>
+      ) : (
+        <p className="muted small">
+          Unlimited plan{order?.expires_at ? ` · expires ${order.expires_at.slice(0, 10)}` : ""}.
+        </p>
+      )}
+
+      <div className="ps-buy-foot">
+        {type !== "unmetered" ? (
+          <button
+            className="btn-ghost"
+            disabled={!order}
+            title={order ? undefined : "No residential order found for this tier"}
+            onClick={() => order && setTopup(order)}
+          >
+            + Add traffic
+          </button>
+        ) : (
+          <button
+            className="btn-ghost"
+            disabled={!order || renewing}
+            title={order ? undefined : "No unmetered order found"}
+            onClick={renew}
+          >
+            {renewing ? "Renewing…" : "Renew"}
+          </button>
+        )}
+        <button className="btn-primary" onClick={() => setGenOpen(true)}><ShardMini /> Generate proxies</button>
+      </div>
+
+      {topup && <PsTopupModal order={topup} onClose={() => setTopup(null)} onDone={() => { setTopup(null); loadTraffic(type); }} />}
+      {genOpen && <PsResiGenerator type={type} onClose={() => setGenOpen(false)} />}
+    </div>
+  );
+}
+
+type PsLoc = { code: string; name: string };
+
+/// Build relay residential proxy strings (plan-country-region-city[-sid]) and
+/// save them locally. Password comes from /proxies/profile.
+function PsResiGenerator({ type, onClose }: { type: ResiType; onClose: () => void }) {
+  const plan = PS_PLAN[type];
+  const pt = PS_PROXY_TYPE[type];
+  const [password, setPassword] = useState("");
+  const [pwErr, setPwErr] = useState("");
+  const [relay, setRelay] = useState(PS_RELAYS[0]);
+  const [proto, setProto] = useState<"http" | "socks5">("socks5");
+  const [session, setSession] = useState<"rotating" | "sticky">("sticky");
+  const [count, setCount] = useState(1);
+  const [prefix, setPrefix] = useState(`${type} resi`);
+
+  const [countries, setCountries] = useState<PsLoc[]>([]);
+  const [country, setCountry] = useState("");
+  const [regions, setRegions] = useState<PsLoc[]>([]);
+  const [region, setRegion] = useState("");
+  const [cities, setCities] = useState<PsLoc[]>([]);
+  const [city, setCity] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    invoke<any>("ps_profile_traffic", { proxyType: pt })
+      .then((r) => {
+        const p = r.proxy_password ?? r.password ?? "";
+        setPassword(p);
+        if (!p) setPwErr("The API didn't return a residential password for this plan.");
+      })
+      .catch((e) => setPwErr(String(e)));
+    invoke<any>("ps_countries", { proxyType: pt })
+      .then((r) => setCountries(r.results ?? []))
+      .catch((e) => toast.err(String(e)));
+  }, [pt]);
+
+  // Region depends on country; city depends on region.
+  useEffect(() => {
+    setRegion(""); setRegions([]); setCity(""); setCities([]);
+    if (!country) return;
+    invoke<any>("ps_regions", { proxyType: pt, countryCode: country })
+      .then((r) => setRegions(r.results ?? [])).catch(() => {});
+  }, [country]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setCity(""); setCities([]);
+    if (!country || !region) return;
+    invoke<any>("ps_cities", { proxyType: pt, countryCode: country, regionCode: region })
+      .then((r) => setCities(r.results ?? [])).catch(() => {});
+  }, [region]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const buildUser = (sid: string | null) => {
+    const parts = [`plan-${plan}`];
+    if (country) parts.push(`country-${country.toLowerCase()}`);
+    if (region) parts.push(`region-${region}`);
+    if (city) parts.push(`city-${city}`);
+    if (sid) parts.push(`sid-${sid}`);
+    return parts.join("-");
+  };
+  const sampleUser = buildUser(session === "sticky" ? "‹sid›" : null);
+
+  const generate = async () => {
+    if (!password) { toast.err("No residential password available from the API"); return; }
+    const port = PS_PORT[proto];
+    const n = Math.max(1, Math.round(count));
+    const entries = Array.from({ length: n }, (_, i) => ({
+      id: "",
+      name: `${prefix.trim() || "resi"}${country ? " " + country.toUpperCase() : ""}${n > 1 ? ` #${i + 1}` : ""}`,
+      kind: proto,
+      host: relay,
+      port,
+      username: buildUser(session === "sticky" ? randSid() : null),
+      password,
+      country: country ? country.toUpperCase() : "",
+      notes: `ProxyShard residential (${plan})`,
+    }));
+    setSaving(true);
+    try {
+      const added = await invoke<number>("proxy_bulk_save", { entries });
+      toast.ok(added > 0 ? `Generated ${added} prox${added === 1 ? "y" : "ies"}` : "No new proxies (duplicates)");
+      onClose();
+    } catch (e) { toast.err(String(e)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="dialog-bg" onClick={onClose}>
+      <div className="dialog dialog-wide" onClick={(e) => e.stopPropagation()}>
+        <header className="dialog-head">
+          <h2><ShardMini /> Generate residential proxies — {plan}</h2>
+          <button className="icon-btn" onClick={onClose}>✕</button>
+        </header>
+        <div className="dialog-body">
+          <div className="form-row">
+            <label>
+              <span className="lbl">Relay</span>
+              <CSSelect value={relay} onChange={setRelay} options={PS_RELAYS.map((r) => ({ value: r, label: r }))} />
+            </label>
+            <label>
+              <span className="lbl">Protocol</span>
+              <div className="ps-seg-toggle">
+                <button className={`ps-seg ${proto === "http" ? "active" : ""}`} onClick={() => setProto("http")}>HTTP</button>
+                <button className={`ps-seg ${proto === "socks5" ? "active" : ""}`} onClick={() => setProto("socks5")}>SOCKS5</button>
+              </div>
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              <span className="lbl">Country</span>
+              <CSSelect
+                value={country}
+                onChange={setCountry}
+                placeholder="Any"
+                options={[{ value: "", label: "Any" }, ...countries.map((c) => ({ value: c.code, label: `${c.name} (${c.code})` }))]}
+              />
+            </label>
+            <label>
+              <span className="lbl">Session</span>
+              <div className="ps-seg-toggle">
+                <button className={`ps-seg ${session === "rotating" ? "active" : ""}`} onClick={() => setSession("rotating")}>Rotating</button>
+                <button className={`ps-seg ${session === "sticky" ? "active" : ""}`} onClick={() => setSession("sticky")}>Sticky</button>
+              </div>
+            </label>
+          </div>
+          <div className="form-row">
+            <label>
+              <span className="lbl">Region</span>
+              <CSSelect
+                value={region}
+                onChange={setRegion}
+                placeholder={country ? "Any" : "Pick country first"}
+                options={[{ value: "", label: "Any" }, ...regions.map((r) => ({ value: r.code, label: r.name }))]}
+              />
+            </label>
+            <label>
+              <span className="lbl">City</span>
+              <CSSelect
+                value={city}
+                onChange={setCity}
+                placeholder={region ? "Any" : "Pick region first"}
+                options={[{ value: "", label: "Any" }, ...cities.map((c) => ({ value: c.code, label: c.name }))]}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            <Field label="Name prefix" value={prefix} onChange={setPrefix} />
+            <NumField label={session === "sticky" ? "Count (random sid each)" : "Count"} value={count} onChange={(v) => setCount(Math.max(1, Math.round(v)))} />
+          </div>
+          <div className="ps-gen-preview mono small">
+            {relay}:{PS_PORT[proto]}:{sampleUser}:{password ? "••••" : "?"}
+          </div>
+          {pwErr && <p className="muted small">{pwErr}</p>}
+        </div>
+        <footer className="dialog-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={generate} disabled={saving || !password}>
+            <Icon.Download /> {saving ? "Generating…" : `Generate ${Math.max(1, Math.round(count))}`}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+/// Orders list: add DC/ISP proxies to the local list, top up residential
+/// traffic, edit the tag, or renew an on-hold order. Mobile proxies are
+/// hidden (they aren't manageable from here), and the list is paginated.
+const PS_ORDERS_PAGE = 10;
+function PsOrdersCard({ onChanged }: { onChanged: () => void }) {
+  const [status, setStatus] = useState("active");
+  const [orders, setOrders] = useState<PsOrder[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState<Record<number, boolean>>({});
+  const [offset, setOffset] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const [importing, setImporting] = useState<PsOrder | null>(null);
+  const [tagging, setTagging] = useState<PsOrder | null>(null);
+
+  const load = async (off = offset) => {
+    setLoading(true);
+    try {
+      const r = await invoke<any>("ps_orders", { status, offset: off, limit: PS_ORDERS_PAGE });
+      setOrders(r.orders ?? []);
+      // `next` is a page URI when more results exist (nullable).
+      setHasNext(!!r.next);
+    } catch (e) { toast.err(String(e)); }
+    finally { setLoading(false); }
+  };
+  // Reset to the first page whenever the status filter changes.
+  useEffect(() => { setOffset(0); load(0); }, [status]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const setB = (id: number, v: boolean) => setBusy((s) => ({ ...s, [id]: v }));
+
+  const renew = async (o: PsOrder) => {
+    setB(o.order_id, true);
+    try {
+      await invoke("ps_renew", { id: o.order_id });
+      toast.ok(`Renewed order #${o.order_id}`);
+      load();
+      onChanged();
+    } catch (e) { toast.err(String(e)); }
+    finally { setB(o.order_id, false); }
+  };
+
+  const go = (next: boolean) => {
+    const off = Math.max(0, offset + (next ? PS_ORDERS_PAGE : -PS_ORDERS_PAGE));
+    setOffset(off);
+    load(off);
+  };
+
+  // Orders here are Datacenter/ISP only — residential is managed in the
+  // Residential card, mobile isn't manageable from the launcher.
+  const visible = orders.filter((o) => isDcIsp(o.product_name));
+
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <div className="ps-card-head">
+        <h3>Orders</h3>
+        <div className="row-inline" style={{ gap: 8 }}>
+          <div style={{ width: 130 }}>
+            <CSSelect
+              value={status}
+              onChange={setStatus}
+              options={[
+                { value: "active", label: "Active" },
+                { value: "on-hold", label: "On hold" },
+                { value: "cancelled", label: "Cancelled" },
+                { value: "all", label: "All" },
+              ]}
+            />
+          </div>
+          <button className="icon-btn" onClick={() => load()} title="Refresh"><Icon.Refresh /></button>
+        </div>
+      </div>
+      {loading && <p className="muted small">Loading…</p>}
+      {!loading && visible.length === 0 && <p className="muted small">No orders for this filter.</p>}
+      {!loading && visible.length > 0 && (
+        <div className="rows ps-orders">
+          {visible.map((o) => (
+            <div key={o.order_id} className="row ps-order-row">
+              <div className="ps-order-main">
+                <span className="ps-order-name">{o.product_name}</span>
+                <span className="muted small">
+                  #{o.order_id} · {o.cycle_name}
+                  {o.tag && o.tag !== "none" ? ` · ${o.tag}` : ""}
+                  {o.expires_at ? ` · until ${o.expires_at.slice(0, 10)}` : ""}
+                </span>
+              </div>
+              <div className="row-actions ps-order-actions">
+                <button className="btn-ghost btn-sm" onClick={() => setImporting(o)} title="Pick which proxies to add to your list">
+                  <Icon.Download /> Add to proxies
+                </button>
+                <button className="icon-btn" onClick={() => setTagging(o)} title="Edit tag"><Icon.Edit /></button>
+                {status === "on-hold" && (
+                  <button className="btn-ghost btn-sm" disabled={busy[o.order_id]} onClick={() => renew(o)}>Renew</button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {!loading && (offset > 0 || hasNext) && (
+        <div className="pager">
+          <button className="btn-ghost btn-sm" disabled={offset <= 0} onClick={() => go(false)}>‹ Prev</button>
+          <span className="pager-info">Page {Math.floor(offset / PS_ORDERS_PAGE) + 1}</span>
+          <button className="btn-ghost btn-sm" disabled={!hasNext} onClick={() => go(true)}>Next ›</button>
+        </div>
+      )}
+      {importing && (
+        <PsImportModal order={importing} onClose={() => setImporting(null)} />
+      )}
+      {tagging && (
+        <PsTagModal order={tagging} onClose={() => setTagging(null)} onDone={() => { setTagging(null); load(); }} />
+      )}
+    </div>
+  );
+}
+
+/// Active-proxy picker: fetch an order's proxies, choose SOCKS5/HTTP and which
+/// IPs to import into the local proxy list (via proxy_bulk_save, which dedups).
+type PsActiveProxy = { ip: string; username: string; password: string; http_port: number; socks_port: number; until: string; status: string; signature?: string | null };
+function PsImportModal({ order, onClose }: { order: PsOrder; onClose: () => void }) {
+  const [items, setItems] = useState<PsActiveProxy[] | null>(null);
+  const [err, setErr] = useState("");
+  const [kind, setKind] = useState<"socks5" | "http">("socks5");
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState(false);
+  const [tag, setTag] = useState("");
+  // Per-IP p0f signature ("" = leave unchanged).
+  const [sigByIp, setSigByIp] = useState<Record<string, string>>({});
+  // p0f slot accounting from the order detail (available vs already used).
+  const [slots, setSlots] = useState<{ avail: number; used: number } | null>(null);
+
+  useEffect(() => {
+    invoke<any>("ps_active", { orderId: order.order_id })
+      .then((r) => {
+        const data: PsActiveProxy[] = r.data ?? [];
+        setItems(data);
+        setSel(new Set(data.map((d) => d.ip))); // select all by default
+        // Prefill each row with its currently-set signature.
+        setSigByIp(Object.fromEntries(data.map((d) => [d.ip, d.signature ?? ""])));
+        setTag((r.order_tag && r.order_tag !== "none" ? r.order_tag : "") || `order ${order.order_id}`);
+      })
+      .catch((e) => setErr(String(e)));
+    invoke<any>("ps_order", { id: order.order_id })
+      .then((r) => {
+        const o = r.order ?? {};
+        setSlots({ avail: o.p0f_slots_available ?? 0, used: o.p0f_slots_used ?? 0 });
+      })
+      .catch(() => {});
+  }, [order.order_id]);
+
+  const toggle = (ip: string) =>
+    setSel((s) => { const n = new Set(s); n.has(ip) ? n.delete(ip) : n.add(ip); return n; });
+
+  const allChecked = !!items && items.length > 0 && items.every((d) => sel.has(d.ip));
+  const toggleAll = () =>
+    setSel(allChecked ? new Set() : new Set((items ?? []).map((d) => d.ip)));
+
+  // p0f can be assigned only while free slots remain.
+  const canSetP0f = !!slots && slots.avail > slots.used;
+  const free = slots ? Math.max(0, slots.avail - slots.used) : 0;
+  const setSig = (ip: string, v: string) => setSigByIp((m) => ({ ...m, [ip]: v }));
+
+  const save = async () => {
+    if (!items) return;
+    const chosen = items.filter((d) => sel.has(d.ip));
+    if (chosen.length === 0) { toast.err("Select at least one proxy"); return; }
+    const label = tag.trim() || `order ${order.order_id}`;
+    const entries = chosen
+      .map((d) => {
+        const port = kind === "http" ? d.http_port : d.socks_port;
+        if (!d.ip || !port) return null;
+        return {
+          id: "",
+          name: `${label} · ${d.ip}`,
+          kind,
+          host: d.ip,
+          port,
+          username: d.username ?? "",
+          password: d.password ?? "",
+          country: "",
+          notes: `ProxyShard order ${order.order_id}`,
+        };
+      })
+      .filter(Boolean);
+    setSaving(true);
+    try {
+      const n = await invoke<number>("proxy_bulk_save", { entries });
+      toast.ok(n > 0 ? `Added ${n} prox${n === 1 ? "y" : "ies"}` : "No new proxies (already in your list)");
+      // Apply only the selected proxies whose signature actually changed
+      // (a non-empty value differing from the one already set).
+      const sigItems = chosen
+        .filter((d) => { const v = sigByIp[d.ip] ?? ""; return v !== "" && v !== (d.signature ?? ""); })
+        .map((d) => ({ ip: d.ip, signature: sigByIp[d.ip] }));
+      if (sigItems.length > 0) {
+        try {
+          await invoke("ps_signature_set", { orderId: order.order_id, items: sigItems });
+          toast.ok(`Set p0f on ${sigItems.length} IP${sigItems.length === 1 ? "" : "s"}`);
+        } catch (e) { toast.err("Signature: " + String(e)); }
+      }
+      onClose();
+    } catch (e) { toast.err(String(e)); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="dialog-bg" onClick={onClose}>
+      <div className="dialog dialog-wide" onClick={(e) => e.stopPropagation()}>
+        <header className="dialog-head">
+          <h2><ShardMini /> Add proxies — {order.product_name} #{order.order_id}</h2>
+          <button className="icon-btn" onClick={onClose}>✕</button>
+        </header>
+        <div className="dialog-body">
+          <div className="ps-import-top">
+            <div style={{ flex: 1 }}>
+              <Field label="Name prefix" value={tag} onChange={setTag} />
+            </div>
+            <div className="ps-seg-toggle">
+              <button className={`ps-seg ${kind === "socks5" ? "active" : ""}`} onClick={() => setKind("socks5")}>SOCKS5</button>
+              <button className={`ps-seg ${kind === "http" ? "active" : ""}`} onClick={() => setKind("http")}>HTTP</button>
+            </div>
+          </div>
+          {slots && (
+            <p className="muted small" style={{ marginBottom: 6 }}>
+              p0f slots: {slots.used}/{slots.avail} used
+              {canSetP0f ? ` · ${free} free — set a signature per proxy below` : " · no free slots (buy more to assign p0f)"}
+            </p>
+          )}
+          {!items && !err && <p className="muted small">Loading proxies…</p>}
+          {err && <p className="muted small">{err}</p>}
+          {items && items.length === 0 && <p className="muted small">This order has no active proxies.</p>}
+          {items && items.length > 0 && (
+            <div className="rows ps-import-list">
+              <div className="row ps-import-head">
+                <input type="checkbox" checked={allChecked} onChange={toggleAll} title="Select all" />
+                <span className="muted small">{sel.size} of {items.length} selected</span>
+                <span className="muted small" style={{ textAlign: "right" }}>{canSetP0f ? "p0f" : ""}</span>
+              </div>
+              {items.map((d) => {
+                const port = kind === "http" ? d.http_port : d.socks_port;
+                return (
+                  <div key={d.ip} className="row ps-import-row">
+                    <input type="checkbox" checked={sel.has(d.ip)} onChange={() => toggle(d.ip)} />
+                    <span className="mono small cell-click" onClick={() => toggle(d.ip)}>{d.ip}:{port}</span>
+                    <span className="muted small">{d.username}</span>
+                    <span className={`status-pill ${d.status === "active" ? "status-active" : ""}`}>{d.status}</span>
+                    {(canSetP0f || d.signature) ? (
+                      // Editable when free slots exist, or this IP is already
+                      // signed (re-assigning an OS doesn't consume a slot).
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <CSSelect value={sigByIp[d.ip] ?? ""} onChange={(v) => setSig(d.ip, v)} options={PS_SIGNATURES} placeholder="p0f" />
+                      </div>
+                    ) : (
+                      <span className="muted small" style={{ textAlign: "right" }}>—</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+        <footer className="dialog-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={save} disabled={saving || !items || sel.size === 0}>
+            <Icon.Download /> {saving ? "Adding…" : `Add ${sel.size}`}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function PsTagModal({ order, onClose, onDone }: { order: PsOrder; onClose: () => void; onDone: () => void }) {
+  const [tag, setTag] = useState(order.tag && order.tag !== "none" ? order.tag : "");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await invoke("ps_set_tag", { id: order.order_id, tag: tag.trim() || "none" });
+      toast.ok(`Tag updated for #${order.order_id}`);
+      onDone();
+    } catch (e) { toast.err(String(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="dialog-bg" onClick={onClose}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <header className="dialog-head">
+          <h2><Icon.Edit /> Edit tag</h2>
+          <button className="icon-btn" onClick={onClose}>✕</button>
+        </header>
+        <div className="dialog-body">
+          <p className="muted small">{order.product_name} · order #{order.order_id}</p>
+          <Field label="Tag" value={tag} onChange={setTag} placeholder="leave empty to clear" />
+        </div>
+        <footer className="dialog-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={submit} disabled={busy}><ShardMini /> {busy ? "Saving…" : "Save"}</button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+function PsTopupModal({ order, onClose, onDone }: { order: PsOrder; onClose: () => void; onDone: () => void }) {
+  const [amount, setAmount] = useState(5);
+  const [promo, setPromo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (amount < 1) { toast.err("Amount must be at least 1 GB"); return; }
+    setBusy(true);
+    try {
+      await invoke("ps_add_bandwidth", { id: order.order_id, amount, promoCode: promo.trim() || null });
+      toast.ok(`Added ${amount} GB to order #${order.order_id}`);
+      onDone();
+    } catch (e) { toast.err(String(e)); }
+    finally { setBusy(false); }
+  };
+  return (
+    <div className="dialog-bg" onClick={onClose}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <header className="dialog-head">
+          <h2><ShardMini /> Add traffic</h2>
+          <button className="icon-btn" onClick={onClose}>✕</button>
+        </header>
+        <div className="dialog-body">
+          <p className="muted small">{order.product_name} · order #{order.order_id}</p>
+          <NumField label="Amount (GB)" value={amount} onChange={(v) => setAmount(Math.max(1, Math.round(v)))} />
+          <Field label="Promo code (optional)" value={promo} onChange={setPromo} />
+        </div>
+        <footer className="dialog-foot">
+          <button className="btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn-primary" onClick={submit} disabled={busy}>
+            <ShardMini /> {busy ? "Buying…" : `Buy ${amount} GB`}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
+}
+
+type PsBuyOption = { name: string; cycles: string[]; locations: string[] };
+
+/// available-count product code for a base product name.
+const availCode = (name: string) => (/datacenter/i.test(name) ? "dc" : /isp/i.test(name) ? "isp" : "");
+
+/// Buy a new order. DC/ISP can be bought repeatedly (quantity + country);
+/// residential products can only be owned once, so any already-owned tier is
+/// hidden here (top it up from the Residential card instead).
+function PsBuyCard({ onPurchased }: { onPurchased: () => void }) {
+  const [options, setOptions] = useState<PsBuyOption[]>([]);
+  const [avail, setAvail] = useState<Record<string, number>>({});
+  const [productName, setProductName] = useState("");
+  const [cycle, setCycle] = useState("");
+  const [country, setCountry] = useState("");
+  const [quantity, setQuantity] = useState(1);
+  const [promo, setPromo] = useState("");
+  const [autoRenew, setAutoRenew] = useState(false);
+  const [buyP0f, setBuyP0f] = useState(false);
+  const [calc, setCalc] = useState<PsCalc | null>(null);
+  const [calcing, setCalcing] = useState(false);
+  const [buying, setBuying] = useState(false);
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const [prodRes, orderRes] = await Promise.all([
+          invoke<any>("ps_products"),
+          invoke<any>("ps_orders", { status: "all", limit: 100 }),
+        ]);
+        // Already-owned product names (any status) — used to hide
+        // single-purchase residential tiers from the buy list.
+        const owned = new Set<string>((orderRes.orders ?? []).map((o: PsOrder) => o.product_name));
+        // Collapse the per-location product rows into one option per name,
+        // keeping the set of locations (DC/ISP country picker). Drop mobile,
+        // and drop residential tiers already owned.
+        const byName = new Map<string, PsBuyOption>();
+        for (const p of (prodRes.products ?? []) as PsProduct[]) {
+          if (/mobile/i.test(p.name)) continue;
+          if (!isDcIsp(p.name) && owned.has(p.name)) continue;
+          const o = byName.get(p.name) ?? { name: p.name, cycles: p.cycles ?? [], locations: [] };
+          if (p.location && !o.locations.includes(p.location)) o.locations.push(p.location);
+          byName.set(p.name, o);
+        }
+        const list = [...byName.values()];
+        setOptions(list);
+        if (list[0]) {
+          setProductName(list[0].name);
+          setCycle(list[0].cycles?.[0] ?? "");
+          setCountry(isDcIsp(list[0].name) ? (list[0].locations[0] ?? "") : "");
+        }
+      } catch (e) { toast.err(String(e)); }
+      // available-count is best-effort (badge only).
+      try {
+        const arr = await invoke<any>("ps_available_count");
+        const m: Record<string, number> = {};
+        for (const a of (arr ?? []) as { country: string; product: string; amount: number }[]) {
+          m[`${String(a.product).toLowerCase()}|${String(a.country).toUpperCase()}`] = a.amount;
+        }
+        setAvail(m);
+      } catch { /* ignore */ }
+      setReady(true);
+    })();
+  }, []);
+
+  const product = useMemo(() => options.find((p) => p.name === productName) ?? null, [options, productName]);
+  const needLocation = isDcIsp(productName);
+
+  // Reset dependent fields + stale price when the product changes.
+  useEffect(() => {
+    setCycle(product?.cycles?.[0] ?? "");
+    setCountry(product && isDcIsp(product.name) ? (product.locations[0] ?? "") : "");
+    setCalc(null);
+  }, [productName]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const availForCountry = needLocation && country ? avail[`${availCode(productName)}|${country.toUpperCase()}`] : undefined;
+
+  const buildBody = () => {
+    const body: any = { product: productName };
+    if (cycle) body.cycle = cycle;
+    if (needLocation && country) body.location = country;
+    if (quantity) body.quantity = quantity;
+    if (promo.trim()) body.promo_code = promo.trim();
+    if (autoRenew) body.auto_renewal = true;
+    const addons = p0fAddons();
+    if (addons) body.addons = addons;
+    return body;
+  };
+
+  // p0f slots — one per proxy, only meaningful for DC/ISP. null when off.
+  const p0fAddons = () => (needLocation && buyP0f ? [{ addon_key: "p0f_slots", qty: quantity }] : null);
+
+  const fetchCalc = async (): Promise<PsCalc> => {
+    const addons = p0fAddons();
+    const r = await invoke<any>("ps_calculate", {
+      product: productName,
+      location: needLocation ? country || null : null,
+      cycle: cycle || null,
+      quantity,
+      promoCode: promo.trim() || null,
+      addonsJson: addons ? JSON.stringify(addons) : null,
+    });
+    return {
+      original_price: r.original_price ?? 0,
+      final_price: r.final_price ?? 0,
+      discount_percent: r.discount_percent ?? 0,
+      addons_price: r.addons_price ?? 0,
+      total_with_addons: r.total_with_addons,
+    };
+  };
+
+  const calculate = async () => {
+    setCalcing(true);
+    setCalc(null);
+    try { setCalc(await fetchCalc()); }
+    catch (e) { toast.err(String(e)); }
+    finally { setCalcing(false); }
+  };
+
+  const buy = async () => {
+    if (needLocation && !country) { toast.err("Pick a location for Datacenter/ISP proxies"); return; }
+    // Auto-calculate when the user hasn't pressed Calculate, so the confirm
+    // shows the real total (incl. add-ons) instead of a placeholder.
+    let c = calc;
+    if (!c) {
+      try { c = await fetchCalc(); setCalc(c); } catch { /* show placeholder below */ }
+    }
+    const price = c ? fmtCents(c.total_with_addons ?? c.final_price) : "this order";
+    const ok = await confirmModal({
+      title: "Confirm purchase",
+      message: `Buy ${quantity} × ${productName}${cycle ? ` (${cycle})` : ""} for ${price}? Your wallet will be charged.`,
+      buttons: [
+        { label: "Cancel", value: false },
+        { label: "Buy", value: true, primary: true },
+      ],
+    });
+    if (ok !== true) return;
+    setBuying(true);
+    try {
+      const r = await invoke<any>("ps_purchase", { body: buildBody() });
+      toast.ok(r.message ? `${r.message}${r.order_id ? ` (#${r.order_id})` : ""}` : "Order placed");
+      setCalc(null);
+      onPurchased();
+    } catch (e) { toast.err(String(e)); }
+    finally { setBuying(false); }
+  };
+
+  return (
+    <div className="card" style={{ marginBottom: 14 }}>
+      <h3>Buy proxies</h3>
+      {!ready ? (
+        <p className="muted small">Loading products…</p>
+      ) : options.length === 0 ? (
+        <p className="muted small">Nothing available to buy right now.</p>
+      ) : (
+        <>
+          <div className="form-row">
+            <label>
+              <span className="lbl">Product</span>
+              <CSSelect
+                value={productName}
+                onChange={setProductName}
+                options={options.map((p) => ({ value: p.name, label: p.name }))}
+              />
+            </label>
+            <label>
+              <span className="lbl">Billing cycle</span>
+              <CSSelect
+                value={cycle}
+                onChange={setCycle}
+                placeholder="—"
+                options={(product?.cycles?.length ? product.cycles : []).map((c) => ({ value: c, label: c }))}
+              />
+            </label>
+          </div>
+          <div className="form-row">
+            {needLocation ? (
+              <label>
+                <span className="lbl">
+                  Location{availForCountry != null && <span className="muted"> · {availForCountry} available</span>}
+                </span>
+                <CSSelect
+                  value={country}
+                  onChange={setCountry}
+                  placeholder="Pick a country"
+                  options={(product?.locations ?? []).map((l) => ({ value: l, label: l }))}
+                />
+              </label>
+            ) : (
+              <div />
+            )}
+            <NumField label="Quantity" value={quantity} onChange={(v) => { setQuantity(Math.max(1, Math.round(v))); setCalc(null); }} />
+          </div>
+          <div className="form-row">
+            <Field label="Promo code (optional)" value={promo} onChange={setPromo} />
+            <label className="row-inline" style={{ alignItems: "center", marginTop: 22 }}>
+              <input type="checkbox" checked={autoRenew} onChange={(e) => setAutoRenew(e.target.checked)} />
+              <span className="lbl">Auto-renew</span>
+            </label>
+          </div>
+          {needLocation && (
+            <label className="row-inline" style={{ marginBottom: 4 }}>
+              <input type="checkbox" checked={buyP0f} onChange={(e) => { setBuyP0f(e.target.checked); setCalc(null); }} />
+              <span className="lbl">Add p0f signature slots for all {quantity} prox{quantity === 1 ? "y" : "ies"}</span>
+            </label>
+          )}
+          <div className="ps-buy-foot">
+            <button className="btn-ghost" onClick={calculate} disabled={calcing || !productName}>
+              {calcing ? "Calculating…" : "Calculate price"}
+            </button>
+            {calc && (
+              <span className="ps-price">
+                {calc.discount_percent > 0 && <span className="ps-price-orig">{fmtCents(calc.original_price)}</span>}
+                <span className="ps-price-final">{fmtCents(calc.total_with_addons ?? calc.final_price)}</span>
+                {calc.discount_percent > 0 && <span className="status-pill status-active">-{calc.discount_percent}%</span>}
+                {!!calc.addons_price && calc.addons_price > 0 && (
+                  <span className="muted small">incl. {fmtCents(calc.addons_price)} p0f</span>
+                )}
+              </span>
+            )}
+            <button className="btn-primary" onClick={buy} disabled={buying || !productName}>
+              <ShardMini /> {buying ? "Buying…" : "Buy"}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SettingsView() {
   const [s, setS] = useState<Settings>({
     profile_storage_path: null,
@@ -3483,7 +4845,7 @@ function SettingsView() {
             href="#"
             onClick={(e) => {
               e.preventDefault();
-              openUrl("https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true").catch(() => {});
+              openUrl(withUtm("https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true")).catch(() => {});
             }}
           >
             Full API reference →

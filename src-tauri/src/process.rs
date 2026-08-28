@@ -3,6 +3,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 use tokio::process::Child;
 use uuid::Uuid;
 
@@ -24,6 +25,8 @@ struct ChildEntry {
     state: ProcessState,
     /// Set once DevToolsActivePort is read; None for UI launches.
     cdp: Option<CdpInfo>,
+    /// Process start; serialised as elapsed ms in RunningProfile.
+    started_at: Instant,
 }
 
 /// CDP endpoint for an API-launched profile.
@@ -67,6 +70,7 @@ impl Tracker {
                     generation,
                     state: ProcessState::Running,
                     cdp: None,
+                    started_at: Instant::now(),
                 },
             );
         }
@@ -74,6 +78,7 @@ impl Tracker {
 
         // Graceful shutdown (SIGTERM / taskkill WM_CLOSE) → 5s → hard kill.
         // Graceful path flushes session state so next launch skips the restore prompt.
+        let started_at = Instant::now();
         tokio::spawn(async move {
             tokio::select! {
                 _ = child.wait() => {}
@@ -87,10 +92,13 @@ impl Tracker {
                     }
                     #[cfg(windows)]
                     {
+                        use std::os::windows::process::CommandExt;
                         if let Some(p) = child.id() {
                             // taskkill /PID without /F posts WM_CLOSE for clean shutdown.
+                            // 0x08000000 = CREATE_NO_WINDOW — suppress the console flash.
                             let _ = std::process::Command::new("taskkill")
                                 .args(["/PID", &p.to_string()])
+                                .creation_flags(0x08000000)
                                 .stdout(std::process::Stdio::null())
                                 .stderr(std::process::Stdio::null())
                                 .status();
@@ -107,6 +115,14 @@ impl Tracker {
                 }
             }
             let owns_profile = Self::remove_generation(&entries, &profile_id, generation);
+            // Bump the persisted total runtime; non-temporary only (temp
+            // profiles get deleted next line so their counter is moot).
+            if owns_profile && !temporary {
+                let elapsed_ms = started_at.elapsed().as_millis() as u64;
+                if let Err(e) = crate::profile::add_runtime(&profile_id, elapsed_ms) {
+                    eprintln!("[launcher] add_runtime({profile_id}) failed: {e}");
+                }
+            }
             // Tear down temporary profile (config + udd) only when this monitor
             // still owns the profile. A stale monitor must not delete a newer run.
             if temporary && owns_profile {
@@ -163,6 +179,7 @@ impl Tracker {
                 profile_id: id.clone(),
                 pid: e.pid,
                 cdp: e.cdp.clone(),
+                uptime_ms: e.started_at.elapsed().as_millis() as u64,
             })
             .collect()
     }
@@ -217,6 +234,9 @@ pub struct RunningProfile {
     pub pid: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cdp: Option<CdpInfo>,
+    /// Milliseconds since the engine was spawned; frontend formats as
+    /// "1h 23m" / "12m 30s" / "45s".
+    pub uptime_ms: u64,
 }
 
 #[cfg(test)]
@@ -262,6 +282,7 @@ mod tests {
                 generation: new_generation,
                 state: ProcessState::Running,
                 cdp: None,
+                started_at: std::time::Instant::now(),
             },
         );
 

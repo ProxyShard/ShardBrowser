@@ -2,7 +2,7 @@
 // library from the ProxyShard CDN, extract into a per-user cache dir,
 // place Widevine inside the engine bundle, remember etags so subsequent
 // runs are zero-network. Mirrors src-tauri/src/runtime.rs in the launcher.
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, chmodSync, copyFileSync } from "node:fs";
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync, chmodSync, copyFileSync, lstatSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { homedir, platform as osPlatform, arch as osArch } from "node:os";
 import { join, dirname, resolve } from "node:path";
@@ -12,7 +12,11 @@ import { spawnSync } from "node:child_process";
 import AdmZip from "adm-zip";
 
 export const PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
-export const CHROMIUM_VERSION = "148.0.7778.216";
+export const CHROMIUM_VERSION = "149.0.7827.103";
+// Version manifest (GitHub raw) — one tiny GET yields every archive's current
+// etag, so we never poll R2/S3 (no per-archive HEAD). Changed archives are then
+// pulled from PUB_BASE.
+export const MANIFEST_URL = "https://raw.githubusercontent.com/ProxyShard/ShardBrowser/main/runtime.json";
 
 export function defaultCacheDir(): string {
   const plat = osPlatform();
@@ -74,6 +78,10 @@ interface Manifest {
   browser_etag?: string;
   widevine_etag?: string;
   fingerprints_etag?: string;
+  /** Chromium version of the engine binary last extracted on disk. The update
+   *  is detected by comparing this (or the on-disk version) to the manifest's
+   *  chromium version — robust where the etag check failed. */
+  installed_chromium_version?: string;
 }
 
 export class Runtime {
@@ -85,6 +93,13 @@ export class Runtime {
    *  skip the R2 HEAD round-trip (~1 s over a clean connection).  Cleared
    *  by `install({force: true})`. */
   private _checkedInProcess = false;
+  /** Engine chromium version from the manifest (fallback to the build-time
+   *  constant). Used by launch to normalise profile UA + client_hints. */
+  private _chromiumVersion: string = CHROMIUM_VERSION;
+  /** GREASE brand/version from the manifest (rotates per release; can't be
+   *  derived from the version number). Applied to profiles on launch. */
+  private _greaseBrand?: string;
+  private _greaseVersion?: string;
 
   constructor(opts: { cacheDir?: string; progress?: ProgressCb; profilesDir?: string } = {}) {
     this.root = opts.cacheDir ?? defaultCacheDir();
@@ -110,6 +125,43 @@ export class Runtime {
     return d;
   }
   get installed(): boolean    { return existsSync(this.binaryPath); }
+  /** Engine chromium version (manifest-driven; set on install()). */
+  get chromiumVersion(): string { return this._chromiumVersion; }
+  /** GREASE brand from the manifest (e.g. "Not)A;Brand"); set on install(). */
+  get greaseBrand(): string | undefined { return this._greaseBrand; }
+  /** GREASE version from the manifest (e.g. "24"); set on install(). */
+  get greaseVersion(): string | undefined { return this._greaseVersion; }
+
+  /** Chromium version of the engine actually on disk (mac Framework
+   *  `Versions/<ver>/`, win `<ver>.manifest`), or undefined on Linux. */
+  private installedEngineVersion(): string | undefined {
+    try {
+      const plat = osPlatform();
+      if (plat === "darwin") {
+        const versions = join(this.root, "ShardX-Mac-arm64", "ShardX.app", "Contents",
+          "Frameworks", "ShardX Framework.framework", "Versions");
+        const v = readdirSync(versions).find((n) => n !== "Current" && /^\d/.test(n));
+        return v;
+      }
+      if (plat === "win32") {
+        // Only accept a `<version>.manifest` whose stem parses as a version,
+        // so a stray/leftover manifest can't feed a bogus version.
+        return readdirSync(join(this.root, "ShardX-Windows"))
+          .filter((f) => f.endsWith(".manifest"))
+          .map((f) => f.replace(/\.manifest$/, ""))
+          .find((s) => /^\d/.test(s) && s.includes("."));
+      }
+      return undefined; // linux: no on-disk version marker
+    } catch { return undefined; }
+  }
+
+  /** Effective installed version. Trusts the version recorded at install time
+   *  (authoritative — written only after a successful extract) over re-reading
+   *  it off disk, which can carry stale files from a previous version. On-disk
+   *  detection is the fallback for legacy installs with no recorded version. */
+  private effectiveInstalledVersion(local: Manifest): string | undefined {
+    return local.installed_chromium_version ?? this.installedEngineVersion();
+  }
 
   // ---- manifest ----
 
@@ -127,41 +179,70 @@ export class Runtime {
     const force = !!opts.force;
     if (this._checkedInProcess && !force) return;
     const local = this.loadManifest();
+    const remote = await this.fetchManifest();
+    // Remember the engine version + grease so launch can normalise profiles.
+    this._chromiumVersion = remote.chromiumVersion ?? CHROMIUM_VERSION;
+    this._greaseBrand = remote.greaseBrand;
+    this._greaseVersion = remote.greaseVersion;
 
-    const remoteBrowser = await this.headEtag(this.spec.browser.key);
-    const needBrowser = force || !this.installed || local.browser_etag !== remoteBrowser;
+    // Re-download the engine when its on-disk version differs from the
+    // manifest's chromium version — VERSION-based, not etag, so it fires for
+    // users who updated the SDK but whose stored etag already matched. Manifest
+    // unreachable (undefined) → don't force a re-download when installed.
+    let needBrowser = force || !this.installed;
+    if (!needBrowser && remote.chromiumVersion !== undefined) {
+      needBrowser = this.effectiveInstalledVersion(local) !== remote.chromiumVersion;
+    }
     if (needBrowser) {
-      const etag = await this.downloadAndExtract(this.spec.browser, this.root);
-      local.browser_etag = etag;
+      // Wipe the old engine tree first so a leftover `<old>.manifest` / stale
+      // libs can't linger beside the new ones (that pinned the detected version
+      // → endless re-download). binarySubpath[0] is the engine root dir.
+      rmSync(join(this.root, this.spec.binarySubpath[0]), { recursive: true, force: true });
+      local.browser_etag = await this.downloadAndExtract(this.spec.browser, this.root);
     }
     if (this.spec.widevine && (needBrowser || !local.widevine_etag)) {
-      const etag = await this.downloadAndExtract(this.spec.widevine, this.root);
+      local.widevine_etag = await this.downloadAndExtract(this.spec.widevine, this.root);
       this.placeWidevine();
-      local.widevine_etag = etag;
     }
-    const remoteFp = await this.headEtag(FINGERPRINTS_ARCHIVE.key);
+    const remoteFp = remote.archives[FINGERPRINTS_ARCHIVE.key];
     const fpDirHasJson = readdirSync(this.fingerprintsDir).some((f) => f.endsWith(".json"));
-    if (force || local.fingerprints_etag !== remoteFp || !fpDirHasJson) {
-      await this.installFingerprints(force);
-      if (remoteFp) local.fingerprints_etag = remoteFp;
+    if (force || !fpDirHasJson || (remoteFp !== undefined && local.fingerprints_etag !== remoteFp)) {
+      await this.installFingerprints();
+      if (remoteFp !== undefined) local.fingerprints_etag = remoteFp;
     }
+    // Authoritative: we just extracted exactly this version (old tree wiped
+    // first). Recording the known value beats re-reading it off disk.
+    local.installed_chromium_version = this._chromiumVersion;
     this.saveManifest(local);
 
-    if (osPlatform() !== "win32" && existsSync(this.binaryPath)) {
-      const m = statSync(this.binaryPath).mode;
-      chmodSync(this.binaryPath, m | 0o111);
+    // Linux/mac archives produced on Windows lose every Unix exec bit;
+    // restore +x on every ELF/Mach-O file under the engine tree (not
+    // just the main binary — chrome spawns chrome_crashpad_handler,
+    // chrome_sandbox, etc., and they need the exec bit too).
+    if (osPlatform() !== "win32") {
+      fixUnixExecBits(this.root);
     }
     this._checkedInProcess = true;
   }
 
   // ---- helpers ----
 
-  private async headEtag(key: string): Promise<string | undefined> {
+  /** Fetch the version manifest (GitHub raw) — one request that yields every
+   *  archive's current etag + the chromium version, replacing per-archive HEADs
+   *  against R2/S3. Empty archives / undefined version when unreachable. */
+  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; greaseBrand?: string; greaseVersion?: string }> {
     try {
-      const r = await fetch(`${PUB_BASE}/${key}`, { method: "HEAD" });
-      if (!r.ok) return undefined;
-      return r.headers.get("etag")?.replace(/^"|"$/g, "") ?? undefined;
-    } catch { return undefined; }
+      const r = await fetch(MANIFEST_URL);
+      if (!r.ok) return { archives: {} };
+      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; grease_brand?: string; grease_version?: string };
+      const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+      return {
+        archives: (data && typeof data.archives === "object" && data.archives) || {},
+        chromiumVersion: str(data?.chromium_version),
+        greaseBrand: str(data?.grease_brand),
+        greaseVersion: str(data?.grease_version),
+      };
+    } catch { return { archives: {} }; }
   }
 
   private async downloadAndExtract(arch: Archive, dest: string): Promise<string> {
@@ -219,7 +300,7 @@ export class Runtime {
     rmSync(join(this.root, wrapper), { recursive: true, force: true });
   }
 
-  private async installFingerprints(force: boolean): Promise<void> {
+  private async installFingerprints(): Promise<void> {
     const url = `${PUB_BASE}/${FINGERPRINTS_ARCHIVE.key}`;
     const staging = join(this.fingerprintsDir, ".staging");
     if (existsSync(staging)) rmSync(staging, { recursive: true, force: true });
@@ -255,7 +336,9 @@ export class Runtime {
     for (const name of readdirSync(walk)) {
       if (!name.endsWith(".json")) continue;
       const dst = join(this.fingerprintsDir, name);
-      if (force || !existsSync(dst)) copyFileSync(join(walk, name), dst);
+      // Always overwrite bundled templates so engine-version bumps reach
+      // existing libraries; user-added files (other names) are never iterated.
+      copyFileSync(join(walk, name), dst);
     }
     rmSync(staging, { recursive: true, force: true });
   }
@@ -263,7 +346,11 @@ export class Runtime {
 
 /** Extract via /usr/bin/unzip — preserves symlinks and permission
  *  bits that adm-zip silently drops.  Required for any macOS .app
- *  bundle (Versions/Current symlinks + Helper exec bits). */
+ *  bundle (Versions/Current symlinks + Helper exec bits).
+ *
+ *  Accepts exit code 0 (clean) and 1 (warnings — e.g. "backslashes in
+ *  path" for archives zipped on Windows; extraction still completes
+ *  correctly).  Only 2+ are real fatal errors per unzip(1). */
 function systemUnzip(archive: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
   const r = spawnSync("unzip", ["-q", "-o", archive, "-d", dest], {
@@ -272,13 +359,50 @@ function systemUnzip(archive: string, dest: string): void {
   if (r.error) {
     if ((r.error as NodeJS.ErrnoException).code === "ENOENT") {
       throw new Error(
-        "system `unzip` not found — required for symlink-preserving extraction on macOS / Linux",
+        "system `unzip` not found — install with `apt install unzip` / `brew install unzip`",
       );
     }
     throw r.error;
   }
-  if (r.status !== 0) {
+  if ((r.status ?? 0) > 1) {
     const err = r.stderr?.toString().slice(0, 400) ?? `exit ${r.status}`;
-    throw new Error(`unzip failed for ${archive}: ${err}`);
+    throw new Error(`unzip failed for ${archive} (exit ${r.status}): ${err}`);
   }
+}
+
+/** ELF + Mach-O magic bytes; first 4 bytes tell us a file is a native
+ *  executable that needs the +x bit, regardless of what zip stored. */
+const NATIVE_MAGIC: ReadonlyArray<Buffer> = [
+  Buffer.from([0x7f, 0x45, 0x4c, 0x46]),                  // ELF
+  Buffer.from([0xfe, 0xed, 0xfa, 0xcf]),                  // Mach-O 64 BE
+  Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),                  // Mach-O 64 LE
+  Buffer.from([0xfe, 0xed, 0xfa, 0xce]),                  // Mach-O 32 BE
+  Buffer.from([0xce, 0xfa, 0xed, 0xfe]),                  // Mach-O 32 LE
+  Buffer.from([0xca, 0xfe, 0xba, 0xbe]),                  // Mach-O universal BE
+  Buffer.from([0xbe, 0xba, 0xfe, 0xca]),                  // Mach-O universal LE
+];
+
+/** Walk `root` and add +x to every file whose first 4 bytes match a known
+ *  native-binary magic.  Required because Windows zip producers don't
+ *  store Unix exec bits, so chrome / chrome_crashpad_handler / chrome_sandbox
+ *  all come out non-executable on Linux. */
+function fixUnixExecBits(root: string): void {
+  const walk = (dir: string): void => {
+    for (const ent of readdirSync(dir, { withFileTypes: true })) {
+      const p = join(dir, ent.name);
+      if (ent.isSymbolicLink()) continue;
+      if (ent.isDirectory()) { walk(p); continue; }
+      if (!ent.isFile()) continue;
+      try {
+        const fd = openSync(p, "r");
+        const buf = Buffer.alloc(4);
+        readSync(fd, buf, 0, 4, 0);
+        closeSync(fd);
+        if (NATIVE_MAGIC.some((m) => buf.equals(m))) {
+          chmodSync(p, lstatSync(p).mode | 0o111);
+        }
+      } catch { /* skip unreadable / racing files */ }
+    }
+  };
+  walk(root);
 }

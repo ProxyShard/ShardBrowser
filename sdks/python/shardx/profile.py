@@ -11,6 +11,10 @@ from typing import Iterable
 
 from .runtime import Runtime
 
+_NOISE_VECTORS = ("canvas", "webgl", "audio", "client_rects", "sensors", "fonts")
+# vector -> (soft knob, value applied when the vector is enabled)
+_NOISE_KNOB = {"webgl": ("intensity", 0.0005), "client_rects": ("max_offset", 1)}
+
 
 class Profile:
     """A fingerprint config + optional per-profile state. Mutable until launched."""
@@ -39,6 +43,39 @@ class Profile:
             else:
                 out[k] = v
         return Profile(out, id=overrides.get("name", self.id))
+
+    def set_noise(self, *vectors: str) -> "Profile":
+        """Enable exactly the named anti-fingerprint noise vectors (with soft
+        defaults) and disable every other one. The call is declarative —
+        re-calling replaces the selection, so a vector you drop is turned off.
+        Seeds are derived per-profile at launch.
+
+        Vectors: canvas, webgl, audio, client_rects, sensors, fonts.
+
+        Examples:
+            p.set_noise("canvas", "audio")   # only these two on
+            p.set_noise("canvas")            # audio now off again
+            p.set_noise()                    # all off
+        """
+        for v in vectors:
+            if v not in _NOISE_VECTORS:
+                raise ValueError(f"unknown noise vector: {v!r} (valid: {list(_NOISE_VECTORS)})")
+        on = set(vectors)
+        noise = self.config.get("noise")
+        if not isinstance(noise, dict):
+            noise = {}
+            self.config["noise"] = noise
+        for v in _NOISE_VECTORS:
+            block = noise.get(v)
+            if not isinstance(block, dict):
+                block = {}
+                noise[v] = block
+            block["enabled"] = v in on
+            block.setdefault("seed", 0)
+            if v in on and v in _NOISE_KNOB:
+                knob, soft = _NOISE_KNOB[v]
+                block.setdefault(knob, soft)
+        return self
 
     # ---- platform helpers ----
 

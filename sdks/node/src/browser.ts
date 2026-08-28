@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { hasAutoFields, resolveAutoFields } from "./autoResolve.js";
 import { geoCheckVia, type GeoInfo } from "./geo.js";
-import { Profile, userDataDir } from "./profile.js";
+import { Profile, userDataDir, applyEngineVersion } from "./profile.js";
 import { parseProxy, probeUdp, proxyToArg, type ParsedProxy } from "./proxy.js";
 import type { Runtime } from "./runtime.js";
 import { applyScreenStrategy, defaultScreenModeFor, type ScreenStrategy } from "./screen.js";
@@ -22,6 +22,41 @@ import { applyScreenStrategy, defaultScreenModeFor, type ScreenStrategy } from "
 export type WebRtcMode   = "auto" | "block" | "tcp_only";
 /** Legacy alias retained for back-compat; prefer `ScreenStrategy`. */
 export type ScreenMode   = ScreenStrategy;
+
+const noiseDefault = (): Record<string, Record<string, number | boolean>> => ({
+  canvas:       { enabled: false, seed: 0 },
+  webgl:        { enabled: false, seed: 0, intensity: 0 },
+  audio:        { enabled: false, seed: 0 },
+  client_rects: { enabled: false, seed: 0, max_offset: 0 },
+  sensors:      { enabled: false, seed: 0 },
+  fonts:        { enabled: false, seed: 0 },
+});
+
+/** Deterministic non-zero 32-bit FNV-1a of `<id>::<slot>`. */
+function noiseSeed(id: string, slot: string): number {
+  let h = 2166136261;
+  const s = `${id}::${slot}`;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  h >>>= 0;
+  return h === 0 ? 1 : h;
+}
+
+/** Add the default noise block when absent, then fill any seed-0 vector with a
+ *  stable per-profile value — without it every profile shares seed 0 and gets
+ *  an identical canvas/audio/WebGL fingerprint. */
+function applyNoiseSeeds(config: Record<string, unknown>, id: string): void {
+  let noise = config["noise"] as Record<string, Record<string, unknown>> | undefined;
+  if (!noise || typeof noise !== "object") {
+    noise = noiseDefault();
+    config["noise"] = noise;
+  }
+  for (const slot of Object.keys(noise)) {
+    const block = noise[slot];
+    if (block && typeof block === "object" && !block["seed"]) {
+      block["seed"] = noiseSeed(id, slot);
+    }
+  }
+}
 
 export interface LaunchOptions {
   proxy?: string;
@@ -101,6 +136,10 @@ export class Browser {
     // ---- profile + udd ----------------------------------------------
     const udd = userDataDir(this.runtime, profile.id, opts.userDataDir);
     console.log(`[shardx] profile '${profile.id}' → ${udd}`);
+    // Keep the spoofed Chrome version coherent with the installed engine,
+    // regardless of where the profile config came from (library / file / dict).
+    applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand, this.runtime.greaseVersion);
+    applyNoiseSeeds(profile.config, profile.id);
     const fpFile = join(udd, "fingerprint.json");
     writeFileSync(fpFile, JSON.stringify(profile.config));
 

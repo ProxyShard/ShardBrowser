@@ -1,10 +1,10 @@
 # shardx (Python)
 
 Self-contained Python SDK for the **ShardX anti-detect browser** by the
-[ProxyShard](https://proxyshard.com) team.
+[ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team.
 
 This package does **not** depend on the desktop launcher. On first use
-it downloads the patched Chromium 148 engine, Widevine CDM, and the
+it downloads the patched Chromium 149 engine, Widevine CDM, and the
 170-profile fingerprint library from our CDN into a local cache, then
 launches isolated browser sessions on demand.
 
@@ -20,6 +20,26 @@ pip install shardx
 
 Supported hosts: **macOS arm64**, **Windows x64**, **Linux x64**.
 
+### Linux system dependencies
+
+The bundled Chromium engine needs `unzip` + the standard set of shared
+libraries any Chromium fork links against. On a fresh Debian / Ubuntu:
+
+```bash
+sudo apt install -y \
+  unzip ca-certificates fonts-liberation \
+  libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+  libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+  libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1
+```
+
+When launching as **root** or inside **Docker**, pass `--no-sandbox` and
+`--disable-dev-shm-usage` via `extra_args=`:
+
+```python
+await sdk.session(..., extra_args=["--no-sandbox", "--disable-dev-shm-usage"])
+```
+
 ## Quick start
 
 ```python
@@ -32,8 +52,13 @@ async def main():
     # the first `session`/`launch`/`list_profiles` call (~170 MB once,
     # etag-cached afterward).  No separate install step.
 
+    # Create a persistent profile from a library template (or create_profile()
+    # for a random one). Library templates aren't launched directly — this
+    # freezes an enriched copy under a unique id you can return to. Do it once.
+    profile = sdk.create_profile("win-rtx4060")
+
     # Launch + drive in one call. Yields a patchright `Browser`.
-    async with sdk.session("win-rtx4060", proxy="socks5://user:pass@host:port") as browser:
+    async with sdk.session(profile, proxy="socks5://user:pass@host:port") as browser:
         ctx = browser.contexts[0]
         page = await ctx.new_page()
         await page.goto("https://browserleaks.com/quic")
@@ -50,12 +75,14 @@ async def main():
 asyncio.run(main())
 ```
 
-### Random profile when none specified
+### Random profile
 
 ```python
-async with sdk.session(platform="Windows", randomize=True) as browser:
-    # picks a random win-* profile, re-randomises hardware_concurrency /
-    # device_memory / platform_version using the host as a basis
+# create_profile() with no id freezes a random library template (filter the
+# pool with platform="Windows"). It already randomises hardware_concurrency /
+# device_memory / platform_version once, at creation.
+profile = sdk.create_profile(platform="Windows")
+async with sdk.session(profile) as browser:
     page = await browser.contexts[0].new_page()
     ...
 ```
@@ -83,6 +110,58 @@ print(sdk.check_proxy("socks5://user:pass@host:port"))
 #   'would_set_webrtc': 'auto',
 # }
 ```
+
+## Persistent profiles
+
+`list_profiles()` / `random_profile()` hand back **library templates** — launch
+one and it re-reads the same template every time. For a profile you can
+**return to** (same fingerprint *and* cookies/cache) or **delete**, create a
+*saved profile*: it freezes a template (or a random one) with randomized
+hardware/platform_version under a fresh unique id in its own folder
+`<cache>/profiles/<id>/`, exactly like the desktop launcher's "create profile".
+
+```python
+sdk = ShardX()
+
+# Create once (random template, or pass a library id like "win-rtx4060").
+profile = sdk.create_profile()
+print(profile.id)
+
+print(sdk.list_saved_profiles())          # ['<id>', ...]
+
+# Launch it. randomize stays False → the frozen fingerprint is stable;
+# cookies/cache persist in the profile's folder across runs.
+async with sdk.session(profile) as browser:
+    ...
+
+# Later — even a different process — reopen by id: same fingerprint + state.
+profile = sdk.open_profile("<id>")
+
+# Remove the profile and all its state when you're done.
+sdk.delete_profile("<id>")
+```
+
+Saved profiles never touch the bundled S3 library: templates stay read-only in
+`<cache>/fingerprints/*.json`, saved profiles live in `<cache>/profiles/<id>/`
+(holding `profile.json` + the browser's user-data-dir).
+
+## Anti-fingerprint noise
+
+Per-vector noise (canvas / WebGL / audio / DOMRect / sensors / fonts) is **off
+by default**. `set_noise(...)` is **declarative** — exactly the vectors you list
+are enabled (with soft defaults), every other one is turned off:
+
+```python
+profile.set_noise("canvas", "audio", "webgl")   # only these three on
+profile.set_noise("canvas")                       # audio + webgl now off again
+profile.set_noise()                               # all off
+sdk.save_profile(profile)                          # persist the choice
+```
+
+Seeds are derived **per-profile** at launch — stable across runs, unique per
+profile — so two profiles with the same vectors enabled still produce different
+canvas/audio/WebGL fingerprints. Soft defaults: WebGL `intensity 0.0005`,
+DOMRect `max_offset 1`.
 
 ## Pre-launch checks
 
@@ -117,7 +196,7 @@ pipeline the desktop launcher uses:
 Default mode is picked from `navigator.platform`. Override per launch:
 
 ```python
-async with sdk.session("win-rtx4060", screen_mode="profile") as browser:
+async with sdk.session(profile, screen_mode="profile") as browser:
     ...
 ```
 
@@ -165,7 +244,7 @@ async with sdk.session(profile) as browser:
 
 ```python
 async with sdk.session(
-    "win-rtx4060",
+    profile,
     proxy="socks5://...",
     webrtc="tcp_only",                # or "block" | "auto" (default)
     webrtc_public_ip="203.0.113.42",  # advertised in ICE candidates
@@ -180,7 +259,8 @@ If you'd rather drive the browser with a different CDP client (raw
 `launch()` directly:
 
 ```python
-sess = sdk.launch("win-rtx4060", proxy="socks5://...", cdp=True)
+profile = sdk.create_profile("win-rtx4060")
+sess = sdk.launch(profile, proxy="socks5://...", cdp=True)
 print(sess.cdp_url)        # ws://127.0.0.1:54113/devtools/browser/c0a3…
 # … drive it yourself …
 sess.stop()
@@ -203,8 +283,10 @@ with `cdp_url`, `geo`, `proxy_udp_ms`, `quic_enabled`, `webrtc_mode`,
 ├── fingerprints/             ← 170 bundled .json profiles
 │   ├── win-rtx4060.json
 │   └── …
-└── profiles/                 ← per-launch user-data-dir (cookies, IndexedDB, cache)
+└── profiles/                 ← saved profiles (create_profile) + their state
     └── <profile-id>/
+        ├── profile.json      ← the frozen fingerprint config
+        └── …                 ← user-data-dir: cookies, IndexedDB, cache
 ```
 
 Override the cache root:

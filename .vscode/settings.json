@@ -1,0 +1,8 @@
+{
+  // Give rust-analyzer its own build dir so its background `cargo check`
+  // never holds the lock that `npm run tauri dev` (cargo build/run) needs.
+  "rust-analyzer.cargo.targetDir": true,
+  // Stop rust-analyzer from running `cargo check`, which grabs the shared
+  // ~/.cargo/registry package-cache lock and blocks `tauri dev`'s cargo build.
+  "rust-analyzer.checkOnSave": false
+}

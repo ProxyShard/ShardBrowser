@@ -461,6 +461,41 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
   color: var(--tx-4); padding: 8px 12px;
 }
 .folder-tab-add:hover { color: var(--accent-hi); }
+/* Highlight a folder tab while a profile is being dragged over it. */
+.folder-tab-drop {
+  background: var(--accent-dim) !important;
+  color: var(--accent-hi) !important;
+  outline: 1px dashed var(--accent-hi);
+  outline-offset: -2px;
+}
+/* During a drag, swallow pointer events on the tab's children so dragenter /
+   dragleave / drop ALL fire on the button itself.  Without this the
+   .tab-count span steals enter/leave events when the cursor crosses it,
+   the dragleave handler nulls dropTarget mid-drag, and drop never lands
+   on the parent button.  pointer-events: none doesn't affect clicks
+   because folder tabs already handle onClick on the button. */
+.folder-tab > * { pointer-events: none; }
+/* Make every profile row indicate it can be picked up. */
+.row-wrap[draggable="true"] .cell-name { cursor: grab; }
+.row-wrap[draggable="true"]:active .cell-name { cursor: grabbing; }
+/* Drag preview chip — small pill that floats next to the cursor instead of
+   the default full-row ghost (which would obscure drop targets).  Positioned
+   off-screen because the browser rasterises it synchronously then we can
+   delete the node; the rasterised image is what actually follows the cursor. */
+.drag-chip {
+  position: absolute; top: -1000px; left: -1000px;
+  padding: 4px 10px; border-radius: 999px;
+  background: var(--accent); color: var(--bg-1);
+  font-size: 12px; font-weight: 600; white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+/* Spin animation on the "Starting…" play icon. */
+.btn-launch-ico.spin svg { animation: shardx-spin 0.9s linear infinite; }
+@keyframes shardx-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
 
 /* Folder picker (inside FolderModal "move" mode) */
 .folder-pick-list {
@@ -702,6 +737,7 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
     100px                  /* status */
     minmax(160px, 1.4fr)  /* proxy */
     minmax(120px, 1.1fr)  /* notes */
+    minmax(70px, 90px)    /* time (cumulative uptime) */
     minmax(110px, 130px)  /* last run */
     minmax(280px, auto);  /* row actions (Start + 4 icons) */
   gap: 10px;
@@ -725,6 +761,7 @@ textarea { resize: vertical; min-height: 60px; line-height: 1.5; }
       90px
       minmax(140px, 1.3fr)
       minmax(100px, 1fr)
+      minmax(60px, 80px)
       minmax(260px, auto);
   }
   .t-cols > .cell-lastrun, .t-cols > .head-lastrun { display: none; }
@@ -1849,3 +1886,194 @@ button.status-pill.status-link:active { transform: translateY(1px); }
   from { transform: translateX(40px) scale(0.96); opacity: 0; }
   to   { transform: translateX(0) scale(1);       opacity: 1; }
 }
+
+/* ---- ProxyShard billing integration ---- */
+
+.ps-key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.ps-key-input { flex: 1; min-width: 0; }
+.ps-key-input .copy-icon { font-size: 11px; font-weight: 600; width: auto; padding: 0 10px; }
+/* Reserve room for the "Show"/"Hide" toggle so it can't sit on top of the key. */
+.ps-key-input input { padding-right: 60px; }
+.ps-key-status { margin-top: 10px; min-height: 22px; }
+
+.ps-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.ps-card-head h3 { margin: 0; }
+
+/* Standard / Premium segmented toggle (mirrors .theme-toggle). */
+.ps-seg-toggle {
+  display: inline-flex;
+  gap: 2px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  border-radius: var(--radius);
+  padding: 2px;
+}
+.ps-seg {
+  padding: 5px 14px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--tx-3);
+  border-radius: 6px;
+  transition: background .12s, color .12s;
+}
+.ps-seg.active {
+  background: var(--accent);
+  color: #fff;
+  box-shadow: 0 1px 4px #8b5cf660;
+}
+
+.ps-traffic-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+  margin: 4px 0 12px;
+}
+.ps-traffic-stats > div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  border-radius: var(--radius);
+}
+.ps-stat-val { font-size: 18px; font-weight: 700; color: var(--tx-1); }
+.ps-stat-lbl { font-size: 11px; color: var(--tx-3); text-transform: uppercase; letter-spacing: .4px; }
+
+.ps-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bg-3);
+  overflow: hidden;
+}
+.ps-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hi, #a78bfa));
+  border-radius: 999px;
+  transition: width .25s ease;
+}
+
+/* Stack each card field's label above its control (these pages aren't
+   .settings-page, so the global stacking rule doesn't reach them). */
+.ps-page .card label:not(.row-inline) {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ps-page .form-row { margin-bottom: 12px; }
+.ps-page .form-row:last-of-type { margin-bottom: 0; }
+.ps-page .card select { width: 100%; }
+
+.ps-orders { margin-top: 4px; }
+.ps-order-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bd-1);
+}
+.ps-order-row:last-child { border-bottom: none; }
+.ps-order-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ps-order-name { font-weight: 600; color: var(--tx-1); }
+.ps-order-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+.ps-buy-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.ps-price {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.ps-price-orig { color: var(--tx-3); text-decoration: line-through; font-size: 13px; }
+.ps-price-final { font-size: 18px; font-weight: 700; color: var(--tx-1); }
+
+/* ProxyShard: order-proxy import picker */
+.dialog.dialog-wide { max-width: 580px; width: 92vw; }
+.ps-import-list {
+  max-height: 320px;
+  overflow-y: auto;
+  margin-top: 6px;
+}
+.ps-import-head {
+  display: grid;
+  grid-template-columns: 20px 1fr 132px;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bd-1);
+  background: var(--bg-2);
+}
+.ps-import-row {
+  display: grid;
+  grid-template-columns: 20px minmax(120px, 1.3fr) 1fr auto 132px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--bd-1);
+}
+.ps-import-row:last-child { border-bottom: none; }
+.ps-import-row:hover { background: var(--bg-2); }
+
+.ps-import-top {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  margin-bottom: 10px;
+}
+
+.ps-gen-preview {
+  margin-top: 6px;
+  padding: 9px 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  border-radius: var(--radius);
+  color: var(--tx-2);
+  word-break: break-all;
+}
+
+/* ---- first-run GitHub-star prompt ---- */
+.star-dialog {
+  max-width: 416px;
+  width: 92vw;
+  text-align: center;
+  position: relative;
+  padding: 0;
+}
+.star-close { position: absolute; top: 10px; right: 10px; }
+.star-body { padding: 32px 32px 24px; }
+.star-badge {
+  position: relative;
+  width: 58px; height: 58px;
+  margin: 0 auto 16px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 50%;
+  background: var(--bg-2);
+  border: 1px solid var(--bd-1);
+  color: var(--tx-1);
+}
+.star-spark {
+  position: absolute; right: -3px; top: -5px;
+  color: #f5c518; font-size: 19px; line-height: 1;
+  text-shadow: 0 1px 4px #f5c51866;
+}
+.star-body h2 { margin: 0 0 10px; font-size: 18px; }
+.star-text { color: var(--tx-2); font-size: 13.5px; line-height: 1.55; margin: 0 0 22px; }
+.star-actions { display: flex; gap: 10px; justify-content: center; }
+.star-btn { display: inline-flex; align-items: center; gap: 7px; }

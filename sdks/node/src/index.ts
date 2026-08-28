@@ -1,6 +1,9 @@
 // Top-level façade — bundles the runtime, fingerprint library, and
 // browser launcher. Mirrors the Python `ShardX` class.
 import { chromium, type Browser as PatchrightBrowser } from "patchright";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 import { Runtime, type ProgressCb } from "./runtime.js";
 import { FingerprintLibrary, Profile } from "./profile.js";
@@ -19,11 +22,7 @@ export interface ShardXOptions {
   profilesDir?: string;
 }
 
-export type LaunchInput = string | Profile | Record<string, unknown>;
-
 export interface ShardXLaunchOptions extends LaunchOptions {
-  /** When `fingerprint` is omitted, pick a random profile filtered by this platform substring. */
-  platform?: string;
   /** When true, re-pick hardware_concurrency / device_memory / platform_version before launch. */
   randomize?: boolean;
 }
@@ -62,34 +61,97 @@ export class ShardX {
     return this.library.load(ids[Math.floor(Math.random() * ids.length)]);
   }
 
+  // ---- persistent profiles ----
+  //
+  // A *saved profile* is a frozen, uniquely-id'd copy of a library template
+  // (or a random one) enriched with randomized hardware/platform_version — the
+  // same thing the desktop launcher does on "create profile". It lives in its
+  // own folder `<profilesRoot>/<id>/` together with its browser state, so you
+  // can reopen the exact same profile later or delete it.
+
+  /** Create a new persistent profile from a library template (or a random one
+   *  when `template` is omitted), enriched with randomized hardware +
+   *  platform_version under a fresh unique id, and frozen to disk. Launch it
+   *  with `launch(profile, { randomize: false })`. */
+  async createProfile(template?: string, opts: { platform?: string } = {}): Promise<Profile> {
+    await this.runtime.install();
+    const src = template == null
+      ? await this.randomProfile({ platform: opts.platform })
+      : this.library.load(template);
+    const id = randomUUID().replace(/-/g, "");
+    const profile = new Profile(src.config, id);   // ctor deep-clones
+    // Seed hardware by the new id so the pick is stable across reopens.
+    randomizeHardware(profile.config, id);
+    randomizePlatformVersion(profile.config);
+    this.saveProfile(profile);
+    return profile;
+  }
+
+  /** Persist a profile's current config to its on-disk folder. Call after
+   *  mutating a reopened profile (e.g. `setNoise`) to keep changes. */
+  saveProfile(profile: Profile): void {
+    mkdirSync(join(this.runtime.profilesRoot, profile.id), { recursive: true });
+    writeFileSync(this.profileJsonPath(profile.id), JSON.stringify(profile.config, null, 2));
+  }
+
+  /** Reopen a previously created profile by id (same fingerprint + state). */
+  openProfile(id: string): Profile {
+    const path = this.profileJsonPath(id);
+    if (!existsSync(path)) throw new Error(`saved profile '${id}' not found`);
+    return new Profile(JSON.parse(readFileSync(path, "utf8")), id);
+  }
+
+  /** Ids of every saved profile, sorted. */
+  listSavedProfiles(): string[] {
+    const root = this.runtime.profilesRoot;
+    if (!existsSync(root)) return [];
+    return readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && existsSync(join(root, e.name, "profile.json")))
+      .map((e) => e.name)
+      .sort();
+  }
+
+  /** Delete a saved profile and all its state (cookies, cache, …). */
+  deleteProfile(id: string): void {
+    const d = join(this.runtime.profilesRoot, id);
+    if (existsSync(d)) rmSync(d, { recursive: true, force: true });
+  }
+
+  private profileJsonPath(id: string): string {
+    return join(this.runtime.profilesRoot, id, "profile.json");
+  }
+
   /**
-   * Launch a profile.
+   * Launch a profile. Get one from `createProfile()` (recommended — a
+   * persistent profile), `Profile.fromFile()`, or pass your own config object.
+   * Library templates aren't launched directly: go through `createProfile` so
+   * each run has a stable identity and the bundled fingerprint library stays
+   * untouched.
    *
-   * @param fingerprint  Profile id, `Profile` instance, plain dict, or `null`/omitted to pick random.
-   * @param opts.platform  When picking random, filter by `navigator.platform` substring.
-   * @param opts.randomize When true, freshly randomise hw_concurrency / device_memory / platform_version.
-   *                       (Same logic the desktop launcher applies when re-picking a GPU.)
+   * @param profile  A `Profile` (or a raw config object).
+   * @param opts.randomize When true, re-roll hw_concurrency / device_memory /
+   *   platform_version first. Leave it off for a saved profile or its frozen
+   *   fingerprint will drift.
    * All other options forwarded to `Browser.launch` (proxy, cdp, headless, webrtc, screenMode, …).
    */
-  async launch(fingerprint?: LaunchInput | null, opts: ShardXLaunchOptions = {}): Promise<BrowserSession> {
-    await this.runtime.install();
-    let profile: Profile;
-    if (fingerprint == null) {
-      profile = await this.randomProfile({ platform: opts.platform });
-    } else if (typeof fingerprint === "string") {
-      profile = this.library.load(fingerprint);
-    } else if (fingerprint instanceof Profile) {
-      profile = fingerprint;
-    } else if (typeof fingerprint === "object") {
-      profile = new Profile(fingerprint as Record<string, unknown>);
-    } else {
-      throw new TypeError(`fingerprint must be string | Profile | object | null; got ${typeof fingerprint}`);
+  async launch(profile: Profile | Record<string, unknown>, opts: ShardXLaunchOptions = {}): Promise<BrowserSession> {
+    if (!(profile instanceof Profile)) {
+      if (profile && typeof profile === "object") {
+        profile = new Profile(profile);
+      } else {
+        throw new TypeError(
+          "launch() takes a Profile (or config object). To launch a library " +
+          "template or a random one, call createProfile(...) first, then launch " +
+          "the returned profile.",
+        );
+      }
     }
+    await this.runtime.install();
     if (opts.randomize) {
       randomizeHardware(profile.config, profile.id);
       randomizePlatformVersion(profile.config);
     }
-    const { platform: _p, randomize: _r, ...launchOpts } = opts;
+    const { randomize: _r, ...launchOpts } = opts;
     return this.browser.launch(profile, launchOpts);
   }
 
@@ -102,7 +164,8 @@ export class ShardX {
    * peer-dependency.
    *
    * @example
-   * const { browser, close } = await sdk.session({ fingerprint: "win-rtx4060", proxy: "socks5://…" });
+   * const profile = await sdk.createProfile("win-rtx4060");
+   * const { browser, close } = await sdk.session(profile, { proxy: "socks5://…" });
    * try {
    *   const page = await browser.contexts()[0].newPage();
    *   await page.goto("https://example.com");
@@ -110,13 +173,12 @@ export class ShardX {
    *   await close();
    * }
    */
-  async session(opts: ShardXLaunchOptions & { fingerprint?: LaunchInput | null } = {}): Promise<{
+  async session(profile: Profile | Record<string, unknown>, opts: ShardXLaunchOptions = {}): Promise<{
     browser: PatchrightBrowser;
     session: BrowserSession;
     close: () => Promise<void>;
   }> {
-    const { fingerprint, ...launchOpts } = opts;
-    const sess = await this.launch(fingerprint ?? null, { ...launchOpts, cdp: true });
+    const sess = await this.launch(profile, { ...opts, cdp: true });
     if (!sess.cdpUrl) {
       await sess.stop();
       throw new Error("CDP endpoint unavailable — engine failed to expose remote-debugging port");
@@ -152,7 +214,7 @@ export class ShardX {
 
 export { Runtime, defaultCacheDir, PUB_BASE, CHROMIUM_VERSION, hostSpec } from "./runtime.js";
 export type { ProgressCb, HostSpec, Archive } from "./runtime.js";
-export { Profile, FingerprintLibrary, userDataDir } from "./profile.js";
+export { Profile, FingerprintLibrary, userDataDir, applyEngineVersion } from "./profile.js";
 export { Browser, BrowserSession } from "./browser.js";
 export type { LaunchOptions, WebRtcMode, ScreenMode } from "./browser.js";
 export { parseProxy, probeUdp, proxyToArg } from "./proxy.js";

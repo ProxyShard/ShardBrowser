@@ -1,10 +1,10 @@
 # @proxyshard/shardx (Node)
 
 Self-contained Node/TypeScript SDK for the **ShardX anti-detect
-browser** by the [ProxyShard](https://proxyshard.com) team.
+browser** by the [ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team.
 
 Does **not** depend on the desktop launcher. On first use it downloads
-the patched Chromium 148 engine, Widevine CDM, and the 170-profile
+the patched Chromium 149 engine, Widevine CDM, and the 170-profile
 fingerprint library from our CDN into a local cache, then launches
 isolated browser sessions on demand.
 
@@ -20,6 +20,26 @@ npm install @proxyshard/shardx
 
 Supported hosts: **macOS arm64**, **Windows x64**, **Linux x64**. Node ≥ 18.
 
+### Linux system dependencies
+
+The bundled Chromium engine needs `unzip` + the standard set of shared
+libraries any Chromium fork links against. On a fresh Debian / Ubuntu:
+
+```bash
+sudo apt install -y \
+  unzip ca-certificates fonts-liberation \
+  libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+  libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+  libgbm1 libpango-1.0-0 libcairo2 libasound2 libxshmfence1
+```
+
+When launching as **root** or inside **Docker**, pass `--no-sandbox` and
+`--disable-dev-shm-usage` via `extraArgs`:
+
+```ts
+await sdk.session(profile, { extraArgs: ["--no-sandbox", "--disable-dev-shm-usage"] });
+```
+
 ## Quick start
 
 ```ts
@@ -30,9 +50,13 @@ const sdk = new ShardX();
 // the first session/launch/listProfiles call (~170 MB once, etag-cached
 // afterward).  No separate install step.
 
+// Create a persistent profile from a library template (or createProfile() for
+// a random one). Library templates aren't launched directly — this freezes an
+// enriched copy under a unique id you can return to. Do it once.
+const profile = await sdk.createProfile("win-rtx4060");
+
 // Launch + drive in one call. Returns the patchright Browser.
-const { browser, session, close } = await sdk.session({
-  fingerprint: "win-rtx4060",
+const { browser, session, close } = await sdk.session(profile, {
   proxy: "socks5://user:pass@host:port",
 });
 try {
@@ -51,13 +75,14 @@ try {
 }
 ```
 
-### Random profile when none specified
+### Random profile
 
 ```ts
-const { browser, close } = await sdk.session({
-  platform: "Windows",
-  randomize: true,                      // re-rolls hw_concurrency / RAM / platform_version
-});
+// createProfile() with no id freezes a random library template (filter the
+// pool with { platform: "Windows" }). It already randomises hw_concurrency /
+// RAM / platform_version once, at creation.
+const profile = await sdk.createProfile(undefined, { platform: "Windows" });
+const { browser, close } = await sdk.session(profile);
 try {
   const page = await browser.contexts()[0].newPage();
   // ...
@@ -89,6 +114,59 @@ console.log(await sdk.checkProxy("socks5://user:pass@host:port"));
 //   wouldSetWebrtc: 'auto',
 // }
 ```
+
+## Persistent profiles
+
+`listProfiles()` / `randomProfile()` hand back **library templates** — launch
+one and it re-reads the same template every time. For a profile you can
+**return to** (same fingerprint *and* cookies/cache) or **delete**, create a
+*saved profile*: it freezes a template (or a random one) with randomized
+hardware/platform_version under a fresh unique id in its own folder
+`<cache>/profiles/<id>/`, exactly like the desktop launcher's "create profile".
+
+```ts
+const sdk = new ShardX();
+
+// Create once (random template, or pass a library id like "win-rtx4060").
+const profile = await sdk.createProfile();
+console.log(profile.id);
+
+console.log(sdk.listSavedProfiles());     // ['<id>', ...]
+
+// Launch it. randomize stays false → the frozen fingerprint is stable;
+// cookies/cache persist in the profile's folder across runs.
+const { browser, close } = await sdk.session(profile);
+// ...
+await close();
+
+// Later — even a different process — reopen by id: same fingerprint + state.
+const reopened = sdk.openProfile("<id>");
+
+// Remove the profile and all its state when you're done.
+sdk.deleteProfile("<id>");
+```
+
+Saved profiles never touch the bundled S3 library: templates stay read-only in
+`<cache>/fingerprints/*.json`, saved profiles live in `<cache>/profiles/<id>/`
+(holding `profile.json` + the browser's user-data-dir).
+
+## Anti-fingerprint noise
+
+Per-vector noise (canvas / WebGL / audio / DOMRect / sensors / fonts) is **off
+by default**. `setNoise(...)` is **declarative** — exactly the vectors you list
+are enabled (with soft defaults), every other one is turned off:
+
+```ts
+profile.setNoise("canvas", "audio", "webgl");   // only these three on
+profile.setNoise("canvas");                       // audio + webgl now off again
+profile.setNoise();                               // all off
+sdk.saveProfile(profile);                          // persist the choice
+```
+
+Seeds are derived **per-profile** at launch — stable across runs, unique per
+profile — so two profiles with the same vectors enabled still produce different
+canvas/audio/WebGL fingerprints. Soft defaults: WebGL `intensity 0.0005`,
+DOMRect `maxOffset 1`.
 
 ## Pre-launch checks
 
@@ -124,7 +202,7 @@ pipeline the desktop launcher uses:
 Default mode is picked from `navigator.platform`. Override per launch:
 
 ```ts
-await sdk.session({ fingerprint: "win-rtx4060", screenMode: "profile" });
+await sdk.session(profile, { screenMode: "profile" });
 ```
 
 ### Host-aware hardware randomisation
@@ -155,7 +233,7 @@ const profile = sdk.library
     navigator: { language: "de-DE" },
   });
 
-const { browser, close } = await sdk.session({ fingerprint: profile, proxy: "socks5://..." });
+const { browser, close } = await sdk.session(profile, { proxy: "socks5://..." });
 ```
 
 ### Use your own fingerprint JSON
@@ -164,14 +242,13 @@ const { browser, close } = await sdk.session({ fingerprint: profile, proxy: "soc
 import { Profile } from "@proxyshard/shardx";
 
 const profile = Profile.fromFile("/path/to/my-custom.json");
-const { browser, close } = await sdk.session({ fingerprint: profile });
+const { browser, close } = await sdk.session(profile);
 ```
 
 ### WebRTC policy
 
 ```ts
-await sdk.session({
-  fingerprint: "win-rtx4060",
+await sdk.session(profile, {
   proxy: "socks5://...",
   webrtc: "tcp_only",                // "auto" (default) | "block" | "tcp_only"
   webrtcPublicIp: "203.0.113.42",    // advertised in ICE candidates
@@ -190,7 +267,8 @@ const sdk = new ShardX({
     console.log(`${label}: ${pct}%`);
   },
 });
-const { browser, close } = await sdk.session({ fingerprint: "win-rtx4060" });
+const profile = await sdk.createProfile("win-rtx4060");
+const { browser, close } = await sdk.session(profile);
 ```
 
 ## Advanced: raw launch without patchright
@@ -200,7 +278,8 @@ If you'd rather drive the browser with a different CDP client (raw
 WebSocket), skip `session()` and use `launch()` directly:
 
 ```ts
-const sess = await sdk.launch("win-rtx4060", { proxy: "socks5://...", cdp: true });
+const profile = await sdk.createProfile("win-rtx4060");
+const sess = await sdk.launch(profile, { proxy: "socks5://...", cdp: true });
 console.log(sess.cdpUrl);              // ws://127.0.0.1:54113/devtools/browser/...
 // ... drive it yourself ...
 await sess.stop();
@@ -219,8 +298,10 @@ with `cdpUrl`, `geo`, `proxyUdpMs`, `quicEnabled`, `webrtcMode`,
 ~/.cache/shardx-sdk/                         (linux)
 ├── manifest.json             ← etag cache
 ├── ShardX-Mac-arm64/         ← extracted engine
-├── fingerprints/             ← 170 bundled .json profiles
-└── profiles/<profile-id>/    ← per-launch user-data-dir
+├── fingerprints/             ← 170 bundled .json templates (read-only)
+└── profiles/<id>/            ← saved profile (createProfile) + its state
+    ├── profile.json          ← the frozen fingerprint config
+    └── …                     ← user-data-dir: cookies, IndexedDB, cache
 ```
 
 Override:

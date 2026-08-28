@@ -1,0 +1,37 @@
+[package]
+name = "shardx"
+version = "0.1.11"
+edition = "2021"
+rust-version = "1.74"
+description = "Self-contained Rust SDK for the ShardX anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
+authors = ["ProxyShard"]
+license = "MIT"
+readme = "README.md"
+homepage = "https://github.com/ProxyShard/ShardBrowser"
+repository = "https://github.com/ProxyShard/ShardBrowser"
+documentation = "https://docs.proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"
+keywords = ["anti-detect", "browser", "fingerprint", "chromium", "automation"]
+categories = ["web-programming", "api-bindings"]
+
+[features]
+# Browser control via CDP (chromiumoxide). On by default so `ShardX::session`
+# returns a driven browser out of the box; disable with `default-features = false`
+# for a lighter build that only launches the engine and hands back a CDP URL.
+default = ["control"]
+control = ["dep:chromiumoxide", "dep:futures-util"]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "socks"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "time", "process"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "5"
+url = "2"
+rand = "0.8"
+chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
+futures-util = { version = "0.3", optional = true }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

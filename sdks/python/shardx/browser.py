@@ -26,8 +26,38 @@ from .auto_resolve import has_auto_fields, resolve_auto_fields
 from .geo import GeoInfo, geo_check_via
 from .profile import Profile, user_data_dir as _user_data_dir
 from .proxy import ParsedProxy, parse_proxy, probe_udp
-from .runtime import Runtime
+from .runtime import Runtime, apply_engine_version
 from .screen import apply_screen_strategy, default_mode_for
+
+_NOISE_DEFAULT = {
+    "canvas":       {"enabled": False, "seed": 0},
+    "webgl":        {"enabled": False, "seed": 0, "intensity": 0},
+    "audio":        {"enabled": False, "seed": 0},
+    "client_rects": {"enabled": False, "seed": 0, "max_offset": 0},
+    "sensors":      {"enabled": False, "seed": 0},
+    "fonts":        {"enabled": False, "seed": 0},
+}
+
+
+def _noise_seed(profile_id: str, slot: str) -> int:
+    """Deterministic non-zero 32-bit FNV-1a of `<id>::<slot>`."""
+    h = 2166136261
+    for b in f"{profile_id}::{slot}".encode():
+        h = ((h ^ b) * 16777619) & 0xFFFFFFFF
+    return h or 1
+
+
+def apply_noise_seeds(config: dict, profile_id: str) -> None:
+    """Add the default noise block when absent, then fill any seed-0 vector
+    with a stable per-profile value — without it every profile would share
+    seed 0 and produce an identical canvas/audio/WebGL fingerprint."""
+    noise = config.get("noise")
+    if not isinstance(noise, dict):
+        noise = {k: dict(v) for k, v in _NOISE_DEFAULT.items()}
+        config["noise"] = noise
+    for slot, block in noise.items():
+        if isinstance(block, dict) and not block.get("seed"):
+            block["seed"] = _noise_seed(profile_id, slot)
 
 
 @dataclass
@@ -116,6 +146,15 @@ class Browser:
         udd_base = Path(user_data_dir).resolve() if user_data_dir else None
         udd = _user_data_dir(self.runtime, profile.id, base=udd_base)
         print(f"[shardx] profile '{profile.id}' → {udd}", flush=True)
+        # Keep the spoofed Chrome version coherent with the installed engine,
+        # regardless of where the profile config came from (library / file / dict).
+        apply_engine_version(
+            profile.config,
+            self.runtime.chromium_version,
+            self.runtime.grease_brand,
+            self.runtime.grease_version,
+        )
+        apply_noise_seeds(profile.config, profile.id)
         fp_file = udd / "fingerprint.json"
         fp_file.write_text(json.dumps(profile.config))
 

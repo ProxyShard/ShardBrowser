@@ -28,7 +28,10 @@ The SDK mirrors every pre-launch step the desktop launcher does:
 """
 from __future__ import annotations
 
+import json
 import random
+import shutil
+import uuid
 from typing import Optional, Union
 
 from contextlib import asynccontextmanager
@@ -47,7 +50,7 @@ from .host import (
 from .profile import FingerprintLibrary, Profile
 from .proxy import ParsedProxy, parse_proxy, probe_udp
 from .randomize import randomize_hardware, randomize_platform_version
-from .runtime import RUNTIME_DIR, Runtime
+from .runtime import RUNTIME_DIR, Runtime, apply_engine_version
 from .screen import apply_screen_strategy, default_mode_for
 
 
@@ -90,55 +93,114 @@ class ShardX:
             )
         return self.library.load(random.choice(ids))
 
+    # ---- persistent profiles ----
+    #
+    # A *saved profile* is a frozen, uniquely-id'd copy of a library template
+    # (or a random one) enriched with randomized hardware/platform_version —
+    # the same thing the desktop launcher does on "create profile". It lives in
+    # its own folder `<profiles_root>/<id>/` together with its browser state, so
+    # you can reopen the exact same profile later or delete it.
+
+    def create_profile(
+        self, template: Optional[str] = None, *, platform: Optional[str] = None
+    ) -> Profile:
+        """Create a new persistent profile from a library template (or a random
+        one when `template` is None), enriched with randomized hardware +
+        platform_version under a fresh unique id, and frozen to disk. Launch it
+        with `launch(profile, randomize=False)`."""
+        self.runtime.install()
+        if template is None:
+            config = dict(self.random_profile(platform=platform).config)
+        else:
+            config = dict(self.library.load(template).config)
+        pid = uuid.uuid4().hex
+        # Seed hardware by the new id so the pick is stable across reopens.
+        randomize_hardware(config, profile_id=pid)
+        randomize_platform_version(config)
+        profile = Profile(config, id=pid)
+        self.save_profile(profile)
+        return profile
+
+    def save_profile(self, profile: Profile) -> None:
+        """Persist a profile's current config to its on-disk folder. Call after
+        mutating a reopened profile (e.g. `set_noise`) to keep changes."""
+        path = self._profile_json_path(profile.id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(profile.config, indent=2))
+
+    def open_profile(self, id: str) -> Profile:
+        """Reopen a previously created profile by id (same fingerprint + state)."""
+        path = self._profile_json_path(id)
+        if not path.exists():
+            raise FileNotFoundError(f"saved profile {id!r} not found")
+        return Profile(json.loads(path.read_text()), id=id)
+
+    def list_saved_profiles(self) -> list[str]:
+        """Ids of every saved profile, sorted."""
+        root = self.runtime.profiles_root
+        if not root.exists():
+            return []
+        return sorted(p.name for p in root.iterdir() if (p / "profile.json").exists())
+
+    def delete_profile(self, id: str) -> None:
+        """Delete a saved profile and all its state (cookies, cache, …)."""
+        d = self.runtime.profiles_root / id
+        if d.exists():
+            shutil.rmtree(d, ignore_errors=True)
+
+    def _profile_json_path(self, id: str):
+        return self.runtime.profiles_root / id / "profile.json"
+
     def launch(
         self,
-        fingerprint: Optional[Union[str, Profile, dict]] = None,
+        profile: Union[Profile, dict],
         *,
-        platform: Optional[str] = None,
         randomize: bool = False,
         **kwargs,
     ) -> BrowserSession:
         """Launch a profile.
 
         Args:
-            fingerprint: profile id (str), `Profile` instance, dict, or None
-                to pick a random profile.
-            platform: when `fingerprint` is None, filter the random pick by
-                `navigator.platform` substring ("Windows" / "macOS" / "Linux").
+            profile: a `Profile` (or a raw config dict). Get one from
+                `create_profile()` (recommended — a persistent profile),
+                `Profile.from_file()`, or build your own. Library templates
+                aren't launched directly: call `create_profile(...)` first so
+                each run has a stable identity and the bundled fingerprint
+                library stays untouched.
             randomize: when True, freshly randomise `hardware_concurrency`,
-                `device_memory` and `platform_version` before launch — mirrors
-                what the desktop launcher does when you re-pick a GPU.
+                `device_memory` and `platform_version` before launch. Leave it
+                off for a saved profile or its frozen fingerprint will drift.
             proxy, cdp, headless, webrtc, webrtc_public_ip, quic, screen_mode,
             extra_args, env, probe_timeout: passed to `Browser.launch` — see
             its docstring.
         """
-        self.runtime.install()
-        if fingerprint is None:
-            profile = self.random_profile(platform=platform)
-        elif isinstance(fingerprint, str):
-            profile = self.library.load(fingerprint)
-        elif isinstance(fingerprint, Profile):
-            profile = fingerprint
-        elif isinstance(fingerprint, dict):
-            profile = Profile(fingerprint)
-        else:
+        if isinstance(profile, dict):
+            profile = Profile(profile)
+        elif not isinstance(profile, Profile):
             raise TypeError(
-                f"fingerprint must be str, dict, Profile, or None; got {type(fingerprint).__name__}"
+                "launch() takes a Profile (or config dict). To launch a library "
+                "template or a random one, call create_profile(...) first, then "
+                "launch the returned profile."
             )
+        self.runtime.install()
         if randomize:
             randomize_hardware(profile.config, profile_id=profile.id)
             randomize_platform_version(profile.config)
         return self._browser.launch(profile, **kwargs)
 
     @asynccontextmanager
-    async def session(self, fingerprint=None, **kwargs):
+    async def session(self, profile, **kwargs):
         """Async context manager: launches a profile AND attaches
         patchright, yielding a `patchright.async_api.Browser` ready to
         drive (no manual `connect_over_cdp` plumbing).
 
+        `profile` is a `Profile` from `create_profile()` (recommended),
+        `Profile.from_file()`, or your own config dict.
+
         Example:
 
-            async with sdk.session("win-rtx4060", proxy="socks5://...") as browser:
+            profile = sdk.create_profile("win-rtx4060")
+            async with sdk.session(profile, proxy="socks5://...") as browser:
                 ctx = browser.contexts[0]
                 page = await ctx.new_page()
                 await page.goto("https://example.com")
@@ -147,7 +209,7 @@ class ShardX:
         if you need `cdp_url`, `geo`, `proxy_udp_ms`, etc.
         """
         kwargs.setdefault("cdp", True)
-        bsess = self.launch(fingerprint, **kwargs)
+        bsess = self.launch(profile, **kwargs)
         if not bsess.cdp_url:
             bsess.stop()
             raise RuntimeError("CDP endpoint unavailable — engine failed to expose remote-debugging port")
@@ -191,7 +253,7 @@ class ShardX:
 
 __all__ = [
     "ShardX",
-    "Runtime", "RUNTIME_DIR",
+    "Runtime", "RUNTIME_DIR", "apply_engine_version",
     "Profile", "FingerprintLibrary",
     "Browser", "BrowserSession",
     "randomize_hardware", "randomize_platform_version",

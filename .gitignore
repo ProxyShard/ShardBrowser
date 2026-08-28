@@ -17,6 +17,14 @@ dist-ssr
 .parcel-cache/
 coverage/
 
+# ===== Python build / cache =====
+__pycache__/
+*.py[cod]
+*.egg-info/
+sdks/python/build/
+.pytest_cache/
+.mypy_cache/
+
 # ===== Rust / Tauri build artifacts =====
 src-tauri/target/
 src-tauri/Cargo.lock.bak

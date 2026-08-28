@@ -8,6 +8,7 @@ mod mcp_setup;
 mod process;
 mod profile;
 mod proxy;
+mod psapi;
 mod runtime;
 mod settings;
 mod store;
@@ -27,6 +28,19 @@ pub fn main_window() -> Option<tauri::WebviewWindow> {
     let app = APP_HANDLE.get()?;
     app.get_webview_window("main")
         .or_else(|| app.webview_windows().into_values().next())
+}
+
+/// Tell any open UI window that the on-disk store changed out-of-band — i.e. a
+/// profile/proxy created or removed through the automation API or MCP, which
+/// writes straight to disk without the React state ever knowing.  The view
+/// listens for `store-changed` and reloads, so the new items appear without an
+/// app restart.  `kind` ("profiles" | "proxies") is informational; the UI
+/// reloads both lists regardless.  No-op when headless (no window).
+pub fn notify_store_changed(kind: &str) {
+    use tauri::Emitter;
+    if let Some(w) = main_window() {
+        let _ = w.emit("store-changed", kind);
+    }
 }
 
 // ---- MCP server download ----
@@ -188,8 +202,12 @@ fn host_ram_gb() -> Option<u32> {
     }
     #[cfg(target_os = "windows")]
     {
+        use std::os::windows::process::CommandExt;
+        // 0x08000000 = CREATE_NO_WINDOW — suppress the brief console flash a GUI
+        // app gets when shelling out to a console-subsystem binary.
         let out = std::process::Command::new("wmic")
             .args(["ComputerSystem", "get", "TotalPhysicalMemory"])
+            .creation_flags(0x08000000)
             .output()
             .ok()?;
         let txt = String::from_utf8_lossy(&out.stdout);
@@ -426,6 +444,7 @@ pub fn save_profile_core(
         created_at: stored.meta.created_at,
         pinned: stored.meta.pinned,
         folder: stored.meta.folder,
+        total_runtime_ms: stored.meta.total_runtime_ms,
     })
 }
 
@@ -577,7 +596,28 @@ pub fn build_fingerprint_config(
 ) -> Result<serde_json::Map<String, Value>, String> {
     let mut merged = merge_library_fingerprint(template_id)?;
     enrich_new_config(window, &mut merged);
+    ensure_default_noise(&mut merged);
     Ok(merged)
+}
+
+/// Add the UI's default noise block (every vector present, disabled, seed 0 —
+/// the sentinel `save_raw` fills per-profile) when a config carries none, so
+/// API/SDK profiles match UI profiles and get a unique seed instead of none.
+pub fn ensure_default_noise(cfg: &mut serde_json::Map<String, Value>) {
+    if cfg.contains_key("noise") {
+        return;
+    }
+    cfg.insert(
+        "noise".into(),
+        serde_json::json!({
+            "canvas":       { "enabled": false, "seed": 0 },
+            "webgl":        { "enabled": false, "seed": 0, "intensity": 0 },
+            "audio":        { "enabled": false, "seed": 0 },
+            "client_rects": { "enabled": false, "seed": 0, "max_offset": 0 },
+            "sensors":      { "enabled": false, "seed": 0 },
+            "fonts":        { "enabled": false, "seed": 0 }
+        }),
+    );
 }
 
 #[derive(serde::Serialize)]
@@ -894,7 +934,6 @@ fn api_regenerate_token() -> Result<Value, String> {
 // ---- System tray (close-to-tray parity with the original launcher) ----
 
 /// Show + focus the main window (tray "Show" item / tray left-click).
-#[cfg(desktop)]
 fn show_main_window(app: &tauri::AppHandle) {
     use tauri::Manager;
     if let Some(w) = app.get_webview_window("main") {
@@ -968,9 +1007,237 @@ fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+// ---- ProxyShard billing API ----
+
+/// Saved billing-API key (empty string when unset).
+#[tauri::command]
+fn ps_get_key() -> Result<String, String> {
+    psapi::get_key().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn ps_set_key(key: String) -> Result<(), String> {
+    psapi::set_key(key).map_err(|e| e.to_string())
+}
+
+/// Account profile (email, active_orders, wallet_balance cents) — also acts
+/// as the "is the key valid?" probe.
+#[tauri::command]
+async fn ps_me() -> Result<Value, String> {
+    psapi::call("GET", "/user/api/me", &[], None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_orders(status: String, offset: Option<i64>, limit: Option<i64>) -> Result<Value, String> {
+    let mut q = vec![("status".to_string(), status)];
+    if let Some(o) = offset {
+        q.push(("offset".into(), o.to_string()));
+    }
+    if let Some(l) = limit {
+        q.push(("limit".into(), l.to_string()));
+    }
+    psapi::call("GET", "/user/api/orders", &q, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_order(id: i64) -> Result<Value, String> {
+    psapi::call("GET", &format!("/user/api/orders/{id}"), &[], None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_active(order_id: i64) -> Result<Value, String> {
+    psapi::call(
+        "GET",
+        "/user/api/proxies/active",
+        &[("order_id".into(), order_id.to_string())],
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Pull an order's active proxies into the local proxy list. Returns count added.
+#[tauri::command]
+async fn ps_import_order(order_id: i64, kind: String) -> Result<usize, String> {
+    psapi::import_order_proxies(order_id, kind)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_products() -> Result<Value, String> {
+    psapi::call("GET", "/user/api/proxies/products", &[], None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_available_count() -> Result<Value, String> {
+    psapi::call("GET", "/user/api/proxies/available-count", &[], None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_calculate(
+    product: String,
+    location: Option<String>,
+    cycle: Option<String>,
+    quantity: Option<i64>,
+    promo_code: Option<String>,
+    addons_json: Option<String>,
+) -> Result<Value, String> {
+    let mut q = vec![("product".to_string(), product)];
+    if let Some(v) = location.filter(|s| !s.is_empty()) {
+        q.push(("location".into(), v));
+    }
+    if let Some(v) = cycle.filter(|s| !s.is_empty()) {
+        q.push(("cycle".into(), v));
+    }
+    if let Some(v) = quantity {
+        q.push(("quantity".into(), v.to_string()));
+    }
+    if let Some(v) = promo_code.filter(|s| !s.is_empty()) {
+        q.push(("promo_code".into(), v));
+    }
+    // JSON array of add-ons, e.g. [{"addon_key":"p0f_slots","qty":5}].
+    // reqwest URL-encodes the value.
+    if let Some(v) = addons_json.filter(|s| !s.is_empty()) {
+        q.push(("addons_json".into(), v));
+    }
+    psapi::call("GET", "/user/api/orders/calculate", &q, None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_purchase(body: Value) -> Result<Value, String> {
+    psapi::call("POST", "/user/api/orders/purchase", &[], Some(body))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Buy extra GB of residential traffic for an order.
+#[tauri::command]
+async fn ps_add_bandwidth(id: i64, amount: i64, promo_code: Option<String>) -> Result<Value, String> {
+    let mut body = serde_json::json!({ "amount": amount });
+    if let Some(p) = promo_code.filter(|s| !s.is_empty()) {
+        body["promo_code"] = Value::String(p);
+    }
+    psapi::call(
+        "POST",
+        &format!("/user/api/orders/{id}/add-bandwidth"),
+        &[],
+        Some(body),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Account-owner traffic for a residential proxy type ("standart" | "premium").
+#[tauri::command]
+async fn ps_profile_traffic(proxy_type: String) -> Result<Value, String> {
+    psapi::call(
+        "GET",
+        "/user/api/proxies/profile",
+        &[("proxy_type".into(), proxy_type)],
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_renew(id: i64) -> Result<Value, String> {
+    psapi::call("POST", &format!("/user/api/orders/{id}/renew"), &[], None)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Residential location reference data (for the proxy generator).
+#[tauri::command]
+async fn ps_countries(proxy_type: String) -> Result<Value, String> {
+    psapi::call(
+        "GET",
+        "/user/api/proxies/countries",
+        &[("proxy_type".into(), proxy_type)],
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_regions(proxy_type: String, country_code: String) -> Result<Value, String> {
+    psapi::call(
+        "GET",
+        "/user/api/proxies/regions",
+        &[
+            ("proxy_type".into(), proxy_type),
+            ("country_code".into(), country_code),
+        ],
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn ps_cities(proxy_type: String, country_code: String, region_code: String) -> Result<Value, String> {
+    psapi::call(
+        "GET",
+        "/user/api/proxies/cities",
+        &[
+            ("proxy_type".into(), proxy_type),
+            ("country_code".into(), country_code),
+            ("region_code".into(), region_code),
+        ],
+        None,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Assign OS-fingerprint signatures to proxy IPs (consumes p0f slots).
+/// `items` is an array of `{ ip, signature }`.
+#[tauri::command]
+async fn ps_signature_set(order_id: i64, items: Value) -> Result<Value, String> {
+    psapi::call(
+        "POST",
+        &format!("/user/api/orders/{order_id}/signature/set"),
+        &[],
+        Some(serde_json::json!({ "items": items })),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Set/clear an order's tag.
+#[tauri::command]
+async fn ps_set_tag(id: i64, tag: String) -> Result<Value, String> {
+    psapi::call(
+        "POST",
+        &format!("/user/api/orders/{id}/tag"),
+        &[],
+        Some(serde_json::json!({ "tag": tag })),
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Must be the first plugin: a second launch focuses the running window.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
@@ -978,7 +1245,8 @@ pub fn run() {
             // Close-to-tray: hide the main window instead of destroying it so
             // the launcher (and its API server) keeps running in the background.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if window.label() == "main" {
+                let to_tray = settings::load().map(|s| s.minimize_to_tray).unwrap_or(true);
+                if window.label() == "main" && to_tray {
                     api.prevent_close();
                     let _ = window.hide();
                 }
@@ -1026,6 +1294,25 @@ pub fn run() {
             settings_save,
             api_info,
             api_regenerate_token,
+            ps_get_key,
+            ps_set_key,
+            ps_me,
+            ps_orders,
+            ps_order,
+            ps_active,
+            ps_import_order,
+            ps_products,
+            ps_available_count,
+            ps_calculate,
+            ps_purchase,
+            ps_add_bandwidth,
+            ps_profile_traffic,
+            ps_renew,
+            ps_set_tag,
+            ps_countries,
+            ps_regions,
+            ps_cities,
+            ps_signature_set,
             cookies_export,
             cookies_export_to_file,
             cookies_import,
@@ -1051,6 +1338,12 @@ pub fn run() {
                     let _ = w.set_decorations(false);
                 }
             }
+
+            // Migrate already-created profiles' UA + client_hints to the
+            // current engine version (independent of the fingerprint seed).
+            tauri::async_runtime::spawn(async {
+                runtime::ensure_profiles_migrated().await;
+            });
 
             // Initialize isolated settings and the configured profile root before
             // any profile operation uses storage.

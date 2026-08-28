@@ -238,11 +238,14 @@ async fn persist_created(folder_override: Option<String>, body: CreateReq) -> Ap
         // Best-effort full test (UDP + geo); launch re-probes UDP live anyway.
         let _ = crate::proxy::full_test(&stored).await;
         meta["proxy_id"] = json!(stored.id);
+        crate::notify_store_changed("proxies");
     }
+    crate::ensure_default_noise(&mut cfg);
     cfg.insert("_meta".into(), meta);
 
     let pm = crate::save_profile_core(crate::main_window().as_ref(), Value::Object(cfg), false)
         .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    crate::notify_store_changed("profiles");
     Ok(Json(serde_json::to_value(pm).unwrap_or(Value::Null)))
 }
 
@@ -308,6 +311,7 @@ async fn create_temporary(Json(body): Json<TempReq>) -> ApiResult {
 async fn delete_profile(Path(id): Path<String>) -> ApiResult {
     crate::profile::delete(&id)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("profiles");
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -363,6 +367,7 @@ async fn edit_profile(Path(id): Path<String>, Json(body): Json<EditReq>) -> ApiR
         let _ = crate::proxy::full_test(&s).await;
         stored.meta.proxy_id = Some(s.id);
         stored.meta.inline_proxy = None;
+        crate::notify_store_changed("proxies");
     }
 
     crate::profile::save_raw(&mut stored)
@@ -375,6 +380,7 @@ async fn edit_profile(Path(id): Path<String>, Json(body): Json<EditReq>) -> ApiR
 
     let updated = crate::profile::load_raw(&id)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("profiles");
     Ok(Json(serde_json::to_value(updated).unwrap_or(Value::Null)))
 }
 
@@ -389,6 +395,7 @@ async fn rename_folder_ep(
 ) -> ApiResult {
     let n = crate::profile::rename_folder(&folder, &body.name)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("profiles");
     Ok(Json(json!({ "renamed_to": body.name, "profiles": n })))
 }
 
@@ -405,6 +412,7 @@ async fn delete_folder_ep(
 ) -> ApiResult {
     let n = crate::profile::delete_folder(&folder, q.delete_profiles)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("profiles");
     Ok(Json(json!({
         "deleted_folder": folder,
         "delete_profiles": q.delete_profiles,
@@ -546,6 +554,7 @@ async fn add_proxy(Json(body): Json<AddProxyReq>) -> ApiResult {
     }
     let stored = crate::proxy::upsert_dedup(entry)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("proxies");
     Ok(Json(json!({
         "id": stored.id,
         "name": stored.name,
@@ -558,6 +567,7 @@ async fn add_proxy(Json(body): Json<AddProxyReq>) -> ApiResult {
 
 async fn delete_proxy(Path(id): Path<String>) -> ApiResult {
     crate::proxy::delete(&id).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::notify_store_changed("proxies");
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 

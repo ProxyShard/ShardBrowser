@@ -19,9 +19,10 @@
 #   * Windows x64 — .msi installer + portable .exe
 #   * Linux x64   — .AppImage + .deb
 #
-# The launcher itself is unsigned (no Apple Developer ID / Authenticode
-# cert in this repo).  README documents how end-users dismiss the
-# Gatekeeper / SmartScreen warning on first launch.
+# No Apple Developer ID / Authenticode cert in this repo, so the bundles are
+# unsigned / not notarized.  macOS users clear the quarantine flag
+# (`xattr -dr com.apple.quarantine`) on first launch; README + the release
+# notes document the Gatekeeper / SmartScreen steps.
 
 name: Release
 
@@ -100,11 +101,14 @@ jobs:
         run: npm ci
 
       - name: Build Tauri bundle (unsigned)
-        # Bundles are produced unsigned; the Tauri bundler skips
-        # codesign / signtool only when the relevant env vars are
-        # UNSET — empty strings cause it to call `security import` /
-        # `signtool` with no cert and crash, so we deliberately don't
-        # set any signing variable here.
+        # No Apple Developer ID / Authenticode cert in this repo, so bundles
+        # ship unsigned / un-notarized. (Ad-hoc signing wouldn't help: it only
+        # avoids the "app is damaged" error, not the "Apple could not verify…"
+        # notarization block — which needs a paid Developer ID.) The Tauri
+        # bundler only skips codesign / signtool when the signing env vars are
+        # UNSET — an *empty* string makes it import a cert and crash, so we set
+        # nothing here. macOS users clear the quarantine flag on first launch
+        # (`xattr -dr com.apple.quarantine`, see release notes / README).
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Collect bundles
@@ -118,6 +122,25 @@ jobs:
                -o -name '*.msi' -o -name '*.exe' \
                -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
             -exec cp -v {} staging/ \;
+          ls -la staging/
+
+      # The raw compiled binary (one level above bundle/) is a standalone,
+      # installer-free executable — no MSI/NSIS, no admin, just run it. It uses
+      # the system's Evergreen WebView2 (preinstalled on Windows 10/11). Ship it
+      # as the portable build alongside the installers.
+      - name: Collect Windows portable binary
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          rel="src-tauri/target/${{ matrix.target }}/release"
+          # Tauri renames the binary to the product name; fall back to the
+          # cargo package name in case that changes.
+          if [ -f "$rel/ShardX Launcher.exe" ]; then
+            src="$rel/ShardX Launcher.exe"
+          else
+            src="$rel/shardx-launcher.exe"
+          fi
+          cp -v "$src" "staging/ShardX-Launcher-portable-${{ matrix.label }}.exe"
           ls -la staging/
 
       - name: Upload to workflow artifacts (intermediate)
@@ -162,8 +185,8 @@ jobs:
           body: |
             ## Install
 
-            * **macOS** (Apple Silicon — M1/M2/M3/M4) — download the `.dmg`.  First launch: right-click *ShardX Launcher.app* → *Open* → *Open* (the build isn't signed with an Apple Developer ID).
-            * **Windows** — `.msi` installer.  SmartScreen will warn: *More info* → *Run anyway* (the build isn't signed with Authenticode).
+            * **macOS** (Apple Silicon — M1/M2/M3/M4) — download the `.dmg` and drag *ShardX Launcher.app* to Applications.  The build isn't notarized (no Apple Developer ID), so macOS blocks it on first launch — clear the quarantine flag in Terminal, then open it normally: `xattr -dr com.apple.quarantine "/Applications/ShardX Launcher.app"`  (alternative: *System Settings → Privacy & Security → Open Anyway*).
+            * **Windows** — `.msi` installer, or the installer-free **portable** `ShardX-Launcher-portable-win-x64.exe` (just run it — needs the Evergreen WebView2 runtime, preinstalled on Windows 10/11).  SmartScreen will warn: *More info* → *Run anyway* (the build isn't signed with Authenticode).
             * **Linux** — `.AppImage` (`chmod +x` and run) or `.deb` (`sudo apt install ./...deb`).
 
             On first launch the launcher downloads the patched ShardX browser, Widevine CDM and a starter library of 170 device profiles from our CDN.  After that it boots straight to the workspace.
