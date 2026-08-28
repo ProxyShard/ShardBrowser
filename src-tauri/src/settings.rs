@@ -5,6 +5,10 @@ use std::fs;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Settings {
+    /// Optional absolute parent directory for profile JSON and Chromium user-data.
+    /// Empty or missing keeps the platform-default profile location.
+    #[serde(default)]
+    pub profile_storage_path: Option<String>,
     /// Absolute path to the ShardX executable.
     pub browser_path: Option<String>,
     /// Theme: "dark" (default) or "light".
@@ -41,13 +45,14 @@ fn default_api_enabled() -> bool {
 }
 
 fn default_api_port() -> u16 {
-    40325
+    41325
 }
 
 pub fn load() -> Result<Settings> {
     let path = store::settings_path()?;
     if !path.exists() {
         return Ok(Settings {
+            profile_storage_path: None,
             browser_path: None,
             theme: default_theme(),
             geo_checker: Some("ip-api.com".into()),
@@ -65,6 +70,7 @@ pub fn load() -> Result<Settings> {
 /// still empty.  Call once at startup before the server reads it.
 pub fn ensure_secret() -> Result<Settings> {
     let mut s = load()?;
+    store::configure_profile_root(s.profile_storage_path.as_deref())?;
     if s.api_secret.is_empty() {
         s.api_secret = format!(
             "{}{}",
@@ -77,6 +83,7 @@ pub fn ensure_secret() -> Result<Settings> {
 }
 
 pub fn save(s: &Settings) -> Result<()> {
+    store::normalize_profile_root(s.profile_storage_path.as_deref())?;
     let body = serde_json::to_string_pretty(s)?;
     fs::write(store::settings_path()?, body)?;
     Ok(())

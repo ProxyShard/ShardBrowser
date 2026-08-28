@@ -211,6 +211,7 @@ type ProxyEntry = {
   notes: string;
 };
 type Settings = {
+  profile_storage_path?: string | null;
   browser_path: string | null;
   theme: string;
   geo_checker?: string | null;
@@ -3369,12 +3370,13 @@ function VersionPill() {
 
 function SettingsView() {
   const [s, setS] = useState<Settings>({
+    profile_storage_path: null,
     browser_path: null,
     theme: "dark",
     geo_checker: "ip-api.com",
     screen_resolution_mode: "fingerprint",
     api_enabled: true,
-    api_port: 40325,
+    api_port: 41325,
   });
   const [api, setApi] = useState<ApiInfo | null>(null);
   const refreshApi = () => invoke<ApiInfo>("api_info").then(setApi).catch(() => {});
@@ -3396,6 +3398,10 @@ function SettingsView() {
     } catch (e) { toast.err("MCP download failed: " + String(e)); }
     finally { setMcpBusy(false); }
   };
+  const pickProfileStorage = async () => {
+    const dir = await open({ directory: true, title: "Select profile storage directory" });
+    if (typeof dir === "string") setS({ ...s, profile_storage_path: dir });
+  };
   const save = async () => {
     try { await invoke("settings_save", { value: s }); toast.ok("Settings saved"); }
     catch (e) { toast.err(String(e)); }
@@ -3405,6 +3411,36 @@ function SettingsView() {
       <Topbar crumbs={["System", "Settings"]} search="" onSearch={() => {}} />
       <div className="page-title"><h1>Settings</h1></div>
 
+
+      <div className="card" style={{ marginBottom: 14 }}>
+        <h3>Profile storage</h3>
+        <p className="muted small">
+          Stores profile definitions and Chromium user data under the selected directory.
+          Existing data is not moved when this location changes.
+        </p>
+        <label>
+          <span className="lbl">Directory</span>
+          <div className="row-inline" style={{ gap: 8 }}>
+            <input
+              style={{ flex: 1 }}
+              value={s.profile_storage_path ?? ""}
+              onChange={(e) => setS({ ...s, profile_storage_path: e.target.value || null })}
+              placeholder="Default isolated application directory"
+            />
+            <button className="btn-ghost" type="button" onClick={pickProfileStorage} title="Select directory">
+              <Icon.Folder /> Browse
+            </button>
+            <button
+              className="btn-ghost"
+              type="button"
+              onClick={() => setS({ ...s, profile_storage_path: null })}
+              disabled={!s.profile_storage_path}
+            >
+              Use default
+            </button>
+          </div>
+        </label>
+      </div>
 
       <div className="card" style={{ marginBottom: 14 }}>
         <h3>Proxy geo checker</h3>
@@ -3442,7 +3478,7 @@ function SettingsView() {
         <p className="muted small">
           Local HTTP API (axum) for scripting — create/launch/close profiles
           and get a CDP WebSocket URL. Binds <strong>127.0.0.1</strong> only,
-          JWT Bearer auth. Changes to enable/port apply after restarting the app.{" "}
+          JWT Bearer auth. Test builds default to an isolated port.{" "}
           <a
             href="#"
             onClick={(e) => {
@@ -3465,8 +3501,8 @@ function SettingsView() {
           <span className="lbl">Port</span>
           <input
             type="number"
-            value={s.api_port ?? 40325}
-            onChange={(e) => setS({ ...s, api_port: Number(e.target.value) || 40325 })}
+            value={s.api_port ?? 41325}
+            onChange={(e) => setS({ ...s, api_port: Number(e.target.value) || 41325 })}
           />
         </label>
         {api && (

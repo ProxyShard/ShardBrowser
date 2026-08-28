@@ -3,6 +3,8 @@
 
 use std::sync::{OnceLock, RwLock};
 
+use tokio::sync::watch;
+
 use axum::{
     extract::{Path, Query, Request},
     http::{header::AUTHORIZATION, StatusCode},
@@ -127,10 +129,13 @@ async fn health() -> Json<Value> {
 }
 
 async fn list_profiles() -> ApiResult {
-    let metas = crate::profile::list_all().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let metas = crate::profile::list_all()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let running = crate::process::Tracker::shared().running();
-    let by_id: std::collections::HashMap<String, crate::process::RunningProfile> =
-        running.into_iter().map(|r| (r.profile_id.clone(), r)).collect();
+    let by_id: std::collections::HashMap<String, crate::process::RunningProfile> = running
+        .into_iter()
+        .map(|r| (r.profile_id.clone(), r))
+        .collect();
     let out: Vec<Value> = metas
         .into_iter()
         .map(|m| {
@@ -154,14 +159,17 @@ async fn list_profiles() -> ApiResult {
 }
 
 async fn get_profile(Path(id): Path<String>) -> ApiResult {
-    let stored = crate::profile::load_raw(&id)
-        .map_err(|e| err(StatusCode::NOT_FOUND, e.to_string()))?;
+    let stored =
+        crate::profile::load_raw(&id).map_err(|e| err(StatusCode::NOT_FOUND, e.to_string()))?;
     let mut val = serde_json::to_value(stored)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     if let Some(cdp) = crate::process::Tracker::shared().cdp(&id) {
         if let Some(obj) = val.as_object_mut() {
             obj.insert("running".into(), json!(true));
-            obj.insert("cdp".into(), serde_json::to_value(cdp).unwrap_or(Value::Null));
+            obj.insert(
+                "cdp".into(),
+                serde_json::to_value(cdp).unwrap_or(Value::Null),
+            );
         }
     }
     Ok(Json(val))
@@ -219,8 +227,12 @@ async fn persist_created(folder_override: Option<String>, body: CreateReq) -> Ap
     if let Some(pid) = body.proxy_id.as_ref() {
         meta["proxy_id"] = json!(pid);
     } else if let Some(pstr) = body.proxy.as_ref() {
-        let entry = crate::proxy::parse_single(pstr)
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unparseable proxy: {pstr}")))?;
+        let entry = crate::proxy::parse_single(pstr).ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("unparseable proxy: {pstr}"),
+            )
+        })?;
         let stored = crate::proxy::upsert_dedup(entry)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         // Best-effort full test (UDP + geo); launch re-probes UDP live anyway.
@@ -238,7 +250,10 @@ async fn create_profile(Json(body): Json<CreateReq>) -> ApiResult {
     persist_created(None, body).await
 }
 
-async fn create_profile_in_folder(Path(folder): Path<String>, Json(body): Json<CreateReq>) -> ApiResult {
+async fn create_profile_in_folder(
+    Path(folder): Path<String>,
+    Json(body): Json<CreateReq>,
+) -> ApiResult {
     persist_created(Some(folder), body).await
 }
 
@@ -266,10 +281,15 @@ async fn create_temporary(Json(body): Json<TempReq>) -> ApiResult {
     if let Some(n) = body.name.as_ref() {
         cfg.insert("name".into(), json!(n));
     }
-    let mut meta = json!({ "id": "", "folder": body.folder.unwrap_or_default(), "temporary": true });
+    let mut meta =
+        json!({ "id": "", "folder": body.folder.unwrap_or_default(), "temporary": true });
     if let Some(pstr) = body.proxy.as_ref() {
-        let entry = crate::proxy::parse_single(pstr)
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unparseable proxy: {pstr}")))?;
+        let entry = crate::proxy::parse_single(pstr).ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("unparseable proxy: {pstr}"),
+            )
+        })?;
         meta["inline_proxy"] = serde_json::to_value(entry).unwrap_or(Value::Null);
     }
     cfg.insert("_meta".into(), meta);
@@ -286,7 +306,8 @@ async fn create_temporary(Json(body): Json<TempReq>) -> ApiResult {
 }
 
 async fn delete_profile(Path(id): Path<String>) -> ApiResult {
-    crate::profile::delete(&id).map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    crate::profile::delete(&id)
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
@@ -306,8 +327,8 @@ struct EditReq {
 
 /// Edit profile; only provided fields change. Returns the updated profile.
 async fn edit_profile(Path(id): Path<String>, Json(body): Json<EditReq>) -> ApiResult {
-    let mut stored = crate::profile::load_raw(&id)
-        .map_err(|e| err(StatusCode::NOT_FOUND, e.to_string()))?;
+    let mut stored =
+        crate::profile::load_raw(&id).map_err(|e| err(StatusCode::NOT_FOUND, e.to_string()))?;
 
     if let Some(fp) = body.fingerprint {
         let mut cfg = fp
@@ -324,11 +345,19 @@ async fn edit_profile(Path(id): Path<String>, Json(body): Json<EditReq>) -> ApiR
         stored.config.insert("notes".into(), json!(n));
     }
     if let Some(pid) = body.proxy_id.as_ref() {
-        stored.meta.proxy_id = if pid.is_empty() { None } else { Some(pid.clone()) };
+        stored.meta.proxy_id = if pid.is_empty() {
+            None
+        } else {
+            Some(pid.clone())
+        };
         stored.meta.inline_proxy = None;
     } else if let Some(pstr) = body.proxy.as_ref() {
-        let entry = crate::proxy::parse_single(pstr)
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unparseable proxy: {pstr}")))?;
+        let entry = crate::proxy::parse_single(pstr).ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("unparseable proxy: {pstr}"),
+            )
+        })?;
         let s = crate::proxy::upsert_dedup(entry)
             .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
         let _ = crate::proxy::full_test(&s).await;
@@ -354,7 +383,10 @@ struct RenameFolderReq {
     name: String,
 }
 
-async fn rename_folder_ep(Path(folder): Path<String>, Json(body): Json<RenameFolderReq>) -> ApiResult {
+async fn rename_folder_ep(
+    Path(folder): Path<String>,
+    Json(body): Json<RenameFolderReq>,
+) -> ApiResult {
     let n = crate::profile::rename_folder(&folder, &body.name)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({ "renamed_to": body.name, "profiles": n })))
@@ -367,7 +399,10 @@ struct DeleteFolderQuery {
     delete_profiles: bool,
 }
 
-async fn delete_folder_ep(Path(folder): Path<String>, Query(q): Query<DeleteFolderQuery>) -> ApiResult {
+async fn delete_folder_ep(
+    Path(folder): Path<String>,
+    Query(q): Query<DeleteFolderQuery>,
+) -> ApiResult {
     let n = crate::profile::delete_folder(&folder, q.delete_profiles)
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(json!({
@@ -473,10 +508,12 @@ async fn add_proxy(Json(body): Json<AddProxyReq>) -> ApiResult {
         crate::proxy::parse_single(s)
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, format!("unparseable proxy: {s}")))?
     } else {
-        let host = body
-            .host
-            .clone()
-            .ok_or_else(|| err(StatusCode::BAD_REQUEST, "`proxy` string or host+port required"))?;
+        let host = body.host.clone().ok_or_else(|| {
+            err(
+                StatusCode::BAD_REQUEST,
+                "`proxy` string or host+port required",
+            )
+        })?;
         let port = body
             .port
             .ok_or_else(|| err(StatusCode::BAD_REQUEST, "`port` required"))?;
@@ -525,7 +562,8 @@ async fn delete_proxy(Path(id): Path<String>) -> ApiResult {
 }
 
 async fn list_proxies() -> ApiResult {
-    let list = crate::proxy::list().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let list =
+        crate::proxy::list().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     // Credentials never exposed over API.
     let out: Vec<Value> = list
         .into_iter()
@@ -544,7 +582,8 @@ async fn list_proxies() -> ApiResult {
 }
 
 async fn list_folders() -> ApiResult {
-    let metas = crate::profile::list_all().map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let metas = crate::profile::list_all()
+        .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let mut set = std::collections::BTreeSet::new();
     for m in metas {
         if !m.folder.is_empty() {
@@ -584,20 +623,108 @@ fn random_fingerprint_for(platform: Option<&str>) -> Result<String, ApiError> {
     Ok(pool[idx].id.clone())
 }
 
-// ---- server ----
+// ---- managed server lifecycle ----
 
-pub async fn serve(secret: String, port: u16) {
-    set_secret(&secret);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApiConfig {
+    pub enabled: bool,
+    pub port: u16,
+    pub secret: String,
+}
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ApiState {
+    pub running: bool,
+    pub port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+fn state_cell() -> &'static RwLock<ApiState> {
+    static STATE: OnceLock<RwLock<ApiState>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        RwLock::new(ApiState {
+            running: false,
+            port: None,
+            error: None,
+        })
+    })
+}
+
+fn config_sender() -> &'static OnceLock<watch::Sender<ApiConfig>> {
+    static CONFIG: OnceLock<watch::Sender<ApiConfig>> = OnceLock::new();
+    &CONFIG
+}
+
+fn set_state(state: ApiState) {
+    if let Ok(mut current) = state_cell().write() {
+        *current = state;
+    }
+}
+
+pub fn state() -> ApiState {
+    state_cell()
+        .read()
+        .map(|state| state.clone())
+        .unwrap_or(ApiState {
+            running: false,
+            port: None,
+            error: Some("API state lock poisoned".into()),
+        })
+}
+
+pub fn validate_config(config: &ApiConfig) -> Result<(), String> {
+    if config.enabled && config.port == 0 {
+        return Err("automation API port must be between 1 and 65535".into());
+    }
+    if config.secret.is_empty() {
+        return Err("automation API secret must not be empty".into());
+    }
+    Ok(())
+}
+
+/// Apply settings to the running supervisor. Secret rotation takes effect immediately.
+pub fn configure(config: ApiConfig) -> Result<(), String> {
+    validate_config(&config)?;
+    set_secret(&config.secret);
+    let sender = config_sender()
+        .get()
+        .ok_or_else(|| "automation API supervisor is not started".to_string())?;
+    sender.send_replace(config);
+    Ok(())
+}
+
+/// Start the single process-wide API supervisor.
+pub fn start_supervisor(config: ApiConfig) -> Result<(), String> {
+    validate_config(&config)?;
+    set_secret(&config.secret);
+    let (sender, receiver) = watch::channel(config);
+    config_sender()
+        .set(sender)
+        .map_err(|_| "automation API supervisor is already started".to_string())?;
+    tauri::async_runtime::spawn(supervise(receiver));
+    Ok(())
+}
+
+fn router() -> Router {
     let protected = Router::new()
         .route("/profiles", get(list_profiles).post(create_profile))
         .route("/profiles/temporary", post(create_temporary))
-        .route("/profiles/:id", get(get_profile).patch(edit_profile).delete(delete_profile))
+        .route(
+            "/profiles/:id",
+            get(get_profile).patch(edit_profile).delete(delete_profile),
+        )
         .route("/profiles/:id/start", post(start_profile))
         .route("/profiles/:id/stop", post(stop_profile))
-        .route("/profiles/:id/cookies", get(export_cookies).post(import_cookies))
+        .route(
+            "/profiles/:id/cookies",
+            get(export_cookies).post(import_cookies),
+        )
         .route("/folders", get(list_folders))
-        .route("/folders/:folder", patch(rename_folder_ep).delete(delete_folder_ep))
+        .route(
+            "/folders/:folder",
+            patch(rename_folder_ep).delete(delete_folder_ep),
+        )
         .route("/folders/:folder/profiles", post(create_profile_in_folder))
         .route("/fingerprint/new", get(new_fingerprint))
         .route("/fingerprint/new/:platform", get(new_fingerprint_for))
@@ -607,18 +734,117 @@ pub async fn serve(secret: String, port: u16) {
         .route("/proxies/:id", delete(delete_proxy))
         .route_layer(middleware::from_fn(auth));
 
-    let app = Router::new()
-        .route("/health", get(health))
-        .merge(protected);
+    Router::new().route("/health", get(health)).merge(protected)
+}
 
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    match tokio::net::TcpListener::bind(addr).await {
-        Ok(listener) => {
-            eprintln!("[launcher] automation API listening on http://{addr}");
-            if let Err(e) = axum::serve(listener, app).await {
-                eprintln!("[launcher] API server error: {e}");
-            }
+async fn wait_for_listener_change(mut receiver: watch::Receiver<ApiConfig>, active: ApiConfig) {
+    while receiver.changed().await.is_ok() {
+        let next = receiver.borrow();
+        if next.enabled != active.enabled || next.port != active.port {
+            return;
         }
-        Err(e) => eprintln!("[launcher] API bind {addr} failed: {e}"),
+    }
+}
+
+async fn supervise(mut receiver: watch::Receiver<ApiConfig>) {
+    loop {
+        let config = receiver.borrow().clone();
+        set_secret(&config.secret);
+
+        if !config.enabled {
+            set_state(ApiState {
+                running: false,
+                port: None,
+                error: None,
+            });
+            if receiver.changed().await.is_err() {
+                return;
+            }
+            continue;
+        }
+
+        let addr = std::net::SocketAddr::from(([127, 0, 0, 1], config.port));
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(listener) => listener,
+            Err(error) => {
+                let message = error.to_string();
+                eprintln!("[launcher] API bind {addr} failed: {message}");
+                set_state(ApiState {
+                    running: false,
+                    port: None,
+                    error: Some(message),
+                });
+                if receiver.changed().await.is_err() {
+                    return;
+                }
+                continue;
+            }
+        };
+
+        eprintln!("[launcher] automation API listening on http://{addr}");
+        set_state(ApiState {
+            running: true,
+            port: Some(config.port),
+            error: None,
+        });
+
+        let shutdown = wait_for_listener_change(receiver.clone(), config);
+        if let Err(error) = axum::serve(listener, router())
+            .with_graceful_shutdown(shutdown)
+            .await
+        {
+            eprintln!("[launcher] API server error: {error}");
+            set_state(ApiState {
+                running: false,
+                port: None,
+                error: Some(error.to_string()),
+            });
+        } else {
+            set_state(ApiState {
+                running: false,
+                port: None,
+                error: None,
+            });
+        }
+
+        // Synchronize the outer receiver with changes consumed by the shutdown clone.
+        if receiver.has_changed().unwrap_or(false) && receiver.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::*;
+
+    fn config(enabled: bool, port: u16, secret: &str) -> ApiConfig {
+        ApiConfig {
+            enabled,
+            port,
+            secret: secret.to_string(),
+        }
+    }
+
+    #[test]
+    fn accepts_valid_enabled_configuration() {
+        assert!(validate_config(&config(true, 40325, "secret")).is_ok());
+    }
+
+    #[test]
+    fn rejects_empty_secret() {
+        let error = validate_config(&config(false, 40325, "")).unwrap_err();
+        assert!(error.contains("secret"));
+    }
+
+    #[test]
+    fn rejects_zero_port_when_enabled() {
+        let error = validate_config(&config(true, 0, "secret")).unwrap_err();
+        assert!(error.contains("port"));
+    }
+
+    #[test]
+    fn allows_zero_port_when_disabled() {
+        assert!(validate_config(&config(false, 0, "secret")).is_ok());
     }
 }

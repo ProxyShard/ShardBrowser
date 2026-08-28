@@ -75,7 +75,8 @@ pub fn list_all() -> Result<Vec<ProfileMeta>> {
         }
         let path = entry.path();
         let body = fs::read_to_string(&path)?;
-        let Ok(mut stored): std::result::Result<StoredProfile, _> = serde_json::from_str(&body) else {
+        let Ok(mut stored): std::result::Result<StoredProfile, _> = serde_json::from_str(&body)
+        else {
             continue;
         };
         // Hide ephemeral profiles.
@@ -146,7 +147,9 @@ pub fn purge_temporary() -> Result<usize> {
         if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(body) = fs::read_to_string(entry.path()) else { continue; };
+        let Ok(body) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let Ok(stored): std::result::Result<StoredProfile, _> = serde_json::from_str(&body) else {
             continue;
         };
@@ -232,8 +235,10 @@ pub fn clone_profile(id: &str) -> Result<ProfileMeta> {
     src.meta.last_launched_at = None;
     src.meta.created_at = None;
     src.meta.pinned = false;
-    src.config
-        .insert("name".into(), serde_json::Value::String(format!("{old_name} (copy)")));
+    src.config.insert(
+        "name".into(),
+        serde_json::Value::String(format!("{old_name} (copy)")),
+    );
     // Re-randomize CPU/RAM/platform_version so the copy doesn't collide on those axes.
     crate::randomize_platform_version(&mut src.config);
     crate::randomize_hardware(&mut src.config);
@@ -285,7 +290,9 @@ pub fn rename_folder(old: &str, new: &str) -> Result<usize> {
         if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(body) = fs::read_to_string(entry.path()) else { continue; };
+        let Ok(body) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let Ok(mut stored): std::result::Result<StoredProfile, _> = serde_json::from_str(&body)
         else {
             continue;
@@ -310,7 +317,9 @@ pub fn delete_folder(name: &str, delete_profiles: bool) -> Result<usize> {
         if entry.path().extension().and_then(|s| s.to_str()) != Some("json") {
             continue;
         }
-        let Ok(body) = fs::read_to_string(entry.path()) else { continue; };
+        let Ok(body) = fs::read_to_string(entry.path()) else {
+            continue;
+        };
         let Ok(mut stored): std::result::Result<StoredProfile, _> = serde_json::from_str(&body)
         else {
             continue;

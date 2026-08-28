@@ -141,15 +141,13 @@ pub fn get(id: &str) -> Result<Option<LibraryEntry>> {
 pub fn import(json_text: &str, id_hint: Option<String>) -> Result<LibraryEntry> {
     let payload: Value =
         serde_json::from_str(json_text).context("not a valid JSON FingerprintConfig")?;
-    let raw_id = id_hint
-        .filter(|s| !s.trim().is_empty())
-        .unwrap_or_else(|| {
-            payload
-                .get("name")
-                .and_then(|v| v.as_str())
-                .map(slugify)
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-        });
+    let raw_id = id_hint.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
+        payload
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(slugify)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+    });
     let id = ensure_unique_id(&raw_id)?;
     let entry = wrap_payload(&id, &payload);
     let path = path_for(&id)?;
@@ -167,7 +165,11 @@ fn slugify(s: &str) -> String {
         }
     }
     let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() { uuid::Uuid::new_v4().to_string() } else { trimmed }
+    if trimmed.is_empty() {
+        uuid::Uuid::new_v4().to_string()
+    } else {
+        trimmed
+    }
 }
 
 fn ensure_unique_id(base: &str) -> Result<String> {

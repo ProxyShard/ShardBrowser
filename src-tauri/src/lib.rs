@@ -1,4 +1,4 @@
-// ShardX Launcher — Tauri backend.
+// ShardX Launcher Test — isolated Tauri backend.
 
 mod api;
 mod cookies;
@@ -93,26 +93,20 @@ fn infer_gpu_preset_id(config: &serde_json::Map<String, Value>) -> Option<String
 
 // macOS Sonoma 14.x, Sequoia 15.x, Tahoe 26.x.
 const MACOS_PLATFORM_VERSIONS: &[&str] = &[
-    "14.6.1", "14.7", "14.7.1", "14.7.2",
-    "15.4", "15.4.1", "15.5", "15.6", "15.6.1", "15.7",
+    "14.6.1", "14.7", "14.7.1", "14.7.2", "15.4", "15.4.1", "15.5", "15.6", "15.6.1", "15.7",
     "26.0", "26.0.1", "26.1",
 ];
 
 // Win 10 21H1+ ("10.0.0"), Win 11 21H2..25H2 ("13"–"17"); weighted to 22H2/23H2/24H2.
 const WINDOWS_PLATFORM_VERSIONS: &[&str] = &[
-    "10.0.0",
-    "13.0.0",
-    "14.0.0", "14.0.0", "14.0.0",
-    "15.0.0", "15.0.0", "15.0.0", "15.0.0",
-    "16.0.0", "16.0.0", "16.0.0",
-    "17.0.0",
+    "10.0.0", "13.0.0", "14.0.0", "14.0.0", "14.0.0", "15.0.0", "15.0.0", "15.0.0", "15.0.0",
+    "16.0.0", "16.0.0", "16.0.0", "17.0.0",
 ];
 
 // LTS kernels + current mainline.
 const LINUX_PLATFORM_VERSIONS: &[&str] = &[
-    "5.15.0", "6.1.0", "6.5.0",
-    "6.6.0", "6.8.0", "6.10.0", "6.11.0", "6.12.0",
-    "6.14.0", "6.15.0", "6.16.0",
+    "5.15.0", "6.1.0", "6.5.0", "6.6.0", "6.8.0", "6.10.0", "6.11.0", "6.12.0", "6.14.0", "6.15.0",
+    "6.16.0",
 ];
 
 /// Write a random platform_version into navigator + client_hints; unknown platforms left alone.
@@ -123,10 +117,10 @@ pub(crate) fn randomize_platform_version(payload: &mut serde_json::Map<String, V
         .and_then(|v| v.as_str())
         .unwrap_or("");
     let pool: &[&str] = match platform {
-        "macOS"   => MACOS_PLATFORM_VERSIONS,
+        "macOS" => MACOS_PLATFORM_VERSIONS,
         "Windows" => WINDOWS_PLATFORM_VERSIONS,
-        "Linux"   => LINUX_PLATFORM_VERSIONS,
-        _         => return,
+        "Linux" => LINUX_PLATFORM_VERSIONS,
+        _ => return,
     };
     let pick_idx = (uuid::Uuid::new_v4().as_bytes()[0] as usize) % pool.len();
     let version = pool[pick_idx].to_string();
@@ -134,7 +128,10 @@ pub(crate) fn randomize_platform_version(payload: &mut serde_json::Map<String, V
     if let Some(nav) = payload.get_mut("navigator").and_then(|v| v.as_object_mut()) {
         nav.insert("platform_version".into(), Value::String(version.clone()));
     }
-    if let Some(ch) = payload.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
+    if let Some(ch) = payload
+        .get_mut("client_hints")
+        .and_then(|v| v.as_object_mut())
+    {
         ch.insert("platform_version".into(), Value::String(version));
     }
 }
@@ -148,14 +145,10 @@ fn mac_hw_configs(model: &str) -> Option<&'static [(u32, u32)]> {
         "mac-m2-air13" | "mac-m2-air15" | "mac-m2-mbp13" => &[(8, 8), (8, 16)],
         "mac-m2-pro-mbp14" | "mac-m2-pro-mbp16" => &[(10, 16), (12, 16), (12, 32)],
         "mac-m2-max-mbp14" | "mac-m2-max-mbp16" => &[(12, 32)],
-        "mac-m3-air13" | "mac-m3-air15" | "mac-m3-mbp14" | "mac-m3-imac24" => {
-            &[(8, 8), (8, 16)]
-        }
+        "mac-m3-air13" | "mac-m3-air15" | "mac-m3-mbp14" | "mac-m3-imac24" => &[(8, 8), (8, 16)],
         "mac-m3-pro-mbp14" | "mac-m3-pro-mbp16" => &[(11, 16), (12, 16), (12, 32)],
         "mac-m3-max-mbp14" | "mac-m3-max-mbp16" => &[(14, 32), (16, 32)],
-        "mac-m4-air13" | "mac-m4-air15" | "mac-m4-mbp14" | "mac-m4-imac24" => {
-            &[(10, 16), (10, 32)]
-        }
+        "mac-m4-air13" | "mac-m4-air15" | "mac-m4-mbp14" | "mac-m4-imac24" => &[(10, 16), (10, 32)],
         "mac-m4-pro-mbp14" | "mac-m4-pro-mbp16" => &[(12, 16), (14, 16), (14, 32)],
         "mac-m4-max-mbp14" | "mac-m4-max-mbp16" => &[(14, 32), (16, 32)],
         "mac-m5-mbp14" => &[(10, 16), (10, 32)],
@@ -200,7 +193,10 @@ fn host_ram_gb() -> Option<u32> {
             .output()
             .ok()?;
         let txt = String::from_utf8_lossy(&out.stdout);
-        let bytes: u64 = txt.lines().filter_map(|l| l.trim().parse::<u64>().ok()).next()?;
+        let bytes: u64 = txt
+            .lines()
+            .filter_map(|l| l.trim().parse::<u64>().ok())
+            .next()?;
         return Some((bytes / (1024 * 1024 * 1024)) as u32);
     }
     #[allow(unreachable_code)]
@@ -299,7 +295,12 @@ fn clamp_screen_to_real_display(
     let real_h = (phys.height as f64 / scale).round() as i64;
     eprintln!(
         "[launcher] display: name={:?} physical={}x{} scale={} -> logical={}x{}",
-        monitor.name(), phys.width, phys.height, scale, real_w, real_h
+        monitor.name(),
+        phys.width,
+        phys.height,
+        scale,
+        real_w,
+        real_h
     );
     if real_w <= 0 || real_h <= 0 {
         return;
@@ -326,8 +327,14 @@ fn clamp_screen_to_real_display(
     }
 
     // Preserve FP menubar/dock insets for avail_*.
-    let fp_avail_w = scr.get("avail_width").and_then(|v| v.as_i64()).unwrap_or(fp_w);
-    let fp_avail_h = scr.get("avail_height").and_then(|v| v.as_i64()).unwrap_or(fp_h);
+    let fp_avail_w = scr
+        .get("avail_width")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(fp_w);
+    let fp_avail_h = scr
+        .get("avail_height")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(fp_h);
     let chrome_w = (fp_w - fp_avail_w).max(0);
     let chrome_h = (fp_h - fp_avail_h).max(0);
     let avail_w = (real_w - chrome_w).max(1);
@@ -536,7 +543,9 @@ pub fn merge_library_fingerprint(
     );
     if let Some(o) = entry.payload.as_object() {
         for (k, v) in o {
-            if k == "_meta" { continue; }
+            if k == "_meta" {
+                continue;
+            }
             merged.insert(k.clone(), v.clone());
         }
     }
@@ -639,7 +648,10 @@ fn fingerprint_get(id: String) -> Result<Option<fingerprints::LibraryEntry>, Str
 }
 
 #[tauri::command]
-fn fingerprint_import(json_text: String, id_hint: Option<String>) -> Result<fingerprints::LibraryEntry, String> {
+fn fingerprint_import(
+    json_text: String,
+    id_hint: Option<String>,
+) -> Result<fingerprints::LibraryEntry, String> {
     fingerprints::import(&json_text, id_hint).map_err(|e| e.to_string())
 }
 
@@ -707,8 +719,13 @@ async fn proxy_check_udp(entry: proxy::ProxyEntry) -> Result<u128, String> {
 }
 
 #[tauri::command]
-async fn proxy_geo(entry: proxy::ProxyEntry, provider: Option<String>) -> Result<proxy::GeoInfo, String> {
-    proxy::geo_check(&entry, provider).await.map_err(|e| e.to_string())
+async fn proxy_geo(
+    entry: proxy::ProxyEntry,
+    provider: Option<String>,
+) -> Result<proxy::GeoInfo, String> {
+    proxy::geo_check(&entry, provider)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -807,7 +824,29 @@ fn settings_get() -> Result<settings::Settings, String> {
 
 #[tauri::command]
 fn settings_save(value: settings::Settings) -> Result<(), String> {
-    settings::save(&value).map_err(|e| e.to_string())
+    let current = settings::load().map_err(|e| e.to_string())?;
+    let storage_changed = !store::same_profile_root(
+        current.profile_storage_path.as_deref(),
+        value.profile_storage_path.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+    if storage_changed && !process::Tracker::shared().running().is_empty() {
+        return Err("stop all profiles before changing the profile storage directory".into());
+    }
+
+    let config = api::ApiConfig {
+        enabled: value.api_enabled,
+        port: value.api_port,
+        secret: value.api_secret.clone(),
+    };
+    api::validate_config(&config)?;
+    store::prepare_profile_root(value.profile_storage_path.as_deref())
+        .map_err(|e| e.to_string())?;
+    settings::save(&value).map_err(|e| e.to_string())?;
+    store::configure_profile_root(value.profile_storage_path.as_deref())
+        .map_err(|e| e.to_string())?;
+    api::configure(config)?;
+    Ok(())
 }
 
 // ---- Automation API ----
@@ -817,11 +856,14 @@ fn settings_save(value: settings::Settings) -> Result<(), String> {
 fn api_info() -> Result<Value, String> {
     let s = settings::ensure_secret().map_err(|e| e.to_string())?;
     let token = api::long_lived_token(&s.api_secret)?;
+    let state = api::state();
     Ok(serde_json::json!({
         "enabled": s.api_enabled,
         "port": s.api_port,
         "base_url": format!("http://127.0.0.1:{}", s.api_port),
         "token": token,
+        "running": state.running,
+        "error": state.error,
     }))
 }
 
@@ -835,7 +877,11 @@ fn api_regenerate_token() -> Result<Value, String> {
         uuid::Uuid::new_v4().simple()
     );
     settings::save(&s).map_err(|e| e.to_string())?;
-    api::set_secret(&s.api_secret);
+    api::configure(api::ApiConfig {
+        enabled: s.api_enabled,
+        port: s.api_port,
+        secret: s.api_secret.clone(),
+    })?;
     let token = api::long_lived_token(&s.api_secret)?;
     Ok(serde_json::json!({
         "enabled": s.api_enabled,
@@ -845,12 +891,99 @@ fn api_regenerate_token() -> Result<Value, String> {
     }))
 }
 
+// ---- System tray (close-to-tray parity with the original launcher) ----
+
+/// Show + focus the main window (tray "Show" item / tray left-click).
+#[cfg(desktop)]
+fn show_main_window(app: &tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Graceful quit: stop tracked browsers (flushes session state), then exit.
+#[cfg(desktop)]
+fn quit_app(app: &tauri::AppHandle) {
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let tracker = process::Tracker::shared();
+        let ids: Vec<String> = tracker
+            .running()
+            .into_iter()
+            .map(|r| r.profile_id)
+            .collect();
+        for id in &ids {
+            let _ = tracker.kill(id).await;
+        }
+        for id in &ids {
+            tracker
+                .wait_until_stopped(id, std::time::Duration::from_secs(7))
+                .await;
+        }
+        handle.exit(0);
+    });
+}
+
+/// Tray icon with Show/Quit menu; left-click restores the window.
+#[cfg(desktop)]
+fn setup_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItemBuilder::with_id("show", "Show ShardX").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
+    let menu = MenuBuilder::new(app)
+        .item(&show)
+        .separator()
+        .item(&quit)
+        .build()?;
+
+    let mut builder = TrayIconBuilder::with_id("shardx-tray")
+        .tooltip("ShardX Launcher")
+        .menu(&menu)
+        // Left click restores the window; right click opens the menu.
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "quit" => quit_app(app),
+            "show" => show_main_window(app),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .on_window_event(|window, event| {
+            // Close-to-tray: hide the main window instead of destroying it so
+            // the launcher (and its API server) keeps running in the background.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             profile_list,
             profile_get,
@@ -904,6 +1037,12 @@ pub fn run() {
         .setup(|app| {
             let _ = APP_HANDLE.set(app.handle().clone());
 
+            // System tray: close-to-tray + background API server.
+            #[cfg(desktop)]
+            if let Err(e) = setup_tray(app.handle()) {
+                eprintln!("[launcher] tray init failed: {e}");
+            }
+
             // Win/Linux: strip native caption since macOS-only titleBarStyle:Overlay leaves it.
             #[cfg(not(target_os = "macos"))]
             {
@@ -913,23 +1052,28 @@ pub fn run() {
                 }
             }
 
-            // Clean up temporary profiles from crashed runs.
-            match profile::purge_temporary() {
-                Ok(n) if n > 0 => eprintln!("[launcher] purged {n} stale temporary profile(s)"),
-                Ok(_) => {}
-                Err(e) => eprintln!("[launcher] temporary purge failed: {e}"),
-            }
-
-            // API task on the shared tokio runtime.
+            // Initialize isolated settings and the configured profile root before
+            // any profile operation uses storage.
             match settings::ensure_secret() {
-                Ok(s) if s.api_enabled => {
-                    let (secret, port) = (s.api_secret.clone(), s.api_port);
-                    tauri::async_runtime::spawn(async move {
-                        api::serve(secret, port).await;
-                    });
+                Ok(s) => {
+                    match profile::purge_temporary() {
+                        Ok(n) if n > 0 => {
+                            eprintln!("[launcher] purged {n} stale temporary profile(s)")
+                        }
+                        Ok(_) => {}
+                        Err(e) => eprintln!("[launcher] temporary purge failed: {e}"),
+                    }
+
+                    let config = api::ApiConfig {
+                        enabled: s.api_enabled,
+                        port: s.api_port,
+                        secret: s.api_secret,
+                    };
+                    if let Err(e) = api::start_supervisor(config) {
+                        eprintln!("[launcher] API supervisor failed to start: {e}");
+                    }
                 }
-                Ok(_) => eprintln!("[launcher] automation API disabled in settings"),
-                Err(e) => eprintln!("[launcher] API secret init failed: {e}"),
+                Err(e) => eprintln!("[launcher] settings initialization failed: {e}"),
             }
             Ok(())
         })

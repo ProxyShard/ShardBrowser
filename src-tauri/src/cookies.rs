@@ -160,10 +160,10 @@ mod win {
     use anyhow::{anyhow, Context, Result};
     use base64::{engine::general_purpose::STANDARD, Engine};
     use std::path::Path;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{
         CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
     };
-    use windows_sys::Win32::Foundation::LocalFree;
 
     const DPAPI_TAG: &[u8] = b"DPAPI";
 
@@ -232,8 +232,7 @@ mod win {
                 if protect { "protect" } else { "unprotect" }
             ));
         }
-        let out =
-            std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
+        let out = std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec();
         LocalFree(out_blob.pbData as _);
         Ok(out)
     }
@@ -335,11 +334,9 @@ pub fn export(profile_id: &str) -> Result<Vec<Cookie>> {
     }
     let crypt = Crypt::open(&udd)?;
     // Read-only to avoid WAL write-lock fights with a running browser.
-    let conn = rusqlite::Connection::open_with_flags(
-        &path,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    )
-    .with_context(|| format!("open {}", path.display()))?;
+    let conn =
+        rusqlite::Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .with_context(|| format!("open {}", path.display()))?;
 
     let mut stmt = conn.prepare(
         "SELECT host_key, name, value, encrypted_value, path, expires_utc, \
@@ -386,8 +383,8 @@ pub fn import(profile_id: &str, cookies: &[Cookie]) -> Result<usize> {
         std::fs::create_dir_all(parent).ok();
     }
     let crypt = Crypt::open(&udd)?;
-    let conn = rusqlite::Connection::open(&path)
-        .with_context(|| format!("open {}", path.display()))?;
+    let conn =
+        rusqlite::Connection::open(&path).with_context(|| format!("open {}", path.display()))?;
     ensure_schema(&conn)?;
 
     let now = now_chromium();

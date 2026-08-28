@@ -104,7 +104,9 @@ struct Manifest {
 }
 
 fn load_manifest() -> Manifest {
-    let Ok(p) = manifest_path() else { return Manifest::default() };
+    let Ok(p) = manifest_path() else {
+        return Manifest::default();
+    };
     fs::read_to_string(p)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
@@ -163,9 +165,8 @@ pub async fn runtime_status() -> Result<RuntimeStatus, String> {
             .map(|d| {
                 fs::read_dir(&d)
                     .map(|it| {
-                        it.flatten().any(|e| {
-                            e.path().extension().and_then(|s| s.to_str()) == Some("json")
-                        })
+                        it.flatten()
+                            .any(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
                     })
                     .unwrap_or(false)
             })
@@ -249,7 +250,9 @@ async fn install_fingerprints(
     let url = format!("{PUB_BASE}/{FINGERPRINTS_ARCHIVE_KEY}");
 
     if !force {
-        if let (Some(local), Some(remote)) = (local_etag, head_etag(&url).await.ok().flatten().as_deref()) {
+        if let (Some(local), Some(remote)) =
+            (local_etag, head_etag(&url).await.ok().flatten().as_deref())
+        {
             if local == remote {
                 return Ok(None);
             }
@@ -280,9 +283,17 @@ async fn install_fingerprints(
         }
         let dst = dir.join(p.file_name().unwrap());
         match (dst.exists(), force) {
-            (true, false)  => { skipped_existing += 1; }
-            (true, true)   => { fs::copy(&p, &dst)?; overwritten += 1; }
-            (false, _)     => { fs::copy(&p, &dst)?; added += 1; }
+            (true, false) => {
+                skipped_existing += 1;
+            }
+            (true, true) => {
+                fs::copy(&p, &dst)?;
+                overwritten += 1;
+            }
+            (false, _) => {
+                fs::copy(&p, &dst)?;
+                added += 1;
+            }
         }
     }
     let _ = fs::remove_dir_all(&staging);
@@ -295,7 +306,11 @@ async fn install_fingerprints(
 /// Stream archive → temp file → extract; emits `runtime:progress` events.
 async fn download_and_extract(window: &Window, spec: &ArchiveSpec, base: &Path) -> Result<String> {
     let url = format!("{PUB_BASE}/{}", spec.key);
-    let mut resp = reqwest::Client::new().get(&url).send().await?.error_for_status()?;
+    let mut resp = reqwest::Client::new()
+        .get(&url)
+        .send()
+        .await?
+        .error_for_status()?;
     let total = resp.content_length().unwrap_or(0);
     let etag = resp
         .headers()
@@ -371,9 +386,7 @@ async fn download_and_extract(window: &Window, spec: &ArchiveSpec, base: &Path) 
 /// Move Widevine to `<Framework>.framework/Versions/<ver>/Libraries/WidevineCdm/`.
 #[cfg(target_os = "macos")]
 fn place_widevine(base: &Path) -> Result<()> {
-    let src = base
-        .join("ShardX-Widevine-Mac-arm64")
-        .join("WidevineCdm");
+    let src = base.join("ShardX-Widevine-Mac-arm64").join("WidevineCdm");
     if !src.exists() {
         return Ok(());
     }
@@ -451,10 +464,14 @@ fn is_newer(latest: &str, current: &str) -> bool {
         let y = b.get(i).copied().unwrap_or("0");
         match (x.parse::<u64>(), y.parse::<u64>()) {
             (Ok(xn), Ok(yn)) => {
-                if xn != yn { return xn > yn; }
+                if xn != yn {
+                    return xn > yn;
+                }
             }
             _ => {
-                if x != y { return x > y; }
+                if x != y {
+                    return x > y;
+                }
             }
         }
     }
@@ -471,9 +488,15 @@ pub async fn launcher_update_check(app: tauri::AppHandle) -> Result<LauncherVers
         .build()
     {
         Ok(c) => c,
-        Err(e) => return Ok(LauncherVersionInfo {
-            current, latest: None, update_available: false, release_url: None,
-        }).map_err(|_: String| e.to_string()),
+        Err(e) => {
+            return Ok(LauncherVersionInfo {
+                current,
+                latest: None,
+                update_available: false,
+                release_url: None,
+            })
+            .map_err(|_: String| e.to_string())
+        }
     };
 
     let resp = client
@@ -483,26 +506,48 @@ pub async fn launcher_update_check(app: tauri::AppHandle) -> Result<LauncherVers
         .await;
     let Ok(resp) = resp else {
         return Ok(LauncherVersionInfo {
-            current, latest: None, update_available: false, release_url: None,
+            current,
+            latest: None,
+            update_available: false,
+            release_url: None,
         });
     };
     if !resp.status().is_success() {
         // 404/403 etc → report unknown rather than scare the user.
         return Ok(LauncherVersionInfo {
-            current, latest: None, update_available: false, release_url: None,
+            current,
+            latest: None,
+            update_available: false,
+            release_url: None,
         });
     }
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
-        Err(_) => return Ok(LauncherVersionInfo {
-            current, latest: None, update_available: false, release_url: None,
-        }),
+        Err(_) => {
+            return Ok(LauncherVersionInfo {
+                current,
+                latest: None,
+                update_available: false,
+                release_url: None,
+            })
+        }
     };
-    let latest = body.get("tag_name").and_then(|v| v.as_str()).map(String::from);
-    let release_url = body.get("html_url").and_then(|v| v.as_str()).map(String::from);
+    let latest = body
+        .get("tag_name")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let release_url = body
+        .get("html_url")
+        .and_then(|v| v.as_str())
+        .map(String::from);
     let update_available = match &latest {
         Some(l) => is_newer(l, &current),
         None => false,
     };
-    Ok(LauncherVersionInfo { current, latest, update_available, release_url })
+    Ok(LauncherVersionInfo {
+        current,
+        latest,
+        update_available,
+        release_url,
+    })
 }

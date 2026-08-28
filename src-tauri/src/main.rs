@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    shardx_launcher_lib::run()
+    shardx_launcher_test_lib::run()
 }

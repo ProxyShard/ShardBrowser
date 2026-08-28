@@ -100,10 +100,7 @@ pub async fn launch_profile(
     cmd.arg("--no-first-run");
 
     // Disable WebGPU when profile omits `webgpu` (matches real Linux Chrome).
-    let webgpu_present = raw
-        .get("webgpu")
-        .map(|v| !v.is_null())
-        .unwrap_or(false);
+    let webgpu_present = raw.get("webgpu").map(|v| !v.is_null()).unwrap_or(false);
     if !webgpu_present {
         cmd.arg("--disable-features=WebGPU");
     }
@@ -126,23 +123,24 @@ pub async fn launch_profile(
             );
         } else {
             cmd.arg("--disable-quic");
-            eprintln!("[launcher] QUIC disabled: proxy {} has no working UDP relay", p.host);
+            eprintln!(
+                "[launcher] QUIC disabled: proxy {} has no working UDP relay",
+                p.host
+            );
         }
     }
 
     // WebRTC IP policy: block / tcp_only / auto (auto = relay if UDP, else tcp_only).
-    let webrtc_mode = raw
-        .get("webrtc")
-        .and_then(|v| v.as_str())
-        .unwrap_or("auto");
-    let latest = bound_proxy
-        .as_ref()
-        .and_then(|p| proxy::latest_test(&p.id));
+    let webrtc_mode = raw.get("webrtc").and_then(|v| v.as_str()).unwrap_or("auto");
+    let latest = bound_proxy.as_ref().and_then(|p| proxy::latest_test(&p.id));
     // Live geo for ICE-candidate spoofing, cached snapshot as fallback.
     let proxy_public_ip: Option<String> = if let Some(p) = bound_proxy.as_ref() {
         match proxy::geo_check(p, None).await {
             Ok(g) if !g.ip.is_empty() => Some(g.ip),
-            _ => latest.as_ref().map(|s| s.ip.clone()).filter(|ip| !ip.is_empty()),
+            _ => latest
+                .as_ref()
+                .map(|s| s.ip.clone())
+                .filter(|ip| !ip.is_empty()),
         }
     } else {
         None
@@ -194,20 +192,52 @@ pub async fn launch_profile(
 
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     let child = cmd.spawn().context("spawn ShardX")?;
-    let pid = Tracker::shared().track(profile_id.to_string(), child, stored.meta.temporary);
+    let pid =
+        match Tracker::shared().try_track(profile_id.to_string(), child, stored.meta.temporary) {
+            Ok(pid) => pid,
+            Err(mut child) => {
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                anyhow::bail!("profile {profile_id} is already running")
+            }
+        };
 
-    profile::touch_launched(profile_id, None)?;
+    // If persistence fails after spawn, stop and await tracker cleanup so the
+    // caller never receives an error while an orphan process remains alive.
+    if let Err(e) = profile::touch_launched(profile_id, None) {
+        let tracker = Tracker::shared();
+        let _ = tracker.kill(profile_id).await;
+        let _ = tracker
+            .wait_until_stopped(profile_id, std::time::Duration::from_secs(7))
+            .await;
+        return Err(e);
+    }
 
     let cdp = if enable_cdp {
         match read_devtools_endpoint(&udd).await {
-            Some(c) => {
-                eprintln!("[launcher] CDP ready for {profile_id}: {}", c.web_socket_debugger_url);
-                Tracker::shared().set_cdp(profile_id, c.clone());
+            Some(c) if Tracker::shared().set_cdp(profile_id, c.clone()) => {
+                eprintln!(
+                    "[launcher] CDP ready for {profile_id}: {}",
+                    c.web_socket_debugger_url
+                );
                 Some(c)
+            }
+            Some(_) => {
+                let tracker = Tracker::shared();
+                let _ = tracker.kill(profile_id).await;
+                let _ = tracker
+                    .wait_until_stopped(profile_id, std::time::Duration::from_secs(7))
+                    .await;
+                anyhow::bail!("profile {profile_id} exited before CDP became ready")
             }
             None => {
                 eprintln!("[launcher] CDP: DevToolsActivePort not found within timeout");
-                None
+                let tracker = Tracker::shared();
+                let _ = tracker.kill(profile_id).await;
+                let _ = tracker
+                    .wait_until_stopped(profile_id, std::time::Duration::from_secs(7))
+                    .await;
+                anyhow::bail!("CDP endpoint for profile {profile_id} was not ready within timeout")
             }
         }
     } else {
@@ -228,10 +258,7 @@ async fn read_devtools_endpoint(udd: &Path) -> Option<process::CdpInfo> {
                     return Some(process::CdpInfo {
                         port,
                         http_url: format!("http://127.0.0.1:{port}"),
-                        web_socket_debugger_url: format!(
-                            "ws://127.0.0.1:{port}{}",
-                            path.trim()
-                        ),
+                        web_socket_debugger_url: format!("ws://127.0.0.1:{port}{}", path.trim()),
                     });
                 }
             }
@@ -253,7 +280,9 @@ async fn resolve_auto_fields(
         .and_then(|v| v.as_str())
         == Some("auto");
     let want_geo_auto = matches!(
-        cfg.get("geolocation").and_then(|g| g.get("mode")).and_then(|v| v.as_str()),
+        cfg.get("geolocation")
+            .and_then(|g| g.get("mode"))
+            .and_then(|v| v.as_str()),
         Some("auto")
     );
 
@@ -266,63 +295,73 @@ async fn resolve_auto_fields(
         want_tz_auto,
         want_lang_auto,
         want_geo_auto,
-        proxy_opt.map(|p| format!("{}:{}", p.host, p.port)).unwrap_or_else(|| "(direct)".into()),
+        proxy_opt
+            .map(|p| format!("{}:{}", p.host, p.port))
+            .unwrap_or_else(|| "(direct)".into()),
     );
 
     // ---- geo source ----
     let mut source = "";
     let geo: Option<proxy::GeoInfo> = match proxy_opt {
-        Some(p) => {
-            match proxy::geo_check_via(Some(p), None).await {
-                Ok(g) => { source = "proxy-live"; Some(g) }
-                Err(e) => {
-                    eprintln!("[launcher] proxy geo failed: {e} — falling back to cached snapshot");
-                    if let Some(snap) = proxy::latest_test(&p.id) {
-                        if !snap.country_code.is_empty() || !snap.timezone.is_empty() {
-                            source = "cached-snapshot";
-                            Some(proxy::GeoInfo {
-                                ip: snap.ip,
-                                country: snap.country,
-                                country_code: snap.country_code,
-                                region: snap.region,
-                                city: snap.city,
-                                isp: snap.isp,
-                                timezone: snap.timezone,
-                                latitude: snap.latitude,
-                                longitude: snap.longitude,
-                                provider: snap.provider,
-                            })
-                        } else { None }
-                    } else { None }
-                    .or_else(|| {
-                        if !p.country.is_empty() {
-                            source = "country-tag";
-                            Some(proxy::GeoInfo {
-                                ip: String::new(),
-                                country: String::new(),
-                                country_code: p.country.clone(),
-                                region: String::new(),
-                                city: String::new(),
-                                isp: String::new(),
-                                timezone: String::new(),
-                                latitude: 0.0,
-                                longitude: 0.0,
-                                provider: String::new(),
-                            })
-                        } else { None }
-                    })
-                }
+        Some(p) => match proxy::geo_check_via(Some(p), None).await {
+            Ok(g) => {
+                source = "proxy-live";
+                Some(g)
             }
-        }
-        None => {
-            match proxy::geo_check_via(None, None).await {
-                Ok(g) => { source = "direct-live"; Some(g) }
-                Err(e) => {
-                    eprintln!("[launcher] direct geo failed: {e} — falling back to host TZ/locale");
+            Err(e) => {
+                eprintln!("[launcher] proxy geo failed: {e} — falling back to cached snapshot");
+                if let Some(snap) = proxy::latest_test(&p.id) {
+                    if !snap.country_code.is_empty() || !snap.timezone.is_empty() {
+                        source = "cached-snapshot";
+                        Some(proxy::GeoInfo {
+                            ip: snap.ip,
+                            country: snap.country,
+                            country_code: snap.country_code,
+                            region: snap.region,
+                            city: snap.city,
+                            isp: snap.isp,
+                            timezone: snap.timezone,
+                            latitude: snap.latitude,
+                            longitude: snap.longitude,
+                            provider: snap.provider,
+                        })
+                    } else {
+                        None
+                    }
+                } else {
                     None
                 }
+                .or_else(|| {
+                    if !p.country.is_empty() {
+                        source = "country-tag";
+                        Some(proxy::GeoInfo {
+                            ip: String::new(),
+                            country: String::new(),
+                            country_code: p.country.clone(),
+                            region: String::new(),
+                            city: String::new(),
+                            isp: String::new(),
+                            timezone: String::new(),
+                            latitude: 0.0,
+                            longitude: 0.0,
+                            provider: String::new(),
+                        })
+                    } else {
+                        None
+                    }
+                })
             }
-        }
+        },
+        None => match proxy::geo_check_via(None, None).await {
+            Ok(g) => {
+                source = "direct-live";
+                Some(g)
+            }
+            Err(e) => {
+                eprintln!("[launcher] direct geo failed: {e} — falling back to host TZ/locale");
+                None
+            }
+        },
     };
 
     let host_warn = || {
@@ -344,8 +383,16 @@ async fn resolve_auto_fields(
                 proxy::country_to_timezone(&g.country_code).to_string()
             };
             let locale = proxy::country_to_locale(&g.country_code).to_string();
-            let lat = if g.latitude != 0.0 { Some(g.latitude) } else { None };
-            let lng = if g.longitude != 0.0 { Some(g.longitude) } else { None };
+            let lat = if g.latitude != 0.0 {
+                Some(g.latitude)
+            } else {
+                None
+            };
+            let lng = if g.longitude != 0.0 {
+                Some(g.longitude)
+            } else {
+                None
+            };
             (tz, locale, lat, lng)
         }
         None => {
@@ -359,16 +406,21 @@ async fn resolve_auto_fields(
         }
     };
 
-    eprintln!(
-        "[launcher] resolved tz={resolved_tz} locale={resolved_locale} (source={source})"
-    );
+    eprintln!("[launcher] resolved tz={resolved_tz} locale={resolved_locale} (source={source})");
 
     if want_tz_auto {
-        cfg.insert("timezone".into(), serde_json::Value::String(resolved_tz.clone()));
+        cfg.insert(
+            "timezone".into(),
+            serde_json::Value::String(resolved_tz.clone()),
+        );
     }
 
     if want_lang_auto {
-        let base = resolved_locale.split('-').next().unwrap_or(&resolved_locale).to_string();
+        let base = resolved_locale
+            .split('-')
+            .next()
+            .unwrap_or(&resolved_locale)
+            .to_string();
         let accept = if resolved_locale == "en-US" {
             "en-US,en;q=0.9".to_string()
         } else {
@@ -388,12 +440,18 @@ async fn resolve_auto_fields(
             ]
         };
         if let Some(nav) = cfg.get_mut("navigator").and_then(|v| v.as_object_mut()) {
-            nav.insert("language".into(), serde_json::Value::String(resolved_locale.clone()));
+            nav.insert(
+                "language".into(),
+                serde_json::Value::String(resolved_locale.clone()),
+            );
             nav.insert("accept_language".into(), serde_json::Value::String(accept));
             nav.insert("languages".into(), serde_json::Value::Array(languages));
         }
         // Always overwrite icu_locale so it matches resolved navigator.language.
-        cfg.insert("icu_locale".into(), serde_json::Value::String(resolved_locale));
+        cfg.insert(
+            "icu_locale".into(),
+            serde_json::Value::String(resolved_locale),
+        );
     }
 
     if want_geo_auto {
@@ -425,8 +483,8 @@ fn install_widevine(udd: &Path) -> Result<()> {
         anyhow::bail!("cache missing manifest.json — re-seed from a real Chrome");
     }
     let manifest_text = std::fs::read_to_string(&manifest_path)?;
-    let manifest: serde_json::Value = serde_json::from_str(&manifest_text)
-        .context("parse widevine manifest.json")?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(&manifest_text).context("parse widevine manifest.json")?;
     let version = manifest
         .get("version")
         .and_then(|v| v.as_str())
@@ -449,9 +507,8 @@ fn install_widevine(udd: &Path) -> Result<()> {
             }
         }
     }
-    copy_dir_recursive(&src, &versioned).with_context(|| {
-        format!("copy {} → {}", src.display(), versioned.display())
-    })?;
+    copy_dir_recursive(&src, &versioned)
+        .with_context(|| format!("copy {} → {}", src.display(), versioned.display()))?;
     // Chromium reads this single-line marker on startup.
     std::fs::write(
         widevine_root.join("latest-component-updated-version"),
@@ -473,7 +530,11 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         } else if ty.is_symlink() {
             // Resolve symlinks so dst tree stays portable across hosts.
             let target = std::fs::read_link(&from)?;
-            let resolved = if target.is_absolute() { target } else { from.parent().unwrap().join(target) };
+            let resolved = if target.is_absolute() {
+                target
+            } else {
+                from.parent().unwrap().join(target)
+            };
             if resolved.is_dir() {
                 copy_dir_recursive(&resolved, &to)?;
             } else {
