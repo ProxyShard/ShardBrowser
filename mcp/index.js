@@ -13,11 +13,28 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { chromium } from "patchright";
 
-const API = (process.env.SHARDX_API || "http://127.0.0.1:40325").replace(/\/+$/, "");
-const TOKEN = process.env.SHARDX_TOKEN || "";
+function readWindowsUserEnv(name) {
+  if (process.platform !== "win32") return "";
+  try {
+    const out = execFileSync("reg", ["query", "HKCU\\Environment", "/v", name], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    });
+    const line = out.split(/\r?\n/).find((l) => l.trim().startsWith(name));
+    return line?.trim().split(/\s{2,}/).slice(2).join(" ").trim() || "";
+  } catch {
+    return "";
+  }
+}
+
+const env = (name) => process.env[name] || readWindowsUserEnv(name);
+const API = (env("SHARDX_API") || "http://127.0.0.1:40325").replace(/\/+$/, "");
+const TOKEN = env("SHARDX_TOKEN") || "";
 
 // ---------- HTTP API helper ----------
 
@@ -166,15 +183,164 @@ const text = (v) => ({
   content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }],
 });
 
+function profileSummary(profile, match) {
+  return {
+    id: profile.id,
+    name: profile.name,
+    folder: profile.folder,
+    notes: profile.notes,
+    running: !!profile.running,
+    cdp: profile.cdp,
+    ...(match ? { match } : {}),
+  };
+}
+
+function matchProfile(profile, query, exact = false) {
+  const q = query.trim().toLowerCase();
+  if (!q) return null;
+  const id = String(profile.id || "");
+  const name = String(profile.name || "");
+  const lower = name.toLowerCase();
+  if (id === query) return "id";
+  if (exact ? lower === q : lower.includes(q)) return exact ? "name_exact" : "name";
+  return null;
+}
+
+async function findProfiles(query, { exact = false, limit = 10 } = {}) {
+  const profiles = await api("/profiles");
+  const matches = [];
+  for (const profile of profiles) {
+    const match = matchProfile(profile, query, exact);
+    if (match) matches.push(profileSummary(profile, match));
+    if (matches.length >= limit) break;
+  }
+  return matches;
+}
+
+async function resolveProfile({ profile_id, profile_query, exact = false }) {
+  if (profile_id) return { id: profile_id, match: "id" };
+  const matches = await findProfiles(profile_query || "", { exact, limit: 2 });
+  if (matches.length !== 1) {
+    throw new Error(`expected exactly 1 profile match, got ${matches.length}`);
+  }
+  return matches[0];
+}
+
+function assertHttpUrl(url) {
+  const parsed = new URL(url);
+  if (!["http:", "https:"].includes(parsed.protocol)) {
+    throw new Error("safe_open_url only supports http(s) URLs");
+  }
+  return parsed.href;
+}
+
 const server = new McpServer({ name: "shardx", version: "0.1.0" });
 
 // ================= API tools =================
+
+server.tool(
+  "health_check",
+  "Check that the ShardX Launcher API is reachable and, when SHARDX_TOKEN is set, authenticated.",
+  {},
+  async () => {
+    const health = await api("/health");
+    if (!TOKEN) {
+      return text({
+        ok: false,
+        api: API,
+        launcher: health,
+        token_present: false,
+        authenticated: false,
+      });
+    }
+    try {
+      const [profiles, running] = await Promise.all([api("/profiles"), api("/running")]);
+      return text({
+        ok: true,
+        api: API,
+        launcher: health,
+        token_present: true,
+        authenticated: true,
+        profiles_count: profiles.length,
+        running_count: running.length,
+      });
+    } catch (error) {
+      return text({
+        ok: false,
+        api: API,
+        launcher: health,
+        token_present: true,
+        authenticated: false,
+        error: String(error?.message || error),
+      });
+    }
+  },
+);
 
 server.tool(
   "list_profiles",
   "List persistent profiles with their running state and CDP endpoint.",
   {},
   async () => text(await api("/profiles")),
+);
+
+server.tool(
+  "find_profile_by_name",
+  "Find profiles by id or profile name. Returns safe profile summaries, not full fingerprint config.",
+  {
+    query: z.string(),
+    exact: z.boolean().optional(),
+    limit: z.number().int().positive().max(50).optional(),
+  },
+  async ({ query, exact, limit }) =>
+    text(await findProfiles(query, { exact: !!exact, limit: limit || 10 })),
+);
+
+server.tool(
+  "ensure_profile_started",
+  "Start a profile only if needed and return its CDP endpoint. Accepts a profile id or a unique profile name/query.",
+  {
+    profile_id: z.string().optional(),
+    profile_query: z.string().optional(),
+    exact: z.boolean().optional(),
+    headless: z.boolean().optional(),
+  },
+  async ({ profile_id, profile_query, exact, headless }) => {
+    const profile = await resolveProfile({ profile_id, profile_query, exact });
+    const running = await api("/running");
+    let entry = running.find((r) => r.profile_id === profile.id);
+    if (!entry?.cdp) {
+      const started = await api(`/profiles/${profile.id}/start`, {
+        method: "POST",
+        body: { headless: !!headless },
+      });
+      entry = { profile_id: profile.id, cdp: started.cdp, started: true };
+    }
+    return text({
+      profile: profileSummary(profile),
+      running: true,
+      started: !!entry.started,
+      cdp: entry.cdp,
+    });
+  },
+);
+
+server.tool(
+  "safe_open_url",
+  "Resolve/start a profile, open an http(s) URL, wait for DOM content, and return title/url.",
+  {
+    profile_id: z.string().optional(),
+    profile_query: z.string().optional(),
+    exact: z.boolean().optional(),
+    url: z.string(),
+    headless: z.boolean().optional(),
+  },
+  async ({ profile_id, profile_query, exact, url, headless }) => {
+    const profile = await resolveProfile({ profile_id, profile_query, exact });
+    const page = await pageFor(profile.id, { headless: !!headless });
+    await page.goto(assertHttpUrl(url), { waitUntil: "domcontentloaded", timeout: 60000 });
+    return text({ profile: profileSummary(profile), url: page.url(), title: await page.title() });
+  },
 );
 
 server.tool(

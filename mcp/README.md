@@ -42,6 +42,11 @@ PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 PATCHRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm instal
 }
 ```
 
+On Windows, if your MCP client strips custom environment variables, the server
+also checks the current user's `HKCU\Environment` values for `SHARDX_API` and
+`SHARDX_TOKEN`. This keeps Codex/Cursor-style stdio launches working without
+copying the token into client config.
+
 ### HTTP mode (optional, self-hosted)
 
 If you'd rather host it yourself and connect by URL, run it with
@@ -63,6 +68,12 @@ MCP_HTTP_PORT=40326 SHARDX_API=http://127.0.0.1:40325 SHARDX_TOKEN=… node inde
 
 **API**
 
+- `health_check` → confirms the launcher is reachable and auth works
+- `find_profile_by_name(query, exact?, limit?)` → safe profile summaries only
+- `ensure_profile_started(profile_id? | profile_query?, exact?, headless?)`
+  → idempotently starts one resolved profile and returns its CDP endpoint
+- `safe_open_url(profile_id? | profile_query?, exact?, url, headless?)`
+  → starts one resolved profile, opens an `http(s)` URL, returns title/url
 - `list_profiles`, `get_profile`, `create_profile`, `create_temporary_profile`,
   `edit_profile`, `delete_profile`
 - `new_fingerprint(platform?)`
@@ -147,10 +158,12 @@ headless) if it isn't running; actions target the profile's *active* tab:
 
 ## Typical agent flow
 
-1. `create_profile` (or `create_temporary_profile`) — optionally with a `proxy`.
-2. `browser_navigate(profile_id, "https://…")` — starts the browser with
+1. `health_check` — fail fast when the launcher is closed or the token is stale.
+2. `find_profile_by_name` or `create_profile` / `create_temporary_profile`.
+3. `safe_open_url` for a one-shot smoke check, or
+   `browser_navigate(profile_id, "https://…")` — starts the browser with
    CDP and opens the page.
-3. `browser_evaluate` / `browser_screenshot` / `browser_click` / `browser_fill`.
+4. `browser_evaluate` / `browser_screenshot` / `browser_click` / `browser_fill`.
 
 ### Human input
 
@@ -181,4 +194,4 @@ where you want it.
 These calls take **real time** — `human_fill` returns when the last key is
 up, and reports how long the move and the typing took. Budget for it the
 way you would for a person.
-4. `stop_profile` when done (temporary profiles self-delete on close).
+5. `stop_profile` when done (temporary profiles self-delete on close).
