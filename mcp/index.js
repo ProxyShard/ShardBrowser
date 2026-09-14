@@ -57,7 +57,7 @@ async function cdpEndpoint(profileId, { autostart = true, headless = false } = {
   }
   const cdp = entry?.cdp;
   if (!cdp?.http_url) {
-    throw new Error(`profile ${profileId} is not running with CDP (start it first)`);
+    throw new Error(`profile ${profileId} is not running with CDP (stop/restart it through MCP or the Automation API to enable DevTools)`);
   }
   return cdp;
 }
@@ -201,6 +201,42 @@ const text = (v) => ({
   content: [{ type: "text", text: typeof v === "string" ? v : JSON.stringify(v, null, 2) }],
 });
 
+async function resolveProfile({ profile_id, profile_query, exact = false }) {
+  if (profile_id) return { id: profile_id };
+  const q = (profile_query || "").trim().toLowerCase();
+  if (!q) throw new Error("provide profile_id or profile_query");
+  const matches = (await api("/profiles")).filter((profile) => {
+    const id = String(profile.id || "");
+    const name = String(profile.name || "").toLowerCase();
+    return id === profile_query || (exact ? name === q : name.includes(q));
+  });
+  if (matches.length !== 1) {
+    throw new Error(`expected exactly 1 profile match, got ${matches.length}`);
+  }
+  return matches[0];
+}
+
+async function cdpJson(cdp, path) {
+  const res = await fetch(new URL(path, cdp.http_url).href);
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(`CDP ${path} → HTTP ${res.status}`);
+  return data;
+}
+
+function targetSummary(cdp, target) {
+  return {
+    id: target.id,
+    type: target.type,
+    title: target.title || "",
+    url: target.url || "",
+    attached: !!target.attached,
+    web_socket_debugger_url: target.webSocketDebuggerUrl || null,
+    devtools_frontend_url: target.devtoolsFrontendUrl
+      ? new URL(target.devtoolsFrontendUrl, cdp.http_url).href
+      : null,
+  };
+}
+
 const server = new McpServer({ name: "shardx", version: "0.1.0" });
 
 // ================= API tools =================
@@ -210,6 +246,42 @@ server.tool(
   "List persistent profiles with their running state and CDP endpoint.",
   {},
   async () => text(await api("/profiles")),
+);
+
+server.tool(
+  "devtools_context",
+  "Resolve/start a profile and return its CDP endpoint plus /json/list page targets for Chrome DevTools handoff.",
+  {
+    profile_id: z.string().optional(),
+    profile_query: z.string().optional(),
+    exact: z.boolean().optional(),
+    headless: z.boolean().optional(),
+  },
+  async ({ profile_id, profile_query, exact, headless }) => {
+    const profile = await resolveProfile({ profile_id, profile_query, exact });
+    const cdp = await cdpEndpoint(profile.id, { autostart: true, headless: !!headless });
+    const rawTargets = await cdpJson(cdp, "/json/list");
+    const targets = (Array.isArray(rawTargets) ? rawTargets : [])
+      .filter((t) => t.type === "page")
+      .map((t) => targetSummary(cdp, t));
+    const currentPage = activePage.get(profile.id);
+    let current = targets.find((t) => t.url && !t.url.startsWith("devtools://")) || null;
+    if (currentPage && !currentPage.isClosed()) {
+      const url = currentPage.url();
+      const target = targets.find((t) => t.url === url);
+      current = {
+        ...(target || {}),
+        url,
+        title: await currentPage.title().catch(() => target?.title || ""),
+      };
+    }
+    return text({
+      profile: { id: profile.id, name: profile.name, running: true },
+      cdp,
+      targets,
+      current,
+    });
+  },
 );
 
 server.tool(

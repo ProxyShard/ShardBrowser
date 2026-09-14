@@ -1332,6 +1332,91 @@ fn process_list() -> Vec<process::RunningProfile> {
     process::Tracker::shared().running()
 }
 
+fn devtools_frontend_url(cdp_http_url: &str, path: &str) -> String {
+    if path.starts_with("http://") || path.starts_with("https://") || path.starts_with("devtools://") {
+        return path.to_string();
+    }
+    format!(
+        "{}{}{}",
+        cdp_http_url.trim_end_matches('/'),
+        if path.starts_with('/') { "" } else { "/" },
+        path
+    )
+}
+
+fn devtools_target_summary(cdp: &process::CdpInfo, target: &Value) -> Value {
+    let frontend = target
+        .get("devtoolsFrontendUrl")
+        .and_then(Value::as_str)
+        .map(|path| devtools_frontend_url(&cdp.http_url, path));
+    serde_json::json!({
+        "id": target.get("id").and_then(Value::as_str).unwrap_or(""),
+        "type": target.get("type").and_then(Value::as_str).unwrap_or(""),
+        "title": target.get("title").and_then(Value::as_str).unwrap_or(""),
+        "url": target.get("url").and_then(Value::as_str).unwrap_or(""),
+        "attached": target.get("attached").and_then(Value::as_bool).unwrap_or(false),
+        "web_socket_debugger_url": target.get("webSocketDebuggerUrl").and_then(Value::as_str),
+        "devtools_frontend_url": frontend,
+    })
+}
+
+#[cfg(test)]
+mod devtools_tests {
+    use super::devtools_frontend_url;
+
+    #[test]
+    fn joins_relative_frontend_url() {
+        assert_eq!(
+            devtools_frontend_url("http://127.0.0.1:9222", "/devtools/inspector.html?ws=x"),
+            "http://127.0.0.1:9222/devtools/inspector.html?ws=x"
+        );
+    }
+}
+
+#[tauri::command]
+async fn devtools_context(profile_id: String) -> Result<Value, String> {
+    let cdp = process::Tracker::shared()
+        .cdp(&profile_id)
+        .ok_or_else(|| "Profile is running without CDP. Start it through Automation API or MCP to enable DevTools.".to_string())?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let targets: Value = client
+        .get(format!("{}/json/list", cdp.http_url.trim_end_matches('/')))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    let targets: Vec<Value> = match targets.as_array() {
+        Some(targets) => targets
+            .iter()
+            .filter(|target| target.get("type").and_then(Value::as_str) == Some("page"))
+            .map(|target| devtools_target_summary(&cdp, target))
+            .collect(),
+        None => Vec::new(),
+    };
+    let current = targets
+        .iter()
+        .find(|target| {
+            target
+                .get("url")
+                .and_then(Value::as_str)
+                .is_some_and(|url| !url.is_empty() && !url.starts_with("devtools://"))
+        })
+        .cloned();
+    Ok(serde_json::json!({
+        "profile_id": profile_id,
+        "cdp": cdp,
+        "targets": targets,
+        "current": current,
+    }))
+}
+
 #[tauri::command]
 async fn process_kill(profile_id: String) -> Result<bool, String> {
     process::Tracker::shared()
@@ -2198,6 +2283,7 @@ pub fn run() {
             fingerprint_dir,
             read_text_file,
             process_list,
+            devtools_context,
             process_kill,
             proxy_list,
             proxy_save,
