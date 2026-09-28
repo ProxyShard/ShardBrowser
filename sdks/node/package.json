@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "test": "node --test test/adm-zip.security.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "engines": {
@@ -47,7 +48,7 @@
     "access": "public"
   },
   "dependencies": {
-    "adm-zip": "^0.5.16",
+    "adm-zip": "^0.6.1",
     "patchright": "^1.49.0",
     "socks-proxy-agent": "^8.0.4",
     "undici": "^6.19.0"
