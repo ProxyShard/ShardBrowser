@@ -47,7 +47,26 @@ test("extracts a stored entry with an oversized declared size safely", () => {
 
   const destination = mkdtempSync(join(tmpdir(), "adm-zip-size-test-"));
   try {
-    new AdmZip(bytes).extractAllTo(destination, true);
+    const maxBufferAllocation = 1024 * 1024;
+    const originalAlloc = Buffer.alloc;
+    let blockedAllocation;
+    Buffer.alloc = function (size, ...args) {
+      if (size > maxBufferAllocation) {
+        blockedAllocation = size;
+        throw new Error(`Blocked oversized Buffer.alloc(${size}) in test`);
+      }
+      return originalAlloc.call(Buffer, size, ...args);
+    };
+    try {
+      new AdmZip(bytes).extractAllTo(destination, true);
+    } finally {
+      Buffer.alloc = originalAlloc;
+    }
+    assert.equal(
+      blockedAllocation,
+      undefined,
+      `adm-zip requested a ${blockedAllocation}-byte allocation`,
+    );
     assert.deepEqual(readFileSync(join(destination, "payload.txt")), payload);
   } finally {
     rmSync(destination, { recursive: true, force: true });
