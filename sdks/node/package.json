@@ -18,7 +18,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "node --test test/adm-zip.security.test.mjs",
+    "test": "npm run build && node --test test/adm-zip.security.test.mjs test/runtime.update.test.mjs",
     "prepublishOnly": "npm run build"
   },
   "engines": {

@@ -356,11 +356,16 @@ const sdk = new ShardX({ cacheDir: "/data/shardx" });
 
 The SDK auto-checks remote etags on the first `session`/`launch`/`listProfiles`
 call of each process and re-downloads anything that changed.  To force a
-re-download mid-process:
+re-download mid-process, including while browsers are open:
 
 ```ts
 await sdk.runtime.install({ force: true });
 ```
+
+The update is staged and checked before it replaces the installed files. If a
+browser launched through the same SDK instance is still running, activation
+waits until its browser processes have exited; they are not stopped
+automatically.
 
 ## License
 
