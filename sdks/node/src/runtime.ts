@@ -100,6 +100,7 @@ interface RuntimeActivity {
 }
 
 const runtimeActivities = new WeakMap<Runtime, RuntimeActivity>();
+const RUNTIME_UPDATE_RECOVERY_MARKER = ".runtime-update-recovery";
 
 interface StagedReplacement {
   stagedPath: string;
@@ -107,7 +108,7 @@ interface StagedReplacement {
   backupPath: string;
 }
 
-class RuntimeRollbackError extends AggregateError {}
+class RuntimeRecoveryRequiredError extends AggregateError {}
 
 export class Runtime {
   readonly root: string;
@@ -144,11 +145,10 @@ export class Runtime {
     this.progress = opts.progress;
     this.spec = hostSpec();
     runtimeActivities.set(this, { activeBrowsers: 0, idleWaiters: [] });
-    const unfinishedUpdate = readdirSync(this.root, { withFileTypes: true })
-      .find((entry) => entry.isDirectory() && entry.name.startsWith(".update-"));
-    if (unfinishedUpdate) {
+    const recoveryMarker = join(this.root, RUNTIME_UPDATE_RECOVERY_MARKER);
+    if (existsSync(recoveryMarker)) {
       this._recoveryError = new Error(
-        `unfinished runtime update requires recovery: ${join(this.root, unfinishedUpdate.name)}`,
+        `unfinished runtime update requires recovery: ${recoveryMarker}`,
       );
     }
   }
@@ -404,8 +404,8 @@ export class Runtime {
       activationSucceeded = true;
       this._checkedInProcess = true;
     } catch (error) {
-      preserveStagingForRecovery = error instanceof RuntimeRollbackError;
-      if (!activationSucceeded && !(error instanceof RuntimeRollbackError)
+      preserveStagingForRecovery = error instanceof RuntimeRecoveryRequiredError;
+      if (!activationSucceeded && !(error instanceof RuntimeRecoveryRequiredError)
           && this.hasUsableInstalledRuntime()) {
         this.applyInstalledMetadata(previous);
         this._checkedInProcess = true;
@@ -514,7 +514,16 @@ export class Runtime {
     stagingRoot: string,
   ): void {
     const moved: Array<StagedReplacement & { backedUp: boolean; activated: boolean }> = [];
+    const recoveryMarker = join(this.root, RUNTIME_UPDATE_RECOVERY_MARKER);
+    let markerCreated = false;
     try {
+      const markerFd = openSync(recoveryMarker, "wx");
+      markerCreated = true;
+      try {
+        writeFileSync(markerFd, `${stagingRoot}\n`);
+      } finally {
+        closeSync(markerFd);
+      }
       for (const replacement of replacements) {
         const state = { ...replacement, backedUp: false, activated: false };
         moved.push(state);
@@ -528,6 +537,7 @@ export class Runtime {
       }
       this.saveManifest(manifest, stagingRoot);
     } catch (error) {
+      if (!markerCreated) throw error;
       const rollbackErrors: unknown[] = [];
       for (const state of moved.reverse()) {
         try {
@@ -546,14 +556,34 @@ export class Runtime {
         }
       }
       if (rollbackErrors.length > 0) {
-        const recoveryError = new RuntimeRollbackError(
+        const recoveryError = new RuntimeRecoveryRequiredError(
           [error, ...rollbackErrors],
           `runtime update failed and rollback was incomplete; inspect ${stagingRoot} for recovery data`,
         );
         this._recoveryError = recoveryError;
         throw recoveryError;
       }
+      try {
+        rmSync(recoveryMarker);
+      } catch (markerError) {
+        const recoveryError = new RuntimeRecoveryRequiredError(
+          [error, markerError],
+          `runtime update rollback completed but its recovery marker could not be cleared: ${recoveryMarker}`,
+        );
+        this._recoveryError = recoveryError;
+        throw recoveryError;
+      }
       throw error;
+    }
+    try {
+      rmSync(recoveryMarker);
+    } catch (markerError) {
+      const recoveryError = new RuntimeRecoveryRequiredError(
+        [markerError],
+        `runtime update was activated but its recovery marker could not be cleared: ${recoveryMarker}`,
+      );
+      this._recoveryError = recoveryError;
+      throw recoveryError;
     }
   }
 
@@ -596,21 +626,12 @@ export class Runtime {
     const total = Number(r.headers.get("content-length") ?? 0);
 
     let received = 0;
-    const reader = r.body.getReader();
     const out = createWriteStream(tmp);
-    const stream = new Readable({
-      async read() {
-        const { value, done } = await reader.read();
-        if (done) { this.push(null); return; }
-        received += value.byteLength;
-        if (arch.label) {/* throttle: rounded percent */}
-        this.push(Buffer.from(value));
-      },
+    const stream = Readable.fromWeb(r.body);
+    stream.on("data", (chunk: Buffer) => {
+      received += chunk.byteLength;
+      this.progress?.(arch.label, received, total);
     });
-    // Wire progress in a parallel listener so pipeline stays clean.
-    if (this.progress) {
-      stream.on("data", () => this.progress!(arch.label, received, total));
-    }
     await pipeline(stream, out);
     if (Number.isFinite(total) && total > 0 && received !== total) {
       throw new Error(`download ${arch.key}: incomplete response (${received}/${total} bytes)`);
@@ -657,19 +678,12 @@ export class Runtime {
       const total = Number(r.headers.get("content-length") ?? 0);
 
       let received = 0;
-      const reader = r.body.getReader();
       const out = createWriteStream(tmp);
-      const stream = new Readable({
-        async read() {
-          const { value, done } = await reader.read();
-          if (done) { this.push(null); return; }
-          received += value.byteLength;
-          this.push(Buffer.from(value));
-        },
+      const stream = Readable.fromWeb(r.body);
+      stream.on("data", (chunk: Buffer) => {
+        received += chunk.byteLength;
+        this.progress?.(FINGERPRINTS_ARCHIVE.label, received, total);
       });
-      if (this.progress) {
-        stream.on("data", () => this.progress!(FINGERPRINTS_ARCHIVE.label, received, total));
-      }
       await pipeline(stream, out);
       if (Number.isFinite(total) && total > 0 && received !== total) {
         throw new Error(`download fingerprints: incomplete response (${received}/${total} bytes)`);
@@ -710,7 +724,7 @@ export function acquireBrowserSessionLease(runtime: Runtime): Promise<() => void
  *
  *  Accepts exit code 0 (clean) and 1 (warnings — e.g. "backslashes in
  *  path" for archives zipped on Windows; extraction still completes
- *  correctly).  Only 2+ are real fatal errors per unzip(1). */
+ *  correctly). Other exit codes or termination by a signal are failures. */
 function systemUnzip(archive: string, dest: string): void {
   mkdirSync(dest, { recursive: true });
   const r = spawnSync("unzip", ["-q", "-o", archive, "-d", dest], {
@@ -724,16 +738,15 @@ function systemUnzip(archive: string, dest: string): void {
     }
     throw r.error;
   }
-  if ((r.status ?? 0) > 1) {
-    const err = r.stderr?.toString().slice(0, 400) ?? `exit ${r.status}`;
-    throw new Error(`unzip failed for ${archive} (exit ${r.status}): ${err}`);
+  if (r.signal || (r.status !== 0 && r.status !== 1)) {
+    const outcome = r.signal ? `signal ${r.signal}` : `exit ${r.status ?? "unknown"}`;
+    const err = r.stderr?.toString().slice(0, 400) || outcome;
+    throw new Error(`unzip failed for ${archive} (${outcome}): ${err}`);
   }
 }
 
-/** ELF + Mach-O magic bytes; first 4 bytes tell us a file is a native
- *  executable that needs the +x bit, regardless of what zip stored. */
-const NATIVE_MAGIC: ReadonlyArray<Buffer> = [
-  Buffer.from([0x7f, 0x45, 0x4c, 0x46]),                  // ELF
+const ELF_MAGIC = Buffer.from([0x7f, 0x45, 0x4c, 0x46]);
+const MACH_O_MAGIC: ReadonlyArray<Buffer> = [
   Buffer.from([0xfe, 0xed, 0xfa, 0xcf]),                  // Mach-O 64 BE
   Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),                  // Mach-O 64 LE
   Buffer.from([0xfe, 0xed, 0xfa, 0xce]),                  // Mach-O 32 BE
@@ -741,6 +754,10 @@ const NATIVE_MAGIC: ReadonlyArray<Buffer> = [
   Buffer.from([0xca, 0xfe, 0xba, 0xbe]),                  // Mach-O universal BE
   Buffer.from([0xbe, 0xba, 0xfe, 0xca]),                  // Mach-O universal LE
 ];
+
+/** ELF + Mach-O magic bytes; first 4 bytes tell us a file is a native
+ *  executable that needs the +x bit, regardless of what zip stored. */
+const NATIVE_MAGIC: ReadonlyArray<Buffer> = [ELF_MAGIC, ...MACH_O_MAGIC];
 
 function hasExpectedExecutableSignature(path: string): boolean {
   const fd = openSync(path, "r");
@@ -751,8 +768,9 @@ function hasExpectedExecutableSignature(path: string): boolean {
     closeSync(fd);
   }
   if (osPlatform() === "win32") return header[0] === 0x4d && header[1] === 0x5a;
-  if (osPlatform() === "linux") return header.equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46]));
-  return NATIVE_MAGIC.some((magic) => header.equals(magic));
+  if (osPlatform() === "linux") return header.equals(ELF_MAGIC);
+  if (osPlatform() === "darwin") return MACH_O_MAGIC.some((magic) => header.equals(magic));
+  return false;
 }
 
 /** Walk `root` and add +x to every file whose first 4 bytes match a known

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
@@ -98,6 +100,19 @@ function mockFetch(runtime, options = {}) {
     if (!bytes) throw new Error(`Unexpected test request: ${url}`);
     const headers = { etag: `etag-${key}` };
     if (key === options.incompleteKey) headers["content-length"] = String(bytes.length + 1);
+    if (key === options.interruptedKey) {
+      let firstChunk = true;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (firstChunk) {
+            firstChunk = false;
+            controller.enqueue(bytes.subarray(0, 4));
+          } else {
+            controller.error(new Error("simulated response stream failure"));
+          }
+        },
+      }, { highWaterMark: 0 }), { headers });
+    }
     return new Response(bytes, { headers });
   };
 
@@ -241,6 +256,29 @@ test("incomplete engine download leaves the installed runtime untouched", async 
   }
 });
 
+for (const archive of ["engine", "fingerprints"]) {
+  test(`interrupted ${archive} download preserves the installed runtime and removes staging`, async () => {
+    const { root, runtime } = createInstalledRuntime();
+    const previousManifest = readFileSync(runtime.manifestPath);
+    const interruptedKey = archive === "engine" ? runtime.spec.browser.key : "ShardX-Fingerprints.zip";
+    const restoreFetch = mockFetch(runtime, { interruptedKey });
+    try {
+      await assert.rejects(runtime.install({ force: true }), /simulated response stream failure/);
+      assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+      assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+      assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+      assertNoStagingDirectories(root);
+      assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+      const releaseBrowser = await acquireBrowserSessionLease(runtime);
+      releaseBrowser();
+      await runtime.install();
+    } finally {
+      restoreFetch();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("archive with a non-executable file at the browser path is rejected", async () => {
   const { root, runtime } = createInstalledRuntime();
   const restoreFetch = mockFetch(runtime, { invalidBinaryKey: runtime.spec.browser.key });
@@ -253,6 +291,190 @@ test("archive with a non-executable file at the browser path is rejected", async
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("macOS executable validation rejects Linux and Windows files before activation", () => {
+  const root = mkdtempSync(join(tmpdir(), "shardx-runtime-macos-"));
+  try {
+    // Isolate the host mock from other tests and replace all download/extraction IO.
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import assert from "node:assert/strict";
+      import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+      import { syncBuiltinESMExports } from "node:module";
+      import os from "node:os";
+      import { dirname, join } from "node:path";
+
+      os.platform = () => "darwin";
+      os.arch = () => "arm64";
+      syncBuiltinESMExports();
+      globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
+      const { Runtime } = await import(process.argv[1]);
+      const runtime = new Runtime({ cacheDir: process.argv[2] });
+      const machOHeaders = [
+        [0xfe, 0xed, 0xfa, 0xcf],
+        [0xcf, 0xfa, 0xed, 0xfe],
+        [0xfe, 0xed, 0xfa, 0xce],
+        [0xce, 0xfa, 0xed, 0xfe],
+        [0xca, 0xfe, 0xba, 0xbe],
+        [0xbe, 0xba, 0xfe, 0xca],
+      ].map((bytes) => Buffer.from(bytes));
+      const invalidHeaders = [
+        Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+        Buffer.from([0x4d, 0x5a, 0, 0]),
+      ];
+      mkdirSync(dirname(runtime.binaryPath), { recursive: true });
+      const fingerprintPath = join(runtime.fingerprintsDir, "template.json");
+      writeFileSync(fingerprintPath, '{"version":"old"}');
+      writeFileSync(runtime.manifestPath, '{"installed_chromium_version":"151.0.0"}');
+      const previousManifest = readFileSync(runtime.manifestPath);
+
+      for (const header of machOHeaders) {
+        writeFileSync(runtime.binaryPath, header);
+        assert.equal(runtime.hasUsableInstalledRuntime(), true);
+      }
+      for (const header of invalidHeaders) {
+        writeFileSync(runtime.binaryPath, header);
+        assert.equal(runtime.hasUsableInstalledRuntime(), false);
+      }
+
+      const oldEngine = Buffer.concat([machOHeaders[1], Buffer.from("old-engine")]);
+      writeFileSync(runtime.binaryPath, oldEngine);
+      runtime.fetchManifest = async () => ({ archives: {}, chromiumVersion: "153.0.0" });
+      runtime.installFingerprints = async () => {
+        throw new Error("Invalid executable reached fingerprint preparation");
+      };
+      for (const header of invalidHeaders) {
+        runtime.downloadAndExtract = async (archive, destination) => {
+          const path = archive.key === runtime.spec.browser.key
+            ? join(destination, ...runtime.spec.binarySubpath)
+            : join(destination, archive.key.slice(0, -4), "WidevineCdm", "manifest.json");
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, archive.key === runtime.spec.browser.key ? header : "{}");
+          return "new-etag";
+        };
+        await assert.rejects(runtime.install({ force: true }), /missing a valid executable/);
+        assert.deepEqual(readFileSync(runtime.binaryPath), oldEngine);
+        assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+        assert.equal(readFileSync(fingerprintPath, "utf8"), '{"version":"old"}');
+        assert.equal(readdirSync(runtime.root).some((name) => name.startsWith(".update-")), false);
+        assert.equal(readdirSync(runtime.root).includes(".runtime-update-recovery"), false);
+      }
+    `, new URL("../dist/runtime.js", import.meta.url).href, root], {
+      encoding: "utf8",
+      timeout: 10000,
+    });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const platform of ["linux", "darwin"]) {
+  test(`${platform} unzip failures preserve the installed runtime and valid exit codes still activate`, () => {
+    const root = mkdtempSync(join(tmpdir(), "shardx-runtime-unzip-"));
+    try {
+      // Only the isolated Node test process runs; unzip and network IO are mocked.
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import assert from "node:assert/strict";
+        import childProcess from "node:child_process";
+        import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+        import { createRequire, syncBuiltinESMExports } from "node:module";
+        import os from "node:os";
+        import { basename, dirname, join } from "node:path";
+
+        const platform = process.argv[3];
+        os.platform = () => platform;
+        os.arch = () => platform === "darwin" ? "arm64" : "x64";
+        syncBuiltinESMExports();
+        const { acquireBrowserSessionLease, PUB_BASE, Runtime } = await import(process.argv[1]);
+        const AdmZip = createRequire(process.argv[1])("adm-zip");
+        const makeZip = (entries) => {
+          const archive = new AdmZip();
+          for (const [name, bytes] of Object.entries(entries)) archive.addFile(name, Buffer.from(bytes));
+          return archive.toBuffer();
+        };
+        const signature = Buffer.from(platform === "darwin"
+          ? [0xcf, 0xfa, 0xed, 0xfe] : [0x7f, 0x45, 0x4c, 0x46]);
+        const oldEngine = Buffer.concat([signature, Buffer.from("old-engine")]);
+        const newEngine = Buffer.concat([signature, Buffer.from("new-engine")]);
+        const cases = [
+          { status: null, signal: "SIGKILL", success: false },
+          { status: 0, signal: "SIGKILL", success: false },
+          { status: null, signal: null, success: false },
+          { status: 2, signal: null, success: false },
+          { status: 0, signal: null, success: true },
+          { status: 1, signal: null, success: true },
+        ];
+        for (const [index, scenario] of cases.entries()) {
+          const runtime = new Runtime({ cacheDir: join(process.argv[2], "case-" + index) });
+          const fingerprintPath = join(runtime.fingerprintsDir, "template.json");
+          mkdirSync(dirname(runtime.binaryPath), { recursive: true });
+          writeFileSync(runtime.binaryPath, oldEngine);
+          writeFileSync(fingerprintPath, '{"version":"old"}');
+          writeFileSync(runtime.manifestPath, '{"installed_chromium_version":"151.0.0"}');
+          const previousManifest = readFileSync(runtime.manifestPath);
+          const binaryEntry = runtime.spec.binarySubpath.join("/");
+          const supportEntry = runtime.spec.binarySubpath[0] + "/support.dat";
+          const widevineWrapper = runtime.spec.widevine.key.slice(0, -4);
+          const archives = new Map([
+            [runtime.spec.browser.key, makeZip({ [binaryEntry]: newEngine, [supportEntry]: "support" })],
+            [runtime.spec.widevine.key, makeZip({ [widevineWrapper + "/WidevineCdm/manifest.json"]: "{}" })],
+            ["ShardX-Fingerprints.zip", makeZip({ "shardx-fingerprints/template.json": '{"version":"new"}' })],
+          ]);
+          runtime.fetchManifest = async () => ({ archives: {}, chromiumVersion: "153.0.0" });
+          globalThis.fetch = async (input) => {
+            const bytes = archives.get(String(input).slice((PUB_BASE + "/").length));
+            if (!bytes) throw new Error("Unexpected test request: " + String(input));
+            return new Response(bytes);
+          };
+          childProcess.spawnSync = (command, args) => {
+            assert.equal(command, "unzip");
+            const archive = new AdmZip(args[2]);
+            const destination = args[4];
+            if (basename(args[2]) === "." + runtime.spec.browser.key + ".tmp") {
+              if (scenario.success) {
+                archive.extractAllTo(destination, true);
+              } else {
+                const stagedBinary = join(destination, ...runtime.spec.binarySubpath);
+                mkdirSync(dirname(stagedBinary), { recursive: true });
+                writeFileSync(stagedBinary, archive.getEntry(binaryEntry).getData());
+              }
+              return { status: scenario.status, signal: scenario.signal, stderr: Buffer.alloc(0) };
+            }
+            archive.extractAllTo(destination, true);
+            return { status: 0, signal: null, stderr: Buffer.alloc(0) };
+          };
+          syncBuiltinESMExports();
+
+          if (scenario.success) {
+            await runtime.install({ force: true });
+            assert.deepEqual(readFileSync(runtime.binaryPath), newEngine);
+            assert.equal(readFileSync(join(runtime.root, supportEntry), "utf8"), "support");
+            assert.equal(readFileSync(fingerprintPath, "utf8"), '{"version":"new"}');
+            assert.equal(runtime.chromiumVersion, "153.0.0");
+          } else {
+            await assert.rejects(runtime.install({ force: true }), /unzip failed/);
+            assert.deepEqual(readFileSync(runtime.binaryPath), oldEngine);
+            assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+            assert.equal(readFileSync(fingerprintPath, "utf8"), '{"version":"old"}');
+            assert.equal(runtime.chromiumVersion, "151.0.0");
+          }
+          assert.equal(readdirSync(runtime.root).some((name) => name.startsWith(".update-")), false);
+          assert.equal(readdirSync(runtime.root).includes(".runtime-update-recovery"), false);
+          const releaseBrowser = await acquireBrowserSessionLease(runtime);
+          releaseBrowser();
+        }
+      `, new URL("../dist/runtime.js", import.meta.url).href, root, platform], {
+        encoding: "utf8",
+        timeout: 10000,
+      });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("new runtime is activated only after all archives have been prepared", async () => {
   const { root, runtime } = createInstalledRuntime();
@@ -284,6 +506,74 @@ test("new runtime is activated only after all archives have been prepared", asyn
   }
 });
 
+test("a partial recovery marker write is cleaned up and does not block restart", async () => {
+  const { root, runtime } = createInstalledRuntime();
+  const restoreFetch = mockFetch(runtime);
+  const markerPath = join(root, ".runtime-update-recovery");
+  const previousManifest = readFileSync(runtime.manifestPath);
+  const originalOpen = fs.openSync;
+  const originalWrite = fs.writeFileSync;
+  let markerFd;
+  try {
+    try {
+      fs.openSync = function (path, ...args) {
+        const fd = originalOpen.call(fs, path, ...args);
+        if (path === markerPath) markerFd = fd;
+        return fd;
+      };
+      fs.writeFileSync = function (file, data, ...args) {
+        if (file === markerPath || file === markerFd) {
+          originalWrite.call(fs, file, String(data).slice(0, 4), ...args);
+          throw Object.assign(new Error("simulated marker write failure"), { code: "ENOSPC" });
+        }
+        return originalWrite.call(fs, file, data, ...args);
+      };
+      syncBuiltinESMExports();
+      await assert.rejects(runtime.install({ force: true }), /simulated marker write failure/);
+    } finally {
+      fs.openSync = originalOpen;
+      fs.writeFileSync = originalWrite;
+      syncBuiltinESMExports();
+    }
+    assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+    assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+    assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+    assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+    assertNoStagingDirectories(root);
+    const restartedRuntime = new Runtime({ cacheDir: root });
+    restartedRuntime.fetchManifest = async () => ({ archives: {} });
+    await restartedRuntime.install();
+    const releaseBrowser = await acquireBrowserSessionLease(restartedRuntime);
+    releaseBrowser();
+    assert.deepEqual(readFileSync(restartedRuntime.binaryPath), makeEngineBinary("old-engine"));
+    assert.equal(restartedRuntime.chromiumVersion, "151.0.0");
+  } finally {
+    restoreFetch();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("activation never removes a recovery marker it did not create", async () => {
+  const { root, runtime } = createInstalledRuntime();
+  const restoreFetch = mockFetch(runtime);
+  const markerPath = join(root, ".runtime-update-recovery");
+  const markerContents = "existing recovery data";
+  const previousManifest = readFileSync(runtime.manifestPath);
+  writeFileSync(markerPath, markerContents);
+  try {
+    await assert.rejects(runtime.install({ force: true }), { code: "EEXIST" });
+    assert.equal(readFileSync(markerPath, "utf8"), markerContents);
+    assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+    assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+    assertNoStagingDirectories(root);
+    const restartedRuntime = new Runtime({ cacheDir: root });
+    await assert.rejects(restartedRuntime.install(), /unfinished runtime update requires recovery/);
+  } finally {
+    restoreFetch();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("activation failure rolls the old runtime and fingerprints back", async () => {
   const { root, runtime } = createInstalledRuntime();
   const restoreFetch = mockFetch(runtime);
@@ -294,6 +584,7 @@ test("activation failure rolls the old runtime and fingerprints back", async () 
     assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
     assert.equal(readFileSync(join(runtime.fingerprintsDir, "user-custom.json"), "utf8"), '{"custom":true}');
     assert.equal(runtime.chromiumVersion, "151.0.0");
+    assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
     await runtime.install();
     assertNoStagingDirectories(root);
   } finally {
@@ -319,6 +610,10 @@ test("staging cleanup failure does not fail a successful activation", async () =
     await runtime.install({ force: true });
     assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary());
     assert.match(warnings.join("\n"), /runtime update staging cleanup failed/);
+    assert.equal(readdirSync(root).some((name) => name.startsWith(".update-")), true);
+    const restartedRuntime = new Runtime({ cacheDir: root });
+    await restartedRuntime.install();
+    assert.deepEqual(readFileSync(restartedRuntime.binaryPath), makeEngineBinary());
   } finally {
     console.warn = originalWarn;
     restoreFetch();
@@ -427,6 +722,7 @@ test("incomplete rollback survives restart and blocks browser launches", async (
     assert.equal(runtime.installed, true);
     assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary());
     assert.ok(readdirSync(root).some((name) => name.startsWith(".update-")));
+    assert.ok(readdirSync(root).includes(".runtime-update-recovery"));
     const restartedRuntime = new Runtime({ cacheDir: root });
     await assert.rejects(restartedRuntime.install(), /unfinished runtime update requires recovery/);
     await assert.rejects(
