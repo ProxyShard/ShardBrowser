@@ -4,11 +4,12 @@ import { EventEmitter } from "node:events";
 import fs, { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import AdmZip from "adm-zip";
 import { awaitBrowserSpawn } from "../dist/browser.js";
 import { acquireBrowserSessionLease, MANIFEST_URL, PUB_BASE, Runtime } from "../dist/runtime.js";
+import { makeNativeBinary, widevineEntries, writeWidevine } from "./helpers/runtime.fixtures.mjs";
 
 function makeZip(entries) {
   const archive = new AdmZip();
@@ -19,12 +20,7 @@ function makeZip(entries) {
 }
 
 function makeEngineBinary(name = "new-engine") {
-  const signature = process.platform === "win32"
-    ? [0x4d, 0x5a, 0, 0]
-    : process.platform === "darwin"
-      ? [0xcf, 0xfa, 0xed, 0xfe]
-      : [0x7f, 0x45, 0x4c, 0x46];
-  return Buffer.concat([Buffer.from(signature), Buffer.from(name)]);
+  return makeNativeBinary(name);
 }
 
 function createInstalledRuntime() {
@@ -32,11 +28,10 @@ function createInstalledRuntime() {
   const runtime = new Runtime({ cacheDir: root });
   mkdirSync(dirname(runtime.binaryPath), { recursive: true });
   writeFileSync(runtime.binaryPath, makeEngineBinary("old-engine"));
+  if (process.platform !== "win32") fs.chmodSync(runtime.binaryPath, 0o755);
   if (runtime.spec.widevine) {
     const widevineDir = join(root, ...runtime.spec.widevineSubpath);
-    mkdirSync(widevineDir, { recursive: true });
-    const widevine = join(widevineDir, "manifest.json");
-    writeFileSync(widevine, "old-widevine");
+    writeWidevine(widevineDir, "4.10.0.0");
   }
   mkdirSync(runtime.fingerprintsDir, { recursive: true });
   writeFileSync(join(runtime.fingerprintsDir, "template.json"), '{"version":"old"}');
@@ -62,9 +57,7 @@ function createArchiveResponses(runtime) {
   }));
   if (runtime.spec.widevine) {
     const wrapper = runtime.spec.widevine.key.replace(/\.zip$/, "");
-    responses.set(runtime.spec.widevine.key, makeZip({
-      [`${wrapper}/WidevineCdm/manifest.json`]: "new-widevine",
-    }));
+    responses.set(runtime.spec.widevine.key, makeZip(widevineEntries(`${wrapper}/WidevineCdm`, "4.10.0.1")));
   }
   responses.set("ShardX-Fingerprints.zip", makeZip({
     "shardx-fingerprints/template.json": '{"version":"new"}',
@@ -75,6 +68,7 @@ function createArchiveResponses(runtime) {
 function mockFetch(runtime, options = {}) {
   const originalFetch = globalThis.fetch;
   const archives = createArchiveResponses(runtime);
+  for (const [key, entries] of options.archiveEntries ?? []) archives.set(key, makeZip(entries));
   const manifest = options.manifest ?? {
     archives: Object.fromEntries([...archives.keys()].map((key) => [key, `etag-${key}`])),
     chromium_version: "153.0.0",
@@ -185,6 +179,23 @@ test("automatic update failure is reported when the previous install lacks finge
   }
 });
 
+test("automatic update failure is reported when the previous Widevine bundle is incomplete", async () => {
+  const { root, runtime } = createInstalledRuntime();
+  writeFileSync(join(root, ...runtime.spec.widevineSubpath, "manifest.json"), "{}");
+  const previousManifest = readFileSync(runtime.manifestPath);
+  const restoreFetch = mockFetch(runtime, { failKey: runtime.spec.browser.key });
+  try {
+    assert.equal(runtime.hasUsableInstalledRuntime(), false);
+    await assert.rejects(runtime.install(), /HTTP 503/);
+    assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+    assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+    assertNoStagingDirectories(root);
+  } finally {
+    restoreFetch();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("fingerprint-only update preserves engine metadata omitted from the manifest", async () => {
   const { root, runtime } = createInstalledRuntime();
   const restoreFetch = mockFetch(runtime, {
@@ -279,6 +290,70 @@ for (const archive of ["engine", "fingerprints"]) {
   });
 }
 
+const nonObjectFingerprints = [
+  ["null", "null"], ["array", "[]"], ["number", "42"], ["boolean", "true"], ["string", '"profile"'],
+];
+
+for (const [name, json] of nonObjectFingerprints) {
+  for (const force of [false, true]) {
+    test(`a ${force ? "forced" : "normal"} update rejects ${name} fingerprint JSON and keeps the old installation`, async () => {
+      const { root, runtime } = createInstalledRuntime();
+      const previousManifest = readFileSync(runtime.manifestPath);
+      const restoreFetch = mockFetch(runtime, {
+        archiveEntries: new Map([["ShardX-Fingerprints.zip", {
+          "shardx-fingerprints/template.json": json,
+        }]]),
+        ...(!force ? { manifest: {
+          archives: { "ShardX-Fingerprints.zip": "new-fingerprints" },
+          chromium_version: "151.0.0", engine_build: "old-build",
+        } } : {}),
+      });
+      const originalWarn = console.warn;
+      const warnings = [];
+      console.warn = (message) => { warnings.push(String(message)); };
+      runtime.activateWhenIdle = async () => { assert.fail("non-object fingerprints must not reach activation"); };
+      try {
+        if (force) await assert.rejects(runtime.install({ force }), /invalid JSON profile: template.json/);
+        else {
+          await runtime.install();
+          assert.match(warnings.join("\n"), /invalid JSON profile: template.json/);
+        }
+        assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+        assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+        assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+        assert.equal(readFileSync(join(runtime.fingerprintsDir, "user-custom.json"), "utf8"), '{"custom":true}');
+        assert.equal(readFileSync(join(runtime.fingerprintsDir, "user-notes.txt"), "utf8"), "keep me");
+        assert.equal(runtime.chromiumVersion, "151.0.0");
+        assertNoStagingDirectories(root);
+        assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+      } finally {
+        console.warn = originalWarn;
+        restoreFetch();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+}
+
+test("automatic update failure is reported when no installed fingerprint is a JSON object", async () => {
+  const { root, runtime } = createInstalledRuntime();
+  writeFileSync(join(runtime.fingerprintsDir, "template.json"), "null");
+  writeFileSync(join(runtime.fingerprintsDir, "user-custom.json"), "[]");
+  const previousManifest = readFileSync(runtime.manifestPath);
+  const restoreFetch = mockFetch(runtime, { failKey: runtime.spec.browser.key });
+  try {
+    assert.equal(runtime.hasUsableInstalledRuntime(), false);
+    await assert.rejects(runtime.install(), /HTTP 503/);
+    assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+    assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+    assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), "null");
+    assertNoStagingDirectories(root);
+  } finally {
+    restoreFetch();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("archive with a non-executable file at the browser path is rejected", async () => {
   const { root, runtime } = createInstalledRuntime();
   const restoreFetch = mockFetch(runtime, { invalidBinaryKey: runtime.spec.browser.key });
@@ -292,13 +367,163 @@ test("archive with a non-executable file at the browser path is rejected", async
   }
 });
 
+const invalidUpdates = [
+  ["executable containing only magic bytes", (runtime) => [
+    runtime.spec.browser.key, { [runtime.spec.binarySubpath.join("/")]: makeEngineBinary().subarray(0, 4) },
+  ], /missing a valid executable/],
+  ["executable with a truncated header", (runtime) => [
+    runtime.spec.browser.key, { [runtime.spec.binarySubpath.join("/")]: makeEngineBinary().subarray(0, 20) },
+  ], /missing a valid executable/],
+  ["executable with truncated section data", (runtime) => [
+    runtime.spec.browser.key, { [runtime.spec.binarySubpath.join("/")]: makeEngineBinary().subarray(0, -1) },
+  ], /missing a valid executable/],
+  ["Widevine containing only an unrelated file", (runtime) => [
+    runtime.spec.widevine.key, { [runtime.spec.widevine.key.slice(0, -4) + "/WidevineCdm/notes.txt"]: "not a CDM" },
+  ], /Widevine archive did not produce/],
+  ["Widevine without its library", (runtime) => [
+    runtime.spec.widevine.key, {
+      [runtime.spec.widevine.key.slice(0, -4) + "/WidevineCdm/manifest.json"]: '{"version":"4.10.0.1"}',
+    },
+  ], /Widevine archive did not produce/],
+  ["Widevine with a corrupt manifest", (runtime) => {
+    const prefix = runtime.spec.widevine.key.slice(0, -4) + "/WidevineCdm";
+    return [runtime.spec.widevine.key, { ...widevineEntries(prefix), [prefix + "/manifest.json"]: "{" }];
+  }, /Widevine archive did not produce/],
+  ["Widevine with truncated library data", (runtime) => {
+    const prefix = runtime.spec.widevine.key.slice(0, -4) + "/WidevineCdm";
+    const entries = widevineEntries(prefix);
+    for (const key of Object.keys(entries)) {
+      if (!key.endsWith("/manifest.json")) entries[key] = entries[key].subarray(0, -1);
+    }
+    return [runtime.spec.widevine.key, entries];
+  }, /Widevine archive did not produce/],
+];
+
+for (const [name, invalidArchive, expectedError] of invalidUpdates) {
+  test(name + " never activates and preserves the installed runtime", async () => {
+    const { root, runtime } = createInstalledRuntime();
+    const previousManifest = readFileSync(runtime.manifestPath);
+    const previousWidevine = Object.keys(widevineEntries(join(root, ...runtime.spec.widevineSubpath)))
+      .map((path) => [path, readFileSync(path)]);
+    const restoreFetch = mockFetch(runtime, { archiveEntries: new Map([invalidArchive(runtime)]) });
+    const warn = console.warn;
+    const warnings = [];
+    console.warn = (message) => { warnings.push(String(message)); };
+    runtime.activateWhenIdle = async () => { assert.fail("invalid archives must not reach activation"); };
+    try {
+      await assert.rejects(runtime.install({ force: true }), expectedError);
+      const normalRuntime = new Runtime({ cacheDir: root });
+      normalRuntime.activateWhenIdle = runtime.activateWhenIdle;
+      await normalRuntime.install(); // A new instance must attempt the update and keep the old installation.
+      assert.match(warnings.join("\n"), expectedError);
+      assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+      assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+      assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+      for (const [path, bytes] of previousWidevine) assert.deepEqual(readFileSync(path), bytes);
+      assert.equal(runtime.hasUsableInstalledRuntime(), true);
+      assertNoStagingDirectories(root);
+      assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+    } finally {
+      console.warn = warn;
+      restoreFetch();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("a failed Widevine-only update leaves the existing component untouched", async () => {
+  const { root, runtime } = createInstalledRuntime();
+  const metadata = JSON.parse(readFileSync(runtime.manifestPath, "utf8"));
+  delete metadata.widevine_etag;
+  writeFileSync(runtime.manifestPath, JSON.stringify(metadata));
+  const previousManifest = readFileSync(runtime.manifestPath);
+  const previousWidevine = Object.keys(widevineEntries(join(root, ...runtime.spec.widevineSubpath)))
+    .map((path) => [path, readFileSync(path)]);
+  const requestedArchives = [];
+  const [, invalidArchive] = invalidUpdates[3][1](runtime);
+  const restoreFetch = mockFetch(runtime, {
+    archiveEntries: new Map([[runtime.spec.widevine.key, invalidArchive]]),
+    manifest: { archives: {}, chromium_version: "151.0.0", engine_build: "old-build" },
+    onArchive: (key) => requestedArchives.push(key),
+  });
+  const warn = console.warn;
+  const warnings = [];
+  console.warn = (message) => { warnings.push(String(message)); };
+  runtime.activateWhenIdle = async () => { assert.fail("invalid Widevine must not reach activation"); };
+  try {
+    await runtime.install();
+    assert.deepEqual(requestedArchives, [runtime.spec.widevine.key]);
+    assert.match(warnings.join("\n"), /Widevine archive did not produce/);
+    assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+    assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+    for (const [path, bytes] of previousWidevine) assert.deepEqual(readFileSync(path), bytes);
+    assertNoStagingDirectories(root);
+  } finally {
+    console.warn = warn;
+    restoreFetch();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+for (const platform of ["win32", "linux", "darwin"]) {
+  test(platform + " validation rejects malformed native headers without running binaries", () => {
+    const root = mkdtempSync(join(tmpdir(), "shardx-runtime-headers-"));
+    try {
+      // Only this Node subprocess runs. All engine files are inert fixtures.
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import assert from "node:assert/strict";
+        import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+        import { syncBuiltinESMExports } from "node:module";
+        import os from "node:os";
+        import { dirname, join } from "node:path";
+
+        const platform = process.argv[3];
+        os.platform = () => platform;
+        os.arch = () => platform === "darwin" ? "arm64" : "x64";
+        syncBuiltinESMExports();
+        globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
+        const { Runtime } = await import(process.argv[1]);
+        const { makeNativeBinary, writeWidevine } = await import(process.argv[4]);
+        const runtime = new Runtime({ cacheDir: process.argv[2] });
+        mkdirSync(dirname(runtime.binaryPath), { recursive: true });
+        writeWidevine(join(runtime.root, ...runtime.spec.widevineSubpath), "4.10.0.0", platform);
+        writeFileSync(join(runtime.fingerprintsDir, "template.json"), "{}");
+        const valid = makeNativeBinary("not-runnable", platform);
+        writeFileSync(runtime.binaryPath, valid);
+        if (process.platform !== "win32") chmodSync(runtime.binaryPath, 0o755);
+        assert.equal(runtime.hasUsableInstalledRuntime(), true);
+        const wrongArchitecture = Buffer.from(valid);
+        if (platform === "win32") wrongArchitecture.writeUInt16LE(0x14c, 132);
+        else if (platform === "linux") wrongArchitecture.writeUInt16LE(183, 18);
+        else wrongArchitecture.writeUInt32LE(0x01000007, 4);
+        const badTable = Buffer.from(valid);
+        if (platform === "win32") badTable.writeUInt32LE(0xffffffff, 60);
+        else if (platform === "linux") badTable.writeBigUInt64LE(1n << 63n, 32);
+        else badTable.writeUInt32LE(0xffffffff, 20);
+        for (const invalid of [
+          valid.subarray(0, 4), valid.subarray(0, 20), valid.subarray(0, -1),
+          wrongArchitecture, badTable, makeNativeBinary("library", platform, true),
+        ]) {
+          writeFileSync(runtime.binaryPath, invalid);
+          assert.equal(runtime.hasUsableInstalledRuntime(), false);
+        }
+      `, new URL("../dist/runtime.js", import.meta.url).href, root, platform,
+      new URL("./helpers/runtime.fixtures.mjs", import.meta.url).href], { encoding: "utf8", timeout: 10000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
 test("macOS executable validation rejects Linux and Windows files before activation", () => {
   const root = mkdtempSync(join(tmpdir(), "shardx-runtime-macos-"));
   try {
     // Isolate the host mock from other tests and replace all download/extraction IO.
     const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
       import assert from "node:assert/strict";
-      import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+      import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
       import { syncBuiltinESMExports } from "node:module";
       import os from "node:os";
       import { dirname, join } from "node:path";
@@ -308,19 +533,24 @@ test("macOS executable validation rejects Linux and Windows files before activat
       syncBuiltinESMExports();
       globalThis.fetch = async () => { throw new Error("Unexpected network request"); };
       const { Runtime } = await import(process.argv[1]);
+      const { makeNativeBinary, makeUniversalBinary, writeWidevine } = await import(process.argv[3]);
       const runtime = new Runtime({ cacheDir: process.argv[2] });
       const machOHeaders = [
-        [0xfe, 0xed, 0xfa, 0xcf],
-        [0xcf, 0xfa, 0xed, 0xfe],
-        [0xfe, 0xed, 0xfa, 0xce],
-        [0xce, 0xfa, 0xed, 0xfe],
-        [0xca, 0xfe, 0xba, 0xbe],
-        [0xbe, 0xba, 0xfe, 0xca],
-      ].map((bytes) => Buffer.from(bytes));
-      const invalidHeaders = [
-        Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
-        Buffer.from([0x4d, 0x5a, 0, 0]),
+        makeNativeBinary("arm64-le", "darwin"),
+        makeNativeBinary("arm64-be", "darwin", false, false),
+        makeUniversalBinary("fat-be"),
+        makeUniversalBinary("fat-le", { little: true }),
+        makeUniversalBinary("fat64-be", { fat64: true }),
+        makeUniversalBinary("fat64-le", { fat64: true, little: true }),
       ];
+      const invalidHeaders = [
+        makeNativeBinary("linux", "linux"),
+        makeNativeBinary("windows", "win32"),
+        Buffer.from([0xcf, 0xfa, 0xed, 0xfe]),
+        Buffer.from([0xfe, 0xed, 0xfa, 0xce]),
+        Buffer.from([0xca, 0xfe, 0xba, 0xbe]),
+      ];
+      writeWidevine(join(runtime.root, ...runtime.spec.widevineSubpath), "4.10.0.0", "darwin");
       mkdirSync(dirname(runtime.binaryPath), { recursive: true });
       const fingerprintPath = join(runtime.fingerprintsDir, "template.json");
       writeFileSync(fingerprintPath, '{"version":"old"}');
@@ -329,6 +559,7 @@ test("macOS executable validation rejects Linux and Windows files before activat
 
       for (const header of machOHeaders) {
         writeFileSync(runtime.binaryPath, header);
+        if (process.platform !== "win32") chmodSync(runtime.binaryPath, 0o755);
         assert.equal(runtime.hasUsableInstalledRuntime(), true);
       }
       for (const header of invalidHeaders) {
@@ -336,7 +567,7 @@ test("macOS executable validation rejects Linux and Windows files before activat
         assert.equal(runtime.hasUsableInstalledRuntime(), false);
       }
 
-      const oldEngine = Buffer.concat([machOHeaders[1], Buffer.from("old-engine")]);
+      const oldEngine = makeNativeBinary("old-engine", "darwin");
       writeFileSync(runtime.binaryPath, oldEngine);
       runtime.fetchManifest = async () => ({ archives: {}, chromiumVersion: "153.0.0" });
       runtime.installFingerprints = async () => {
@@ -344,11 +575,13 @@ test("macOS executable validation rejects Linux and Windows files before activat
       };
       for (const header of invalidHeaders) {
         runtime.downloadAndExtract = async (archive, destination) => {
-          const path = archive.key === runtime.spec.browser.key
-            ? join(destination, ...runtime.spec.binarySubpath)
-            : join(destination, archive.key.slice(0, -4), "WidevineCdm", "manifest.json");
-          mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, archive.key === runtime.spec.browser.key ? header : "{}");
+          if (archive.key === runtime.spec.browser.key) {
+            const path = join(destination, ...runtime.spec.binarySubpath);
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, header);
+          } else {
+            writeWidevine(join(destination, archive.key.slice(0, -4), "WidevineCdm"), "4.10.0.1", "darwin");
+          }
           return "new-etag";
         };
         await assert.rejects(runtime.install({ force: true }), /missing a valid executable/);
@@ -358,7 +591,7 @@ test("macOS executable validation rejects Linux and Windows files before activat
         assert.equal(readdirSync(runtime.root).some((name) => name.startsWith(".update-")), false);
         assert.equal(readdirSync(runtime.root).includes(".runtime-update-recovery"), false);
       }
-    `, new URL("../dist/runtime.js", import.meta.url).href, root], {
+    `, new URL("../dist/runtime.js", import.meta.url).href, root, new URL("./helpers/runtime.fixtures.mjs", import.meta.url).href], {
       encoding: "utf8",
       timeout: 10000,
     });
@@ -370,6 +603,187 @@ test("macOS executable validation rejects Linux and Windows files before activat
 });
 
 for (const platform of ["linux", "darwin"]) {
+
+  test(`${platform} permission preparation preserves the old runtime on failure`, () => {
+    const root = mkdtempSync(join(tmpdir(), "shardx-runtime-permissions-"));
+    try {
+      const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+        import assert from "node:assert/strict";
+        import childProcess from "node:child_process";
+        import fs from "node:fs";
+        import { createRequire, syncBuiltinESMExports } from "node:module";
+        import os from "node:os";
+        import { dirname, join } from "node:path";
+
+        const platform = process.argv[3];
+        os.platform = () => platform;
+        os.arch = () => platform === "darwin" ? "arm64" : "x64";
+        childProcess.spawn = () => { throw new Error("Real browser launch is forbidden"); };
+        syncBuiltinESMExports();
+        const { MANIFEST_URL, PUB_BASE, Runtime } = await import(process.argv[1]);
+        const { makeNativeBinary, widevineEntries, writeWidevine } = await import(process.argv[4]);
+        const AdmZip = createRequire(process.argv[1])("adm-zip");
+        const original = {
+          chmod: fs.chmodSync, access: fs.accessSync, unzip: childProcess.spawnSync,
+          fetch: globalThis.fetch, warn: console.warn,
+        };
+        const oldEngine = makeNativeBinary("old-inert-engine", platform);
+        const newEngine = makeNativeBinary("new-inert-engine", platform);
+        const helper = makeNativeBinary("new-inert-helper", platform);
+        let checked = 0;
+        let nextCase = 0;
+        const prepare = () => {
+          const runtime = new Runtime({ cacheDir: join(process.argv[2], "case-" + nextCase++) });
+          fs.mkdirSync(dirname(runtime.binaryPath), { recursive: true });
+          fs.writeFileSync(runtime.binaryPath, oldEngine);
+          fs.chmodSync(runtime.binaryPath, 0o755);
+          writeWidevine(join(runtime.root, ...runtime.spec.widevineSubpath), "4.10.0.0", platform);
+          fs.writeFileSync(join(runtime.fingerprintsDir, "template.json"), '{"version":"old"}');
+          fs.writeFileSync(join(runtime.fingerprintsDir, "user-custom.json"), '{"custom":true}');
+          fs.writeFileSync(runtime.manifestPath, JSON.stringify({
+            browser_etag: "old", widevine_etag: "old", fingerprints_etag: "old",
+            installed_chromium_version: "151.0.0.0", installed_engine_build: "old",
+          }));
+          return { runtime, manifest: fs.readFileSync(runtime.manifestPath) };
+        };
+        const zip = (entries) => {
+          const archive = new AdmZip();
+          for (const [name, bytes] of Object.entries(entries)) archive.addFile(name, Buffer.from(bytes), "", 0o644);
+          return archive.toBuffer();
+        };
+        const assertPreserved = ({ runtime, manifest }) => {
+          assert.deepEqual(fs.readFileSync(runtime.binaryPath), oldEngine);
+          assert.deepEqual(fs.readFileSync(runtime.manifestPath), manifest);
+          assert.equal(fs.readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+          assert.equal(fs.readFileSync(join(runtime.fingerprintsDir, "user-custom.json"), "utf8"), '{"custom":true}');
+          assert.equal(fs.existsSync(join(runtime.root, ".runtime-update-recovery")), false);
+          assert.equal(fs.readdirSync(runtime.root).some(name => name.startsWith(".update-")), false);
+        };
+        const restore = () => {
+          fs.chmodSync = original.chmod;
+          fs.accessSync = original.access;
+          childProcess.spawnSync = original.unzip;
+          globalThis.fetch = original.fetch;
+          console.warn = original.warn;
+          syncBuiltinESMExports();
+        };
+        for (const failure of ["engine chmod", "helper chmod", "execute access", null]) {
+          for (const force of [false, true]) {
+            const local = prepare();
+            const { runtime } = local;
+            const binaryEntry = runtime.spec.binarySubpath.join("/");
+            const helperEntry = runtime.spec.binarySubpath[0] + "/inert-helper";
+            const archives = new Map([
+              [runtime.spec.browser.key, zip({ [binaryEntry]: newEngine, [helperEntry]: helper })],
+              [runtime.spec.widevine.key, zip(widevineEntries(
+                runtime.spec.widevine.key.slice(0, -4) + "/WidevineCdm", "4.10.0.1", platform,
+              ))],
+              ["ShardX-Fingerprints.zip", zip({ "shardx-fingerprints/template.json": '{"version":"new"}' })],
+            ]);
+            const permissionError = Object.assign(new Error("simulated " + failure + " failure"), { code: "EACCES" });
+            const warnings = [];
+            let injected = false;
+            let extracting = false;
+            let requests = 0;
+            const staged = path => typeof path === "string" && path.startsWith(join(runtime.root, ".update-"));
+            globalThis.fetch = async input => {
+              requests++;
+              const url = String(input);
+              if (url === MANIFEST_URL) return new Response(JSON.stringify({
+                archives: Object.fromEntries([...archives.keys()].map(key => [key, "new"])),
+                chromium_version: "153.0.0.0", engine_build: "new",
+              }));
+              assert.ok(url.startsWith(PUB_BASE + "/"));
+              const bytes = archives.get(url.slice((PUB_BASE + "/").length));
+              assert.ok(bytes, "Unexpected mock archive");
+              return new Response(bytes, { headers: { etag: "new", "content-length": String(bytes.length) } });
+            };
+            childProcess.spawnSync = (command, args) => {
+              assert.equal(command, "unzip");
+              extracting = true;
+              try { new AdmZip(args[2]).extractAllTo(args[4], true); }
+              finally { extracting = false; }
+              return { status: 0, signal: null, stderr: Buffer.alloc(0) };
+            };
+            fs.chmodSync = (path, ...args) => {
+              const target = failure === "engine chmod" ? newEngine : failure === "helper chmod" ? helper : null;
+              if (!extracting && target && staged(path) && fs.readFileSync(path).equals(target)) {
+                injected = true;
+                throw permissionError;
+              }
+              return original.chmod(path, ...args);
+            };
+            fs.accessSync = (path, mode) => {
+              if (failure === "execute access" && mode === fs.constants.X_OK && staged(path)
+                  && fs.readFileSync(path).equals(newEngine)) {
+                injected = true;
+                throw permissionError;
+              }
+              return original.access(path, mode);
+            };
+            console.warn = message => warnings.push(String(message));
+            syncBuiltinESMExports();
+            try {
+              if (failure) {
+                if (force) await assert.rejects(runtime.install({ force }), error => error === permissionError);
+                else {
+                  await runtime.install();
+                  assert.ok(warnings.some(message => message.includes(permissionError.message)));
+                }
+                assert.equal(injected, true, "The permission failure must be exercised");
+                assertPreserved(local);
+                assert.equal(runtime.chromiumVersion, "151.0.0.0");
+                assert.equal(runtime.hasUsableInstalledRuntime(), true);
+                const previousRequests = requests;
+                await runtime.install();
+                assert.equal(requests, previousRequests);
+              } else {
+                await runtime.install({ force });
+                assert.equal(injected, false);
+                assert.deepEqual(fs.readFileSync(runtime.binaryPath), newEngine);
+                assert.deepEqual(fs.readFileSync(join(runtime.root, helperEntry)), helper);
+                assert.equal(runtime.chromiumVersion, "153.0.0.0");
+                assert.equal(fs.readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"new"}');
+              }
+              assert.equal(fs.readdirSync(runtime.root).some(name => name.startsWith(".update-")), false);
+              checked++;
+            } finally { restore(); }
+          }
+        }
+        for (const force of [false, true]) {
+          const local = prepare();
+          const { runtime } = local;
+          globalThis.fetch = async input => {
+            if (String(input) === MANIFEST_URL) return new Response('{"archives":{},"chromium_version":"153.0.0.0"}');
+            assert.equal(String(input), PUB_BASE + "/" + runtime.spec.browser.key);
+            return new Response("mock failure", { status: 503 });
+          };
+          fs.accessSync = (path, mode) => {
+            if (path === runtime.binaryPath && mode === fs.constants.X_OK) {
+              throw Object.assign(new Error("old runtime lacks execute access"), { code: "EACCES" });
+            }
+            return original.access(path, mode);
+          };
+          syncBuiltinESMExports();
+          try {
+            assert.equal(runtime.hasUsableInstalledRuntime(), false);
+            await assert.rejects(runtime.install({ force }), /HTTP 503/);
+            assertPreserved(local);
+            checked++;
+          } finally { restore(); }
+        }
+        console.log("permission cases: " + checked);
+      `, new URL("../dist/runtime.js", import.meta.url).href, root, platform,
+      new URL("./helpers/runtime.fixtures.mjs", import.meta.url).href], { encoding: "utf8", timeout: 10000 });
+      assert.ifError(result.error);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.match(result.stdout, /permission cases: 10/);
+    } finally {
+      assert.equal(dirname(root), tmpdir());
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test(`${platform} unzip failures preserve the installed runtime and valid exit codes still activate`, () => {
     const root = mkdtempSync(join(tmpdir(), "shardx-runtime-unzip-"));
     try {
@@ -377,7 +791,7 @@ for (const platform of ["linux", "darwin"]) {
       const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
         import assert from "node:assert/strict";
         import childProcess from "node:child_process";
-        import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+        import { chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
         import { createRequire, syncBuiltinESMExports } from "node:module";
         import os from "node:os";
         import { basename, dirname, join } from "node:path";
@@ -387,16 +801,15 @@ for (const platform of ["linux", "darwin"]) {
         os.arch = () => platform === "darwin" ? "arm64" : "x64";
         syncBuiltinESMExports();
         const { acquireBrowserSessionLease, PUB_BASE, Runtime } = await import(process.argv[1]);
+        const { makeNativeBinary, widevineEntries, writeWidevine } = await import(process.argv[4]);
         const AdmZip = createRequire(process.argv[1])("adm-zip");
         const makeZip = (entries) => {
           const archive = new AdmZip();
           for (const [name, bytes] of Object.entries(entries)) archive.addFile(name, Buffer.from(bytes));
           return archive.toBuffer();
         };
-        const signature = Buffer.from(platform === "darwin"
-          ? [0xcf, 0xfa, 0xed, 0xfe] : [0x7f, 0x45, 0x4c, 0x46]);
-        const oldEngine = Buffer.concat([signature, Buffer.from("old-engine")]);
-        const newEngine = Buffer.concat([signature, Buffer.from("new-engine")]);
+        const oldEngine = makeNativeBinary("old-engine", platform);
+        const newEngine = makeNativeBinary("new-engine", platform);
         const cases = [
           { status: null, signal: "SIGKILL", success: false },
           { status: 0, signal: "SIGKILL", success: false },
@@ -410,6 +823,8 @@ for (const platform of ["linux", "darwin"]) {
           const fingerprintPath = join(runtime.fingerprintsDir, "template.json");
           mkdirSync(dirname(runtime.binaryPath), { recursive: true });
           writeFileSync(runtime.binaryPath, oldEngine);
+          if (process.platform !== "win32") chmodSync(runtime.binaryPath, 0o755);
+          writeWidevine(join(runtime.root, ...runtime.spec.widevineSubpath), "4.10.0.0", platform);
           writeFileSync(fingerprintPath, '{"version":"old"}');
           writeFileSync(runtime.manifestPath, '{"installed_chromium_version":"151.0.0"}');
           const previousManifest = readFileSync(runtime.manifestPath);
@@ -418,7 +833,7 @@ for (const platform of ["linux", "darwin"]) {
           const widevineWrapper = runtime.spec.widevine.key.slice(0, -4);
           const archives = new Map([
             [runtime.spec.browser.key, makeZip({ [binaryEntry]: newEngine, [supportEntry]: "support" })],
-            [runtime.spec.widevine.key, makeZip({ [widevineWrapper + "/WidevineCdm/manifest.json"]: "{}" })],
+            [runtime.spec.widevine.key, makeZip(widevineEntries(widevineWrapper + "/WidevineCdm", "4.10.0.1", platform))],
             ["ShardX-Fingerprints.zip", makeZip({ "shardx-fingerprints/template.json": '{"version":"new"}' })],
           ]);
           runtime.fetchManifest = async () => ({ archives: {}, chromiumVersion: "153.0.0" });
@@ -464,7 +879,7 @@ for (const platform of ["linux", "darwin"]) {
           const releaseBrowser = await acquireBrowserSessionLease(runtime);
           releaseBrowser();
         }
-      `, new URL("../dist/runtime.js", import.meta.url).href, root, platform], {
+      `, new URL("../dist/runtime.js", import.meta.url).href, root, platform, new URL("./helpers/runtime.fixtures.mjs", import.meta.url).href], {
         encoding: "utf8",
         timeout: 10000,
       });
@@ -492,8 +907,8 @@ test("new runtime is activated only after all archives have been prepared", asyn
     assert.equal(runtime.chromiumVersion, "153.0.0");
     if (runtime.spec.widevine) {
       assert.equal(
-        readFileSync(join(root, ...runtime.spec.widevineSubpath, "manifest.json"), "utf8"),
-        "new-widevine",
+        JSON.parse(readFileSync(join(root, ...runtime.spec.widevineSubpath, "manifest.json"), "utf8")).version,
+        "4.10.0.1",
       );
     }
     assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"new"}');
@@ -592,6 +1007,118 @@ test("activation failure rolls the old runtime and fingerprints back", async () 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+for (const force of [false, true]) {
+  test(`manifest temporary-file cleanup failure does not undo a ${force ? "forced" : "normal"} update after restart`, async () => {
+    const { root, runtime } = createInstalledRuntime();
+    const requestedArchives = [];
+    const restoreFetch = mockFetch(runtime, { onArchive: (key) => requestedArchives.push(key) });
+    const originalRm = fs.rmSync;
+    const originalWarn = console.warn;
+    const warnings = [];
+    let injected = false;
+    console.warn = (message) => { warnings.push(String(message)); };
+    fs.rmSync = function (path, ...args) {
+      if (!injected && typeof path === "string"
+          && dirname(path).startsWith(join(root, ".update-"))
+          && /^manifest-.+\.tmp$/.test(basename(path))) {
+        injected = true;
+        throw Object.assign(new Error("simulated manifest temporary-file cleanup failure"), { code: "EACCES" });
+      }
+      return originalRm.call(fs, path, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      await runtime.install({ force });
+      assert.equal(injected, true);
+      assert.match(warnings.join("\n"), /runtime manifest temporary-file cleanup failed/);
+      assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary());
+      assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"new"}');
+      const committedManifest = readFileSync(runtime.manifestPath);
+      assert.equal(JSON.parse(committedManifest).installed_chromium_version, "153.0.0");
+      assert.equal(runtime.chromiumVersion, "153.0.0");
+      assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+      assertNoStagingDirectories(root);
+      requestedArchives.length = 0;
+      const restartedRuntime = new Runtime({ cacheDir: root });
+      await restartedRuntime.install();
+      assert.deepEqual(requestedArchives, []);
+      assert.deepEqual(readFileSync(restartedRuntime.binaryPath), makeEngineBinary());
+      assert.deepEqual(readFileSync(restartedRuntime.manifestPath), committedManifest);
+      assert.equal(restartedRuntime.chromiumVersion, "153.0.0");
+      assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+      assertNoStagingDirectories(root);
+    } finally {
+      fs.rmSync = originalRm;
+      syncBuiltinESMExports();
+      console.warn = originalWarn;
+      restoreFetch();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const operation of ["write", "rename"]) {
+  test(`a manifest ${operation} failure is preserved when temporary-file cleanup also fails`, async () => {
+    const { root, runtime } = createInstalledRuntime();
+    const previousManifest = readFileSync(runtime.manifestPath);
+    const restoreFetch = mockFetch(runtime);
+    const originalWrite = fs.writeFileSync;
+    const originalRename = fs.renameSync;
+    const originalRm = fs.rmSync;
+    const originalWarn = console.warn;
+    const primaryError = Object.assign(new Error(`simulated manifest ${operation} failure`), { code: "EIO" });
+    const warnings = [];
+    let primaryInjected = false;
+    let cleanupInjected = false;
+    const isManifestTemp = (path) => typeof path === "string"
+      && dirname(path).startsWith(join(root, ".update-"))
+      && /^manifest-.+\.tmp$/.test(basename(path));
+    console.warn = (message) => { warnings.push(String(message)); };
+    fs.writeFileSync = function (path, ...args) {
+      if (operation === "write" && isManifestTemp(path)) {
+        primaryInjected = true;
+        throw primaryError;
+      }
+      return originalWrite.call(fs, path, ...args);
+    };
+    fs.renameSync = function (source, ...args) {
+      if (operation === "rename" && isManifestTemp(source)) {
+        primaryInjected = true;
+        throw primaryError;
+      }
+      return originalRename.call(fs, source, ...args);
+    };
+    fs.rmSync = function (path, ...args) {
+      if (isManifestTemp(path)) {
+        cleanupInjected = true;
+        throw Object.assign(new Error("simulated manifest temporary-file cleanup failure"), { code: "EACCES" });
+      }
+      return originalRm.call(fs, path, ...args);
+    };
+    syncBuiltinESMExports();
+    try {
+      await assert.rejects(runtime.install({ force: true }), (error) => error === primaryError);
+      assert.equal(primaryInjected, true);
+      assert.equal(cleanupInjected, true);
+      assert.match(warnings.join("\n"), /runtime manifest temporary-file cleanup failed/);
+      assert.deepEqual(readFileSync(runtime.binaryPath), makeEngineBinary("old-engine"));
+      assert.deepEqual(readFileSync(runtime.manifestPath), previousManifest);
+      assert.equal(readFileSync(join(runtime.fingerprintsDir, "template.json"), "utf8"), '{"version":"old"}');
+      assert.equal(runtime.chromiumVersion, "151.0.0");
+      assert.equal(readdirSync(root).includes(".runtime-update-recovery"), false);
+      assertNoStagingDirectories(root);
+    } finally {
+      fs.writeFileSync = originalWrite;
+      fs.renameSync = originalRename;
+      fs.rmSync = originalRm;
+      syncBuiltinESMExports();
+      console.warn = originalWarn;
+      restoreFetch();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("staging cleanup failure does not fail a successful activation", async () => {
   const { root, runtime } = createInstalledRuntime();
