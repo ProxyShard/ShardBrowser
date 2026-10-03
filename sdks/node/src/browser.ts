@@ -16,8 +16,37 @@ import { hasAutoFields, resolveAutoFields } from "./autoResolve.js";
 import { geoCheckVia, type GeoInfo } from "./geo.js";
 import { Profile, userDataDir, applyEngineVersion } from "./profile.js";
 import { parseProxy, probeUdp, proxyToArg, type ParsedProxy } from "./proxy.js";
-import type { Runtime } from "./runtime.js";
+import { acquireBrowserSessionLease, type Runtime } from "./runtime.js";
 import { applyScreenStrategy, defaultScreenModeFor, type ScreenStrategy } from "./screen.js";
+
+export function awaitBrowserSpawn(child: ChildProcess, release: () => void): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    let spawned = false;
+    let settled = false;
+    child.once("close", () => {
+      release();
+      if (!settled) {
+        settled = true;
+        reject(new Error("browser process closed before it started"));
+      }
+    });
+    child.on("error", (error) => {
+      if (!spawned && !settled) {
+        settled = true;
+        reject(error);
+      } else if (spawned) {
+        console.warn(`[shardx] browser process error: ${error.message}`);
+      }
+    });
+    child.once("spawn", () => {
+      spawned = true;
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    });
+  });
+}
 
 export type WebRtcMode   = "auto" | "block" | "tcp_only";
 /** Legacy alias retained for back-compat; prefer `ScreenStrategy`. */
@@ -140,70 +169,85 @@ export class Browser {
     console.log(`[shardx] profile '${profile.id}' → ${udd}`);
     // Keep the spoofed Chrome version coherent with the installed engine,
     // regardless of where the profile config came from (library / file / dict).
-    applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand,
-                       this.runtime.greaseVersion, this.runtime.tls);
-    applyNoiseSeeds(profile.config, profile.id);
-    const fpFile = join(udd, "fingerprint.json");
-    writeFileSync(fpFile, JSON.stringify(profile.config));
+    const releaseBrowserLease = await acquireBrowserSessionLease(this.runtime);
+    let leaseReleased = false;
+    const releaseOnce = () => {
+      if (leaseReleased) return;
+      leaseReleased = true;
+      releaseBrowserLease();
+    };
+    let child: ChildProcess | undefined;
+    try {
+      applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand,
+                         this.runtime.greaseVersion, this.runtime.tls);
+      applyNoiseSeeds(profile.config, profile.id);
+      const fpFile = join(udd, "fingerprint.json");
+      writeFileSync(fpFile, JSON.stringify(profile.config));
 
-    const argv: string[] = [
-      `--fingerprint-profile=${fpFile}`,
-      `--user-data-dir=${udd}`,
-      "--no-first-run",
-    ];
-    // A Linux profile keeps navigator.gpu and answers the adapter request with
-    // nothing, as Chrome on Linux does; the switch would remove the object too.
-    if (!profile.hasWebGPU && !profile.claimsLinuxDesktop)
-      argv.push("--disable-features=WebGPU");
-    if (opts.androidMedia && profile.claimsMobile)
-      argv.push("--shardx-android-media");
-    if (!opts.headless && !opts.cdp) {
-      argv.push("--restore-last-session", "--hide-crash-restore-bubble");
-    }
-    // Engine-side real-screen switch only fires on use_host (where the SDK
-    // already rewrote screen.* — keep them in sync with the launcher).
-    if (mode === "use_host") argv.push("--shardx-real-screen");
-    if (parsed) {
-      argv.push(`--proxy-server=${proxyToArg(parsed)}`);
-      argv.push(quicEnabled ? "--enable-quic" : "--disable-quic");
-    }
-    if (webrtcMode === "block") {
-      argv.push(
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-        "--shardx-webrtc-policy=block",
-      );
-    } else if (webrtcMode === "tcp_only") {
-      argv.push(
-        "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
-        "--shardx-webrtc-policy=tcp_only",
-      );
-      // Engine spoofs the public side of ICE candidates with this IP.
-      // Match the launcher: ALWAYS resolve when proxy is bound — relying
-      // on `geo` from auto-resolve only works when the profile has auto
-      // sentinels, otherwise the engine falls back to the host IP.
-      let ip = opts.webrtcPublicIp ?? geo?.ip;
-      if (!ip && parsed) {
-        try { ip = (await geoCheckVia(parsed)).ip || undefined; } catch { /* leave undefined */ }
+      const argv: string[] = [
+        `--fingerprint-profile=${fpFile}`,
+        `--user-data-dir=${udd}`,
+        "--no-first-run",
+      ];
+      // A Linux profile keeps navigator.gpu and answers the adapter request with
+      // nothing, as Chrome on Linux does; the switch would remove the object too.
+      if (!profile.hasWebGPU && !profile.claimsLinuxDesktop)
+        argv.push("--disable-features=WebGPU");
+      if (opts.androidMedia && profile.claimsMobile)
+        argv.push("--shardx-android-media");
+      if (!opts.headless && !opts.cdp) {
+        argv.push("--restore-last-session", "--hide-crash-restore-bubble");
       }
-      if (ip) argv.push(`--shardx-webrtc-public-ip=${ip}`);
-    }
-    const cdpMarker = join(udd, "DevToolsActivePort");
-    if (opts.cdp) {
-      if (existsSync(cdpMarker)) rmSync(cdpMarker, { force: true });
-      argv.push("--remote-debugging-port=0", "--remote-allow-origins=*");
-    }
-    if (opts.headless) argv.push("--headless=new");
-    if (opts.extraArgs) argv.push(...opts.extraArgs);
+      // Engine-side real-screen switch only fires on use_host (where the SDK
+      // already rewrote screen.* — keep them in sync with the launcher).
+      if (mode === "use_host") argv.push("--shardx-real-screen");
+      if (parsed) {
+        argv.push(`--proxy-server=${proxyToArg(parsed)}`);
+        argv.push(quicEnabled ? "--enable-quic" : "--disable-quic");
+      }
+      if (webrtcMode === "block") {
+        argv.push(
+          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+          "--shardx-webrtc-policy=block",
+        );
+      } else if (webrtcMode === "tcp_only") {
+        argv.push(
+          "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+          "--shardx-webrtc-policy=tcp_only",
+        );
+        // Engine spoofs the public side of ICE candidates with this IP.
+        // Match the launcher: ALWAYS resolve when proxy is bound — relying
+        // on `geo` from auto-resolve only works when the profile has auto
+        // sentinels, otherwise the engine falls back to the host IP.
+        let ip = opts.webrtcPublicIp ?? geo?.ip;
+        if (!ip && parsed) {
+          try { ip = (await geoCheckVia(parsed)).ip || undefined; } catch { /* leave undefined */ }
+        }
+        if (ip) argv.push(`--shardx-webrtc-public-ip=${ip}`);
+      }
+      const cdpMarker = join(udd, "DevToolsActivePort");
+      if (opts.cdp) {
+        if (existsSync(cdpMarker)) rmSync(cdpMarker, { force: true });
+        argv.push("--remote-debugging-port=0", "--remote-allow-origins=*");
+      }
+      if (opts.headless) argv.push("--headless=new");
+      if (opts.extraArgs) argv.push(...opts.extraArgs);
 
-    const child = spawn(this.runtime.binaryPath, argv, {
-      env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: "ignore",
-      detached: process.platform !== "win32",
-    });
+      child = spawn(this.runtime.binaryPath, argv, {
+        env: { ...process.env, ...(opts.env ?? {}) },
+        stdio: "ignore",
+        detached: process.platform !== "win32",
+      });
+      await awaitBrowserSpawn(child, releaseOnce);
+    } catch (error) {
+      if (!child) releaseOnce();
+      throw error;
+    }
 
     const cdpUrl = opts.cdp ? await readCdpEndpoint(udd, 15_000) : null;
+    const launchedChild = child!;
     return new BrowserSession(
-      child.pid!, udd, cdpUrl, child, proxyUdpMs, quicEnabled, webrtcMode, geo,
+      launchedChild.pid!, udd, cdpUrl, launchedChild, proxyUdpMs, quicEnabled, webrtcMode, geo,
     );
   }
 }
