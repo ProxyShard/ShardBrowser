@@ -1737,9 +1737,25 @@ fn cookies_export(profile_id: String) -> Result<Vec<cookies::Cookie>, String> {
 #[tauri::command]
 fn cookies_export_to_file(profile_id: String, path: String) -> Result<usize, String> {
     let cookies = cookies::export(&profile_id).map_err(|e| e.to_string())?;
-    let json = serde_json::to_string_pretty(&cookies).map_err(|e| e.to_string())?;
-    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    // *.txt -> Netscape cookies.txt, anything else -> JSON.
+    let body = if path.to_lowercase().ends_with(".txt") {
+        cookies::to_netscape(&cookies)
+    } else {
+        serde_json::to_string_pretty(&cookies).map_err(|e| e.to_string())?
+    };
+    std::fs::write(&path, body).map_err(|e| e.to_string())?;
     Ok(cookies.len())
+}
+
+/// Import cookies from a file; format auto-detected (JSON array or Netscape cookies.txt).
+#[tauri::command]
+fn cookies_import_from_file(profile_id: String, path: String) -> Result<usize, String> {
+    if is_profile_running(&profile_id) {
+        return Err("stop the profile before importing cookies".into());
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let list = cookies::parse_any(&text).map_err(|e| e.to_string())?;
+    cookies::import(&profile_id, &list).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2241,6 +2257,7 @@ pub fn run() {
             cookies_export,
             cookies_export_to_file,
             cookies_import,
+            cookies_import_from_file,
             mcp_download,
             runtime::runtime_status,
             runtime::runtime_install,

@@ -388,7 +388,7 @@ export function InlineEditor({
               onClick={async () => {
                 const path = await open({
                   multiple: false, directory: false, title: t("inlineEditor.cookiesDialogTitle"),
-                  filters: [{ name: "JSON", extensions: ["json"] }],
+                  filters: [{ name: "Cookies", extensions: ["txt", "json"] }],
                 });
                 if (typeof path === "string") u("cookies_file", path);
               }}

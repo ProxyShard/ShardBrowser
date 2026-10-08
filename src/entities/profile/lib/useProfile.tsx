@@ -4,7 +4,6 @@ import { openPath } from "@tauri-apps/plugin-opener";
 import { toast } from "../../../shared/lib/toast";
 import { confirmModal } from "../../../shared/lib/confirm";
 import { clip } from "../../../shared/lib/clipboard";
-import { readTextFile } from "../../../shared/lib/utils";
 import { storeBus } from "../../../shared/lib/storeBus";
 import { t } from "../../../shared/i18n";
 import { proxyList, type ProxyEntry } from "../../proxy";
@@ -14,7 +13,7 @@ import {
   profileList, profileGet, profileSave, profileDelete, profileClone,
   profileSetPin, profileSetFolder, profileBindProxy, profileImport,
   profileCreateFromTemplate, processList, processKill, launch, syncLaunch,
-  folderDelete, cookiesExportToFile, cookiesImport,
+  folderDelete, cookiesExportToFile, cookiesImportFromFile,
 } from "../model/api";
 import { defaultForm, fromStored, toStored } from "../model/form";
 
@@ -365,10 +364,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
           if (get().running[saved.id]) {
             throw new Error(t("useProfile.cookiesNeedStop"));
           }
-          const text = await readTextFile(draft.cookies_file);
-          const cookies = JSON.parse(text);
-          if (!Array.isArray(cookies)) throw new Error(t("useProfile.draftCookiesNotArray"));
-          const n = await cookiesImport(saved.id, cookies);
+          const n = await cookiesImportFromFile(saved.id, draft.cookies_file);
           toast.ok(n === 1
             ? t("useProfile.draftCookieImportedOne")
             : t("useProfile.draftCookiesImportedMany", { n }));
@@ -434,8 +430,11 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   exportCookies: async (p) => {
     try {
       const path = await saveDialog({
-        defaultPath: `${(p.name || p.id).replace(/[^\w.-]+/g, "_")}-cookies.json`,
-        filters: [{ name: "JSON", extensions: ["json"] }],
+        defaultPath: `${(p.name || p.id).replace(/[^\w.-]+/g, "_")}-cookies.txt`,
+        filters: [
+          { name: "Netscape cookies.txt", extensions: ["txt"] },
+          { name: "JSON", extensions: ["json"] },
+        ],
       });
       if (typeof path !== "string") return; // cancelled
       const n = await cookiesExportToFile(p.id, path);
@@ -453,13 +452,10 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     try {
       const path = await open({
         multiple: false, directory: false, title: t("useProfile.selectCookiesDialogTitle"),
-        filters: [{ name: "JSON", extensions: ["json"] }],
+        filters: [{ name: "Cookies", extensions: ["txt", "json"] }],
       });
       if (typeof path !== "string") return;
-      const text = await readTextFile(path);
-      const cookies = JSON.parse(text);
-      if (!Array.isArray(cookies)) { toast.err(t("useProfile.cookiesNotArray")); return; }
-      const n = await cookiesImport(p.id, cookies);
+      const n = await cookiesImportFromFile(p.id, path);
       toast.ok(n === 1
         ? t("useProfile.cookieImportedOne")
         : t("useProfile.cookiesImportedMany", { n }));

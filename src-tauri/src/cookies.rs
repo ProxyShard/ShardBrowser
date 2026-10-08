@@ -450,3 +450,90 @@ fn ensure_schema(conn: &rusqlite::Connection) -> Result<()> {
     )?;
     Ok(())
 }
+
+// ---- Netscape cookies.txt (curl / yt-dlp / browser-extension format) ----
+
+/// Serialize cookies to the Netscape `cookies.txt` format.
+/// Columns: domain, include-subdomains, path, secure, expiry (0 = session), name, value.
+/// HttpOnly cookies use the `#HttpOnly_` domain prefix (curl convention).
+pub fn to_netscape(cookies: &[Cookie]) -> String {
+    let mut out = String::from("# Netscape HTTP Cookie File\n# Exported by ShardX Launcher\n\n");
+    for c in cookies {
+        let prefix = if c.http_only { "#HttpOnly_" } else { "" };
+        let subdomains = if c.domain.starts_with('.') { "TRUE" } else { "FALSE" };
+        let secure = if c.secure { "TRUE" } else { "FALSE" };
+        let exp = match c.expires {
+            Some(e) if e > 0.0 => e as i64,
+            _ => 0,
+        };
+        out.push_str(&format!(
+            "{prefix}{}\t{subdomains}\t{}\t{secure}\t{exp}\t{}\t{}\n",
+            c.domain, c.path, c.name, c.value
+        ));
+    }
+    out
+}
+
+/// Parse a Netscape `cookies.txt` into cookies. Comments / blank / malformed lines are skipped.
+pub fn from_netscape(text: &str) -> Vec<Cookie> {
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = raw.trim_end_matches('\r');
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (line, http_only) = match line.strip_prefix("#HttpOnly_") {
+            Some(rest) => (rest, true),
+            None => (line, false),
+        };
+        if line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.splitn(7, '\t').collect();
+        if f.len() < 7 || f[0].is_empty() || f[5].is_empty() {
+            continue;
+        }
+        let expires = f[4].trim().parse::<f64>().ok().filter(|e| *e > 0.0);
+        out.push(Cookie {
+            domain: f[0].to_string(),
+            path: if f[2].is_empty() { default_path() } else { f[2].to_string() },
+            secure: f[3].trim().eq_ignore_ascii_case("TRUE"),
+            expires,
+            name: f[5].to_string(),
+            value: f[6].to_string(),
+            http_only,
+            same_site: None,
+        });
+    }
+    out
+}
+
+/// Parse either a JSON array or a Netscape cookies.txt (auto-detected).
+pub fn parse_any(text: &str) -> Result<Vec<Cookie>> {
+    let t = text.trim_start_matches('\u{feff}').trim_start();
+    if t.starts_with('[') {
+        return Ok(serde_json::from_str(t)?);
+    }
+    let v = from_netscape(t);
+    if v.is_empty() {
+        anyhow::bail!("no cookies found: expected a JSON array or Netscape cookies.txt");
+    }
+    Ok(v)
+}
+
+#[cfg(test)]
+mod netscape_tests {
+    use super::*;
+
+    #[test]
+    fn roundtrip() {
+        let txt = "# Netscape HTTP Cookie File\n\n.example.com\tTRUE\t/\tTRUE\t1893456000\tsid\tabc\n#HttpOnly_.example.com\tTRUE\t/\tFALSE\t0\tauth\tx\ty\n";
+        let c = from_netscape(txt);
+        assert_eq!(c.len(), 2);
+        assert!(c[0].secure && !c[0].http_only && c[0].expires == Some(1893456000.0));
+        assert!(c[1].http_only && c[1].expires.is_none() && c[1].value == "x\ty");
+        let back = from_netscape(&to_netscape(&c));
+        assert_eq!(back.len(), 2);
+        assert_eq!(back[1].name, "auth");
+    }
+}
