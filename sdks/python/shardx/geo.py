@@ -39,6 +39,7 @@ def _proxy_url(p: ParsedProxy) -> str:
     """Build a proxy URL httpx accepts. `socks5h://` lets DNS go through the proxy."""
     scheme = "socks5h" if p.scheme == "socks5" else p.scheme
     if p.username or p.password:
+        # httpx decodes userinfo. Not encode_proxy_userinfo — that form is for the engine (#75).
         u = quote(p.username or "", safe="")
         pw = quote(p.password or "", safe="")
         return f"{scheme}://{u}:{pw}@{p.host}:{p.port}"
