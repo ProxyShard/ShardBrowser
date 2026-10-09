@@ -41,18 +41,27 @@ export function parseProxy(url: string): ParsedProxy {
   };
 }
 
-/** Format as the ShardX engine's `--proxy-server` argument.  Includes
- *  URL-encoded `user:pass@` when present — the ShardX fork honours
- *  inline credentials in `--proxy-server` (stock Chromium does not)
- *  so this is the only mechanism the SDK needs to authenticate
- *  SOCKS5 / HTTP-proxy traffic.  Mirrors the launcher's Rust
- *  `ProxyEntry::to_proxy_server_arg` exactly. */
+/** Octets the engine forwards literally. Everything else is `%HH` — the
+ *  engine does not percent-decode `--proxy-server` userinfo (#75), so
+ *  `encodeURIComponent` would turn `;` / `,` into a username the proxy rejects. */
+const LITERAL_USERINFO = /[A-Za-z0-9\-._~!$&'()*+,;=]/;
+
+export function encodeProxyUserinfo(raw: string): string {
+  let out = "";
+  for (const b of Buffer.from(raw, "utf8")) {
+    const ch = String.fromCharCode(b);
+    out += LITERAL_USERINFO.test(ch) ? ch : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+}
+
+/** Format as the ShardX engine's `--proxy-server` argument. The ShardX
+ *  fork honours inline credentials in `--proxy-server` (stock Chromium
+ *  does not). Mirrors the launcher's `ProxyEntry::to_proxy_server_arg`. */
 export function proxyToArg(p: ParsedProxy): string {
   const hostPort = `${p.host}:${p.port}`;
   if (p.username || p.password) {
-    const u = encodeURIComponent(p.username ?? "");
-    const pw = encodeURIComponent(p.password ?? "");
-    return `${p.scheme}://${u}:${pw}@${hostPort}`;
+    return `${p.scheme}://${encodeProxyUserinfo(p.username ?? "")}:${encodeProxyUserinfo(p.password ?? "")}@${hostPort}`;
   }
   return `${p.scheme}://${hostPort}`;
 }

@@ -47,6 +47,8 @@ pub async fn geo_check_via(proxy: Option<&ParsedProxy>, provider: &str) -> Resul
         let proxy_url = if p.username.is_empty() && p.password.is_empty() {
             format!("{scheme}://{}:{}", p.host, p.port)
         } else {
+            // reqwest decodes userinfo. Do not use `encode` from proxy.rs (#75):
+            // that one leaves `;` raw for the engine, which does not decode.
             let enc = |s: &str| url::form_urlencoded::byte_serialize(s.as_bytes()).collect::<String>();
             format!(
                 "{scheme}://{}:{}@{}:{}",

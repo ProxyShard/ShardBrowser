@@ -61,13 +61,43 @@ fn percent_decode(s: &str) -> String {
         .unwrap_or_else(|| s.to_string())
 }
 
+/// Same bytes as the launcher's `encode_proxy_userinfo`: the engine does not
+/// percent-decode `--proxy-server` userinfo (#75), so `;` and `,` stay literal.
 fn encode(s: &str) -> String {
-    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+    let mut out = String::with_capacity(s.len());
+    for &b in s.as_bytes() {
+        if matches!(
+            b,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'.'
+                | b'_'
+                | b'~'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+        ) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
 }
 
-/// Format as the ShardX engine's `--proxy-server` argument (URL-encoded
-/// `user:pass@` when present). Mirrors the launcher's
-/// `ProxyEntry::to_proxy_server_arg`.
+/// Format as the ShardX engine's `--proxy-server` argument. Mirrors the
+/// launcher's `ProxyEntry::to_proxy_server_arg`: separators the engine
+/// forwards literally (`;`, `,`) are not percent-encoded.
 pub fn proxy_to_arg(p: &ParsedProxy) -> String {
     let host_port = format!("{}:{}", p.host, p.port);
     if p.username.is_empty() && p.password.is_empty() {

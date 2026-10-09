@@ -34,6 +34,47 @@ pub struct ProxyEntry {
     pub notes: String,
 }
 
+/// Encode userinfo for `--proxy-server`.
+///
+/// The engine copies this userinfo into the SOCKS5/HTTP auth challenge
+/// without percent-decoding (#75). `application/x-www-form-urlencoded`
+/// turns provider separators (`;`, `,`) into `%3B` / `%2C`, and the proxy
+/// then rejects the username. Encode only octets that split this argument
+/// (`:`, `@`, `/`, `?`, `#`, `%`), plus whitespace, controls and non-ASCII.
+/// Sub-delims the engine already forwards literally stay raw. A space is
+/// `%20`, never `+`.
+fn encode_proxy_userinfo(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for &b in raw.as_bytes() {
+        if matches!(
+            b,
+            b'A'..=b'Z'
+                | b'a'..=b'z'
+                | b'0'..=b'9'
+                | b'-'
+                | b'.'
+                | b'_'
+                | b'~'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+        ) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 impl ProxyEntry {
     /// Build `--proxy-server=<scheme>://[user:pass@]host:port` for ShardX.
     pub fn to_proxy_server_arg(&self) -> String {
@@ -46,11 +87,11 @@ impl ProxyEntry {
         if self.username.is_empty() && self.password.is_empty() {
             format!("{scheme}://{host_port}")
         } else {
-            let user = url::form_urlencoded::byte_serialize(self.username.as_bytes())
-                .collect::<String>();
-            let pass = url::form_urlencoded::byte_serialize(self.password.as_bytes())
-                .collect::<String>();
-            format!("{scheme}://{user}:{pass}@{host_port}")
+            format!(
+                "{scheme}://{}:{}@{host_port}",
+                encode_proxy_userinfo(&self.username),
+                encode_proxy_userinfo(&self.password)
+            )
         }
     }
 }
@@ -560,6 +601,9 @@ async fn geo_check_one(entry: Option<&ProxyEntry>, provider: &str) -> Result<Geo
         let proxy_url = if entry.username.is_empty() && entry.password.is_empty() {
             format!("{scheme}://{}:{}", entry.host, entry.port)
         } else {
+            // reqwest percent-decodes proxy userinfo. This must stay
+            // form-urlencoded; `encode_proxy_userinfo` is only for the engine
+            // flag, which does not decode (#75).
             let user = url::form_urlencoded::byte_serialize(entry.username.as_bytes()).collect::<String>();
             let pass = url::form_urlencoded::byte_serialize(entry.password.as_bytes()).collect::<String>();
             format!("{scheme}://{user}:{pass}@{}:{}", entry.host, entry.port)
@@ -936,5 +980,52 @@ pub fn country_to_timezone(cc: &str) -> &'static str {
         "SA" => "Asia/Riyadh",
         "AE" => "Asia/Dubai",
         _ => "UTC",
+    }
+}
+
+#[cfg(test)]
+mod userinfo_tests {
+    use super::*;
+
+    fn entry(user: &str, pass: &str) -> ProxyEntry {
+        ProxyEntry {
+            id: String::new(),
+            name: String::new(),
+            kind: ProxyKind::Socks5,
+            host: "gw.example.com".into(),
+            port: 10000,
+            username: user.into(),
+            password: pass.into(),
+            country: String::new(),
+            notes: String::new(),
+        }
+    }
+
+    #[test]
+    fn provider_separators_stay_literal() {
+        let arg = entry("login__cr.br;city.saopaulo;sessttl.120", "secret").to_proxy_server_arg();
+        assert_eq!(
+            arg,
+            "socks5://login__cr.br;city.saopaulo;sessttl.120:secret@gw.example.com:10000"
+        );
+        let comma = entry("id__cr.fr,be", "secret").to_proxy_server_arg();
+        assert_eq!(comma, "socks5://id__cr.fr,be:secret@gw.example.com:10000");
+    }
+
+    #[test]
+    fn authority_delimiters_are_percent_encoded() {
+        let arg = entry("user", "p:a@s/s% w").to_proxy_server_arg();
+        assert_eq!(
+            arg,
+            "socks5://user:p%3Aa%40s%2Fs%25%20w@gw.example.com:10000"
+        );
+    }
+
+    #[test]
+    fn no_credentials() {
+        assert_eq!(
+            entry("", "").to_proxy_server_arg(),
+            "socks5://gw.example.com:10000"
+        );
     }
 }

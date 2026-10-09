@@ -37,6 +37,7 @@ const URLS: Record<string, string> = {
 
 function proxyUrl(p: ParsedProxy, scheme: string): string {
   if (p.username || p.password) {
+    // undici/URL decodes userinfo. Not encodeProxyUserinfo — that form is for the engine (#75).
     const u = encodeURIComponent(p.username ?? "");
     const pw = encodeURIComponent(p.password ?? "");
     return `${scheme}://${u}:${pw}@${p.host}:${p.port}`;

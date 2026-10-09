@@ -23,7 +23,21 @@ import struct
 import time
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import quote, unquote, urlparse
+from urllib.parse import unquote, urlparse
+
+# Bytes the engine forwards literally from `--proxy-server` userinfo.
+_LITERAL_USERINFO = set(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~!$&'()*+,;=")
+
+
+def encode_proxy_userinfo(raw: str) -> str:
+    """Percent-encode only octets that split the proxy argument. `;` and `,` stay raw."""
+    out: list[str] = []
+    for b in raw.encode("utf-8"):
+        if b in _LITERAL_USERINFO:
+            out.append(chr(b))
+        else:
+            out.append(f"%{b:02X}")
+    return "".join(out)
 
 
 # Cloudflare's anycast STUN (162.159.207.55:3478, stable IP literal so
@@ -49,17 +63,17 @@ class ParsedProxy:
         return self.scheme == "socks5"
 
     def to_arg(self) -> str:
-        """Format as ShardX engine's `--proxy-server` argument.  Includes
-        URL-encoded `user:pass@` when present — the ShardX fork honours
-        inline credentials in `--proxy-server` (stock Chromium does not)
-        so this is the only mechanism the SDK needs to authenticate
-        SOCKS5 / HTTP-proxy traffic.  Mirrors the launcher's Rust
-        `ProxyEntry::to_proxy_server_arg` exactly.
+        """Format as ShardX engine's `--proxy-server` argument.
+
+        The fork honours inline credentials (stock Chromium does not).
+        Mirrors the launcher's `ProxyEntry::to_proxy_server_arg`: the
+        engine does not percent-decode this userinfo (#75), so `;` and
+        `,` stay literal.
         """
         host_port = f"{self.host}:{self.port}"
         if self.username or self.password:
-            u = quote((self.username or ""), safe="")
-            p = quote((self.password or ""), safe="")
+            u = encode_proxy_userinfo(self.username or "")
+            p = encode_proxy_userinfo(self.password or "")
             return f"{self.scheme}://{u}:{p}@{host_port}"
         return f"{self.scheme}://{host_port}"
 
