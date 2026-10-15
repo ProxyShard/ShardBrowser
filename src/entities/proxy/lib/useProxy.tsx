@@ -283,7 +283,13 @@ export const useProxy = create<ProxyStore>((set, get) => ({
     // Import from clipboard (one per line, bulkExport format).
     bulkImportClipboard: async () => {
         try {
-            const text = await clip.read();
+            let text: string;
+            try {
+                text = await clip.read();
+            } catch {
+                toast.err(t("useProxy.clipboardEmpty"));
+                return;
+            }
             if (!text.trim()) { toast.err(t("useProxy.clipboardEmpty")); return; }
             const n = await proxyBulkImport(text, "socks5");
             get().reload();

@@ -5,8 +5,9 @@
 // product names, protocol names, the endonyms in the language picker.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 const SRC = join(ROOT, "src");
 const LOCALES = join(SRC, "shared/i18n/locales");
 
@@ -87,16 +88,39 @@ for (const file of files) {
 }
 
 const en = JSON.parse(readFileSync(join(LOCALES, "en.json"), "utf8"));
-const zh = JSON.parse(readFileSync(join(LOCALES, "zh.json"), "utf8"));
+const localeFiles = readdirSync(LOCALES).filter((name) => name.endsWith(".json")).sort();
+const locales = new Map(localeFiles.map((name) => [
+  name.slice(0, -5), JSON.parse(readFileSync(join(LOCALES, name), "utf8")),
+]));
 const missingEn = [...called].filter((k) => !(k in en)).sort();
-const missingZh = Object.keys(en).filter((k) => !(k in zh)).sort();
 const unused = Object.keys(en).filter((k) => !called.has(k)).sort();
+const localeProblems = [];
+const placeholders = (value) => [...value.matchAll(/(?<!\{)\{([A-Za-z][A-Za-z0-9_]*)\}(?!\})/g)]
+  .map((match) => match[1]).sort();
+
+for (const [locale, dictionary] of locales) {
+  const missing = Object.keys(en).filter((key) => !(key in dictionary)).sort();
+  const extra = Object.keys(dictionary).filter((key) => !(key in en)).sort();
+  if (missing.length) localeProblems.push(`keys in en.json but not in ${locale}.json:\n  ${missing.join("\n  ")}`);
+  if (extra.length) localeProblems.push(`keys in ${locale}.json but not in en.json:\n  ${extra.join("\n  ")}`);
+
+  for (const [key, value] of Object.entries(dictionary)) {
+    if (typeof value !== "string" || !value.trim()) {
+      localeProblems.push(`${locale}.json: ${key} must have a non-empty string value`);
+      continue;
+    }
+    if (key in en && typeof en[key] === "string" &&
+        JSON.stringify(placeholders(value)) !== JSON.stringify(placeholders(en[key]))) {
+      localeProblems.push(`${locale}.json: ${key} placeholders do not match en.json`);
+    }
+  }
+}
 
 for (const [f, line, what] of problems) console.log(`${f}:${line}  ${what}`);
 if (missingEn.length) console.log(`\nkeys called but not in en.json:\n  ${missingEn.join("\n  ")}`);
-if (missingZh.length) console.log(`\nkeys in en.json but not in zh.json:\n  ${missingZh.join("\n  ")}`);
+for (const problem of localeProblems) console.log(`\n${problem}`);
 if (unused.length) console.log(`\nkeys in en.json that nothing calls:\n  ${unused.join("\n  ")}`);
 
-const bad = problems.length + missingEn.length + missingZh.length + unused.length;
+const bad = problems.length + missingEn.length + localeProblems.length + unused.length;
 console.log(bad ? `\n${bad} problem(s)` : `i18n OK — ${Object.keys(en).length} keys, all called, all translated`);
 process.exit(bad ? 1 : 0);
