@@ -10,7 +10,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "check:i18n": "node scripts/check-i18n.mjs"
+    "check:i18n": "node scripts/check-i18n.mjs",
+    "test:i18n": "node --experimental-strip-types --test tests/i18n.test.ts"
   },
   "dependencies": {
     "@hugeicons/core-free-icons": "^4.3.0",
