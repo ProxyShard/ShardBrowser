@@ -9,6 +9,7 @@ import { PortList } from "../../../shared/ui/PortList";
 import { CSSelect } from "../../../shared/ui/CSSelect";
 import { SelectField } from "../../../shared/ui/SelectField";
 import { ColorSwatches } from "../../../shared/ui/ColorSwatches";
+import { ProfileIconPicker } from "./ProfileIconPicker";
 import { ExtensionPicker } from "./ExtensionPicker";
 import { ProxySelect } from "./ProxySelect";
 import { HOST_OS } from "../../../shared/lib/utils";
@@ -58,6 +59,7 @@ export function InlineEditor({
 }) {
   const t = useT();
   const f = draft;
+  const [iconBusy, setIconBusy] = useState(false);
   const u = <K extends keyof ProfileForm>(k: K, v: ProfileForm[K]) => setDraft({ ...f, [k]: v });
 
   // OS filter init from bound fingerprint's platform; new profile uses host OS.
@@ -242,6 +244,13 @@ export function InlineEditor({
             value={f.color}
             onChange={(v) => u("color", v)}
           />
+          <ProfileIconPicker
+            name={f.name}
+            color={f.color}
+            value={f.icon_png}
+            onChange={(v) => u("icon_png", v)}
+            onBusyChange={setIconBusy}
+          />
         </div>
 
         {/* ----- col 2: locale + noise ----- */}
@@ -425,7 +434,7 @@ export function InlineEditor({
       </div>
       <div className="mt-4 flex justify-end gap-2.5 border-t border-stroke-soft-200 pt-3.5">
         <Button variant="neutral" mode="stroke" size="small" onClick={onCancel}>{t("inlineEditor.cancel")}</Button>
-        <Button variant="primary" mode="filled" size="small" onClick={onSave}>
+        <Button variant="primary" mode="filled" size="small" disabled={iconBusy} onClick={onSave}>
           {f.id ? t("inlineEditor.saveChanges") : t("inlineEditor.createProfile")}
         </Button>
       </div>

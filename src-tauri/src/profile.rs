@@ -120,6 +120,9 @@ pub struct StoredMeta {
     /// Icon accent, `#rrggbb`; absent = derived from the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// Portable normalized avatar, independent of the original file and profile name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_png: Option<String>,
     /// Extension ids from the library.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub extensions: Vec<String>,
@@ -352,6 +355,9 @@ pub fn save_raw(stored: &mut StoredProfile) -> Result<()> {
 /// Body of `save_raw` for callers already holding the lock. It reloads the file
 /// itself, so a caller that loaded first must hold the lock across both halves.
 fn save_raw_locked(stored: &mut StoredProfile) -> Result<()> {
+    if let Some(icon) = stored.meta.icon_png.as_deref() {
+        crate::profile_icon::decode_avatar(icon)?;
+    }
     let is_new = stored.meta.id.is_empty();
     if is_new {
         stored.meta.id = uuid::Uuid::new_v4().to_string();
@@ -380,7 +386,8 @@ fn save_raw_locked(stored: &mut StoredProfile) -> Result<()> {
             // writes the runtime total — neither is something an open editor
             // is in conflict with, and bumping for them refused the operator's
             // own save with a message blaming an API nobody had called.
-            stored.meta.rev = if stored.config == existing.config {
+            stored.meta.rev = if stored.config == existing.config
+                && stored.meta.icon_png == existing.meta.icon_png {
                 existing.meta.rev
             } else {
                 existing.meta.rev.wrapping_add(1)

@@ -165,7 +165,7 @@ pub async fn launch_profile_synced(
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .unwrap_or(profile_id);
-        crate::profile_icon::ensure_icon(&dir, name, color.as_deref())
+        crate::profile_icon::ensure_icon(&dir, name, color.as_deref(), stored.meta.icon_png.as_deref())
     }) {
         Ok(path) => {
             cmd.arg(format!("--shardx-profile-icon={}", path.display()));

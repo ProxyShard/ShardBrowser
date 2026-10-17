@@ -1489,5 +1489,14 @@
   "useTrash.emptyTitle": "清空回收站",
   "useTrash.purgeMessage": "“{name}”在此之后将无法恢复。",
   "useTrash.purgeTitle": "彻底删除",
-  "useTrash.restored": "已恢复“{name}”"
+  "useTrash.restored": "已恢复“{name}”",
+  "profileIcon.label": "配置图标",
+  "profileIcon.dialogTitle": "选择配置图标",
+  "profileIcon.imageFiles": "图片",
+  "profileIcon.previewAlt": "配置图标预览",
+  "profileIcon.choose": "选择图片…",
+  "profileIcon.change": "更换图片…",
+  "profileIcon.reset": "重置",
+  "profileIcon.formats": "PNG、JPG 或 WebP · 最大 10 MB",
+  "profileIcon.help": "图片居中裁剪并填满图标。保存并重新启动此配置后生效。"
 }
