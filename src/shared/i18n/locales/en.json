@@ -1489,5 +1489,14 @@
   "useTrash.emptyTitle": "Empty the trash",
   "useTrash.purgeMessage": "\"{name}\" cannot be brought back after this.",
   "useTrash.purgeTitle": "Delete for good",
-  "useTrash.restored": "Restored \"{name}\""
+  "useTrash.restored": "Restored \"{name}\"",
+  "profileIcon.label": "Profile icon",
+  "profileIcon.dialogTitle": "Choose profile icon",
+  "profileIcon.imageFiles": "Images",
+  "profileIcon.previewAlt": "Profile icon preview",
+  "profileIcon.choose": "Choose image…",
+  "profileIcon.change": "Change image…",
+  "profileIcon.reset": "Reset",
+  "profileIcon.formats": "PNG, JPG or WebP · up to 10 MB",
+  "profileIcon.help": "Center-cropped to fill the icon. Applied after saving and restarting this profile."
 }

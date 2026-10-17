@@ -4,6 +4,10 @@
 
 use ab_glyph::{Font, FontRef, PxScale, ScaleFont};
 use anyhow::{Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
+use image::ImageDecoder;
+use sha2::{Digest, Sha256};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
 
@@ -249,9 +253,63 @@ fn draw_text(
     }
 }
 
-/// Composes the icon for `name` in `color` (None = derived from the name) and
-/// returns the PNG path, reusing the cached file when neither has changed.
-pub fn ensure_icon(cache_dir: &Path, name: &str, color: Option<&str>) -> Result<PathBuf> {
+const MAX_UPLOAD: usize = 10 * 1024 * 1024;
+const MAX_ENCODED: usize = 2 * 1024 * 1024;
+
+/// Import once, rather than persisting an external path that can disappear.
+pub fn import_avatar(path: &Path) -> Result<String> {
+    let file = std::fs::File::open(path).context("open image")?;
+    let mut bytes = Vec::new();
+    file.take(MAX_UPLOAD as u64 + 1).read_to_end(&mut bytes)?;
+    normalize_avatar(&bytes)
+}
+
+fn normalize_avatar(bytes: &[u8]) -> Result<String> {
+    anyhow::ensure!(bytes.len() <= MAX_UPLOAD, "Choose an image smaller than 10 MB");
+    let mut reader = image::ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+    anyhow::ensure!(matches!(reader.format(), Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)),
+        "Choose a PNG, JPEG or WebP image");
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(8192);
+    limits.max_image_height = Some(8192);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let mut decoder = reader.into_decoder().context("read image")?;
+    let orientation = decoder.orientation()?;
+    let mut image = image::DynamicImage::from_decoder(decoder).context("decode image")?;
+    image.apply_orientation(orientation);
+    let rgba = image.resize_to_fill(SIZE as u32, SIZE as u32, image::imageops::FilterType::Lanczos3).to_rgba8();
+    let mut png = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(rgba).write_to(&mut png, image::ImageFormat::Png)?;
+    Ok(STANDARD.encode(png.into_inner()))
+}
+
+/// Validate persisted input before allocating. Only our normalized RGBA PNGs
+/// are accepted, including when the profile arrives through import or the API.
+pub(crate) fn decode_avatar(encoded: &str) -> Result<Pixmap> {
+    anyhow::ensure!(encoded.len() <= MAX_ENCODED, "Profile icon is too large");
+    let bytes = STANDARD.decode(encoded).context("invalid profile icon encoding")?;
+    let mut reader = png::Decoder::new(Cursor::new(bytes)).read_info().context("invalid profile icon PNG")?;
+    let info = reader.info();
+    anyhow::ensure!(info.width == SIZE as u32 && info.height == SIZE as u32
+        && info.color_type == png::ColorType::Rgba && info.bit_depth == png::BitDepth::Eight,
+        "Profile icon must be a normalized 512 × 512 RGBA PNG");
+    let mut rgba = vec![0; reader.output_buffer_size()];
+    reader.next_frame(&mut rgba).context("decode profile icon PNG")?;
+    for pixel in rgba.chunks_exact_mut(4) {
+        let alpha = pixel[3] as u32;
+        for channel in &mut pixel[..3] {
+            *channel = ((*channel as u32 * alpha + 127) / 255) as u8;
+        }
+    }
+    Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(SIZE as u32, SIZE as u32).unwrap())
+        .context("allocate profile icon")
+}
+
+/// Custom icons are keyed by their content, so rename/colour changes keep them.
+/// Standard icons retain the original cache key and rendering.
+pub fn ensure_icon(cache_dir: &Path, name: &str, color: Option<&str>, icon_png: Option<&str>) -> Result<PathBuf> {
+    let avatar = icon_png.map(decode_avatar).transpose()?;
     let key = format!("{name}\u{1}{}", color.unwrap_or(""));
     let mut h: u64 = 1469598103934665603;
     for b in key.as_bytes() {
@@ -260,7 +318,11 @@ pub fn ensure_icon(cache_dir: &Path, name: &str, color: Option<&str>) -> Result<
     }
     let dir = cache_dir.join("profile-icons");
     std::fs::create_dir_all(&dir).ok();
-    let out = dir.join(format!("{h:016x}.png"));
+    let filename = match icon_png {
+        Some(encoded) => format!("avatar-v1-{:x}.png", Sha256::digest(encoded.as_bytes())),
+        None => format!("{h:016x}.png"),
+    };
+    let out = dir.join(filename);
     if out.exists() {
         return Ok(out);
     }
@@ -291,6 +353,25 @@ pub fn ensure_icon(cache_dir: &Path, name: &str, color: Option<&str>) -> Result<
     // White body.
     paint.set_color(Color::from_rgba8(255, 255, 255, 255));
     pix.fill_path(&body, &paint, FillRule::Winding, Transform::identity(), None);
+
+    if let Some(avatar) = avatar {
+        let mut clip = tiny_skia::Mask::new(s, s).context("mask")?;
+        clip.fill_path(&body, FillRule::Winding, true, Transform::identity());
+        let scale = (x1 - x0) / SIZE;
+        pix.draw_pixmap(0, 0, avatar.as_ref(), &tiny_skia::PixmapPaint {
+            quality: tiny_skia::FilterQuality::Bicubic,
+            ..Default::default()
+        }, Transform::from_scale(scale, scale).post_translate(x0, y0), Some(&clip));
+        if g.outline {
+            paint.set_color(Color::from_rgba8(0, 0, 0, 38));
+            pix.stroke_path(&body, &paint, &tiny_skia::Stroke { width: SIZE * 0.006, ..Default::default() }, Transform::identity(), None);
+        }
+        // Publish atomically: preview and launch can ask for the same image.
+        let temp = out.with_extension(format!("{}.tmp", uuid::Uuid::new_v4()));
+        pix.save_png(&temp).context("write avatar PNG")?;
+        std::fs::rename(&temp, &out).context("cache avatar PNG")?;
+        return Ok(out);
+    }
 
     // Accent band, clipped to the body so its corners follow the same curve.
     let band_h = y0 + (y1 - y0) * 0.30;
@@ -369,5 +450,78 @@ fn mark_pixmap() -> Option<&'static Pixmap> {
             Pixmap::from_vec(buf, tiny_skia::IntSize::from_wh(info.width, info.height)?)
         })
         .as_ref()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn photo(format: image::ImageFormat) -> Vec<u8> {
+        // Only the middle square is green; a stretch or off-centre crop shows red.
+        let pixels = image::RgbImage::from_fn(600, 300, |x, _| {
+            if (150..450).contains(&x) { image::Rgb([20, 180, 80]) }
+            else { image::Rgb([230, 20, 30]) }
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(pixels).write_to(&mut bytes, format).unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn photos_are_center_cropped_and_normalized_for_all_supported_formats() {
+        for format in [image::ImageFormat::Png, image::ImageFormat::Jpeg, image::ImageFormat::WebP] {
+            let encoded = normalize_avatar(&photo(format)).unwrap();
+            let pix = decode_avatar(&encoded).unwrap();
+            assert_eq!((pix.width(), pix.height()), (512, 512));
+            for x in [20, 256, 490] {
+                let pixel = pix.pixel(x, 256).unwrap();
+                assert!(pixel.green() > 150 && pixel.red() < 50);
+                assert_eq!(pixel.alpha(), 255);
+            }
+        }
+    }
+
+    #[test]
+    fn corrupt_oversized_and_non_normalized_images_are_rejected() {
+        assert!(normalize_avatar(b"not an image").is_err());
+        assert!(normalize_avatar(&vec![0; MAX_UPLOAD + 1]).is_err());
+        assert!(decode_avatar("not base64").is_err());
+        assert!(decode_avatar(&"A".repeat(MAX_ENCODED + 1)).is_err());
+        assert!(decode_avatar(&STANDARD.encode(photo(image::ImageFormat::Png))).is_err());
+        let oversized = image::RgbImage::new(8193, 1);
+        let mut bytes = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(oversized).write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        assert!(normalize_avatar(bytes.get_ref()).is_err());
+    }
+
+    #[test]
+    fn avatar_cache_survives_rename_color_change_and_source_removal() {
+        let dir = std::env::temp_dir().join(format!("shardx-avatar-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let source = dir.join("photo.jpg");
+        std::fs::write(&source, photo(image::ImageFormat::Jpeg)).unwrap();
+        let encoded = import_avatar(&source).unwrap();
+        std::fs::remove_file(&source).unwrap();
+        let a = ensure_icon(&dir, "Example profile", None, Some(&encoded)).unwrap();
+        let b = ensure_icon(&dir, "New name", Some("#ff0000"), Some(&encoded)).unwrap();
+        assert_eq!(a, b);
+        let icon = Pixmap::load_png(&a).unwrap();
+        assert_eq!(icon.pixel(0, 0).unwrap().alpha(), 0);
+        let corner = (SIZE * geometry().margin) as u32 + 1;
+        assert_eq!(icon.pixel(corner, corner).unwrap().alpha(), 0);
+        assert!(icon.pixel(256, 256).unwrap().green() > 150);
+        // Full image at the top as well: no leftover accent band or lettering.
+        assert!(icon.pixel(256, 80).unwrap().green() > 150);
+        let standard = ensure_icon(&dir, "Example profile", None, None).unwrap();
+        assert_ne!(a, standard);
+        assert_eq!(Pixmap::load_png(standard).unwrap().pixel(256, 400).unwrap().red(), 255);
+        // Embedded metadata survives copy/export/import without an external path.
+        let stored: crate::profile::StoredProfile = serde_json::from_value(serde_json::json!({
+            "name": "Example profile", "_meta": {"icon_png": encoded}
+        })).unwrap();
+        let copy: crate::profile::StoredProfile = serde_json::from_str(&serde_json::to_string(&stored).unwrap()).unwrap();
+        assert_eq!(stored.meta.icon_png, copy.meta.icon_png);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
 

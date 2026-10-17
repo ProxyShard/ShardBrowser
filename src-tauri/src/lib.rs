@@ -82,6 +82,28 @@ async fn mcp_download(dir: String) -> Result<String, String> {
 
 // ---- Profiles ----
 
+/// Decode a user-selected local image without changing any profile until Save.
+#[tauri::command]
+async fn profile_icon_import(path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        profile_icon::import_avatar(std::path::Path::new(&path)).map_err(|e| e.to_string())
+    }).await.map_err(|e| e.to_string())?
+}
+
+/// Preview uses exactly the same renderer as the browser's Dock icon.
+#[tauri::command]
+async fn profile_icon_preview(name: String, color: Option<String>, icon_png: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine;
+        let path = profile_icon::ensure_icon(
+            &runtime::runtime_dir().map_err(|e| e.to_string())?,
+            &name, color.as_deref(), icon_png.as_deref(),
+        ).map_err(|e| e.to_string())?;
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        Ok(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)))
+    }).await.map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 fn profile_list() -> Result<Vec<profile::ProfileMeta>, String> {
     profile::list_all().map_err(|e| e.to_string())
@@ -472,8 +494,15 @@ pub fn save_profile_core(
         }
     }
 
+    let supplies_icon = payload.get("_meta").and_then(|m| m.get("icon_png")).is_some();
     let mut stored: profile::StoredProfile =
         serde_json::from_value(payload).map_err(|e| e.to_string())?;
+    // Older API clients do not know this field. Explicit null from Reset clears it.
+    if !is_new && !supplies_icon {
+        if let Ok(existing) = profile::load_raw(&stored.meta.id) {
+            stored.meta.icon_png = existing.meta.icon_png;
+        }
+    }
     profile::save_raw(&mut stored).map_err(|e| e.to_string())?;
     let name = stored
         .config
@@ -2133,6 +2162,8 @@ pub fn run() {
             helper_close,
             helper_dismiss,
             profile_list,
+            profile_icon_import,
+            profile_icon_preview,
             profile_get,
             profile_save,
             profile_delete,

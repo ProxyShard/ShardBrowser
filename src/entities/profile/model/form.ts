@@ -10,6 +10,7 @@ export const defaultForm = (): ProfileForm => ({
   notes: "",
   proxy_id: null,
   color: "",
+  icon_png: "",
   extensions: [],
   android_media: false,
   refresh_rate: 60,
@@ -59,6 +60,7 @@ export function fromStored(stored: any): ProfileForm {
   f.name = stored?.name ?? "";
   f.notes = stored?.notes ?? "";
   f.color = stored?._meta?.color ?? "";
+  f.icon_png = stored?._meta?.icon_png ?? "";
   f.extensions = Array.isArray(stored?._meta?.extensions) ? stored._meta.extensions : [];
   f.android_media = stored?._meta?.android_media === true;
   // Empty for legacy profiles; snapped by useEffect.
@@ -113,6 +115,8 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null): any {
     gpu_preset_id: f.gpu_preset_id,
     // Absent, not empty: that is what "derive it" means on disk.
     ...(f.color ? { color: f.color } : {}),
+    // Explicit null distinguishes Reset from older clients omitting this field.
+    icon_png: f.icon_png || null,
     extensions: f.extensions,
     ...(f.android_media ? { android_media: true } : {}),
   };

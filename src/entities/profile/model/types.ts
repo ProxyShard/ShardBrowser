@@ -32,6 +32,8 @@ export type ProfileForm = {
   proxy_id: string | null;
   /// "" = derive from the name, which is what the browser does on its own.
   color: string;
+  /// Normalized square PNG, base64 without a data-URL prefix; empty = standard icon.
+  icon_png: string;
   /// Extension ids from the library.
   extensions: string[];
   /// Answer media questions the Android way. Phone profiles only.
