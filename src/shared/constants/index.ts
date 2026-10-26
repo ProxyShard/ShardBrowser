@@ -55,9 +55,13 @@ export const LOCALES: { code: string; label: string }[] = [
   { code: "hi-IN", label: "हिन्दी" },
 ];
 
-// Constrained options: stay within values Chrome actually reports.
-export const MEMORY_OPTIONS = [4, 8, 16, 32];
-export const CPU_OPTIONS = [2, 4, 6, 8, 10, 12, 14, 16, 20, 24];
+// Constrained options: stay within values Chrome actually reports. 2 is real
+// on an entry-level handset (android-anyreal-note56-x); leaving it out left
+// that profile's picker blank.
+export const MEMORY_OPTIONS = [2, 4, 8, 16, 32];
+// Counts the bundled templates name (a 9-core Pixel, a 28- or 40-core
+// workstation); a number missing here left the picker blank on that profile.
+export const CPU_OPTIONS = [2, 4, 6, 8, 9, 10, 12, 14, 16, 20, 22, 24, 28, 32, 40];
 export const MEDIA_COUNT_OPTIONS = [0, 1, 2, 3];
 /// Refresh rates real panels ship with. A page reads this by timing
 /// requestAnimationFrame, so a profile that names none reports 60 — what most
@@ -104,7 +108,7 @@ export const OS_OPTIONS: { id: string; label: string }[] = [
 ];
 
 // Which selector entry a fingerprint belongs under. A handset's
-// navigator.platform is "Linux armv8l", so matching Linux by prefix would file
+// navigator.platform is "Linux armv81", so matching Linux by prefix would file
 // every phone under it.
 export function osIdFor(platform: string): string {
   return OS_OPTIONS.find((o) => matchesOs(platform, o.id))?.id ?? platform;

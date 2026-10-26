@@ -162,7 +162,7 @@ impl Browser {
 
         let mode = opts
             .screen_mode
-            .unwrap_or_else(|| default_screen_mode_for(&profile.platform()));
+            .unwrap_or_else(|| default_screen_mode_for(&profile.platform(), profile.claims_mobile()));
         apply_screen_strategy(&mut profile.config, mode);
 
         let mut proxy_udp_ms: Option<u128> = None;

@@ -17,7 +17,7 @@ function PlatformIcon({ platform }: { platform: string }) {
   const p = platform.toLowerCase();
   const cls = "size-3.5 text-icon-sub-600";
   // Before the switch, and on a prefix: navigator.platform on a handset is
-  // "Linux armv8l", which an equality switch would miss.
+  // "Linux armv81", which an equality switch would miss.
   if (p.startsWith("android") || p.startsWith("linux arm")) return <AndroidOsIcon data-platform-icon className={cls} />;
   switch (p) {
     case "macos":

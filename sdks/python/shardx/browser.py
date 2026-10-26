@@ -131,7 +131,7 @@ class Browser:
         if has_auto_fields(profile.config):
             geo = resolve_auto_fields(profile.config, parsed)
 
-        mode = screen_mode or default_mode_for(profile.platform)
+        mode = screen_mode or default_mode_for(profile.platform, profile.claims_mobile)
         apply_screen_strategy(profile.config, mode)
 
         proxy_udp_ms: Optional[float] = None

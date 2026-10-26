@@ -159,6 +159,14 @@ const WINDOWS_PLATFORM_VERSIONS: &[&str] = &[
     "17.0.0",
 ];
 
+// Android release version, as Sec-CH-UA-Platform-Version reports it. Weighted to
+// the releases a handset in use still runs; every entry is a version Chrome ships on.
+const ANDROID_PLATFORM_VERSIONS: &[&str] = &[
+    "13.0.0", "14.0.0", "14.0.0",
+    "15.0.0", "15.0.0", "15.0.0",
+    "16.0.0", "16.0.0",
+];
+
 // LTS kernels + current mainline.
 const LINUX_PLATFORM_VERSIONS: &[&str] = &[
     "5.15.0", "6.1.0", "6.5.0",
@@ -173,9 +181,13 @@ pub(crate) fn randomize_platform_version(payload: &mut serde_json::Map<String, V
         .and_then(|n| n.get("platform"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // A handset's navigator.platform says "Android" ("Linux armv81" when imported);
+    // matching only the desktop names left phones on the template's own version.
+    let phone = platform.starts_with("Android") || platform.starts_with("Linux arm");
     let pool: &[&str] = match platform {
         "macOS"   => MACOS_PLATFORM_VERSIONS,
         "Windows" => WINDOWS_PLATFORM_VERSIONS,
+        _ if phone => ANDROID_PLATFORM_VERSIONS,
         "Linux"   => LINUX_PLATFORM_VERSIONS,
         _         => return,
     };
@@ -288,6 +300,21 @@ pub(crate) fn randomize_hardware(payload: &mut serde_json::Map<String, Value>) {
 
     let (cores, mem): (u32, u32) = if let Some(pool) = mac_hw_configs(model) {
         pool[pick8() % pool.len()]
+    } else if platform.starts_with("Android") || platform.starts_with("Linux arm") {
+        // A handset's core count is its SoC's and its memory the bucket the model
+        // is sold in: both describe the real device the template was sampled
+        // from, so they stay as the template has them. The desktop tables below
+        // would read this computer's x86 core count — a number that says nothing
+        // about a phone, and one no handset of that model has. A template that
+        // names neither (a hand-written import) gets plausible phone values.
+        let nav = payload.get("navigator");
+        let num = |k: &str, fallback: u32| -> u32 {
+            nav.and_then(|n| n.get(k))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(fallback)
+        };
+        (num("hardware_concurrency", 8), num("device_memory", 8))
     } else if platform == "Windows" || platform == "Linux" {
         let c = host_logical_cores();
         // Real x86 logical-core counts (SMT + Intel hybrid); bracket host within [C-4, C+2].
@@ -1418,14 +1445,18 @@ fn enrich_picks_for_preset(preset_id: String) -> Result<PresetEnrichPicks, Strin
         .get("navigator")
         .and_then(|v| v.as_object())
         .ok_or("internal: navigator missing after randomize")?;
-    let cores = nav
-        .get("hardware_concurrency")
-        .and_then(|v| v.as_u64())
-        .ok_or("internal: hardware_concurrency missing")? as u32;
-    let mem = nav
-        .get("device_memory")
-        .and_then(|v| v.as_u64())
-        .ok_or("internal: device_memory missing")? as u32;
+    // A platform no table covers (macOS in a build without a Mac model id, say)
+    // keeps the template's own pair rather than failing the call: the form's
+    // fallback is meant for a backend that cannot answer, not for one that can.
+    let templated = entry.payload.get("navigator");
+    let num = |k: &str, fallback: u64| -> u64 {
+        nav.get(k)
+            .or_else(|| templated.and_then(|n| n.get(k)))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(fallback)
+    };
+    let cores = num("hardware_concurrency", 8) as u32;
+    let mem = num("device_memory", 8) as u32;
     let pv = nav
         .get("platform_version")
         .and_then(|v| v.as_str())
@@ -3045,4 +3076,64 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         first.append(&MenuItem::with_id(app, "app_quit", label, true, Some("CmdOrCtrl+Q"))?)?;
     }
     Ok(menu)
+}
+
+#[cfg(test)]
+mod mobile_randomize_tests {
+    use super::*;
+
+    fn phone_nav() -> Value {
+        serde_json::json!({
+            "platform": "Android",
+            "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+            "hardware_concurrency": 8,
+            "device_memory": 8.0
+        })
+    }
+
+    #[test]
+    fn a_phone_gets_an_android_version_not_a_desktop_one() {
+        for _ in 0..200 {
+            let mut p = serde_json::Map::new();
+            p.insert("navigator".into(), phone_nav());
+            p.insert("client_hints".into(), serde_json::json!({ "mobile": true }));
+            randomize_platform_version(&mut p);
+            let v = p["navigator"]["platform_version"].as_str().unwrap().to_string();
+            assert!(
+                ANDROID_PLATFORM_VERSIONS.contains(&v.as_str()),
+                "a phone must never be handed {v}"
+            );
+            assert_eq!(p["client_hints"]["platform_version"], v);
+        }
+    }
+
+    #[test]
+    fn an_imported_linux_arm_phone_is_a_phone() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), serde_json::json!({ "platform": "Linux armv8l" }));
+        randomize_platform_version(&mut p);
+        let v = p["navigator"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_keeps_its_own_cores_and_memory() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        for _ in 0..50 {
+            randomize_hardware(&mut p);
+            assert_eq!(p["navigator"]["hardware_concurrency"], 8);
+            assert_eq!(p["navigator"]["device_memory"], 8.0);
+        }
+    }
+
+    #[test]
+    fn a_desktop_still_gets_a_desktop_version() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), serde_json::json!({ "platform": "macOS" }));
+        randomize_platform_version(&mut p);
+        let v = p["navigator"]["platform_version"].as_str().unwrap();
+        assert!(MACOS_PLATFORM_VERSIONS.contains(&v));
+        assert!(!ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
 }

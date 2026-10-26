@@ -287,8 +287,12 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
   return base;
 }
 
-/** Whether a form describes a phone. By the user agent: the OS control offers no
- *  phone, and navigator.platform on Chrome for Android says "Linux armv8l". */
-export function claimsMobile(f: { user_agent?: string }): boolean {
+/** Whether a form describes a phone. As profile.rs `claims_mobile`: the user
+ *  agent, a `client_hints.mobile` flag, or a Client Hints platform that says
+ *  Android. The user agent alone missed an imported handset whose UA was
+ *  rewritten but whose hints still name the phone. */
+export function claimsMobile(f: { user_agent?: string; client_hints?: { mobile?: boolean; platform?: string } }): boolean {
+  if (f.client_hints?.mobile === true) return true;
+  if (/^android/i.test(f.client_hints?.platform ?? "")) return true;
   return (f.user_agent || "").toLowerCase().includes("android");
 }

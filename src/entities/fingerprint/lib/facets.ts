@@ -5,7 +5,7 @@ export type DeviceType = "desktop" | "phone";
 export type GpuVendor = "NVIDIA" | "AMD" | "Intel" | "Apple" | "Qualcomm" | "Arm" | "Other";
 
 /** The OS a fingerprint belongs under, by the OS control's names: a handset's
- *  "Linux armv8l" platform is Android. */
+ *  "Linux armv81" platform is Android. */
 export function fingerprintOs(e: FingerprintEntry): string {
   return osIdFor(e.platform || "");
 }

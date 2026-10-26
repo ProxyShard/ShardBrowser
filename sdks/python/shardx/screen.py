@@ -106,10 +106,15 @@ def _use_host(config: dict, host_w: int, host_h: int) -> None:
     win["inner_height"] = max(1, avail_h - 88)
 
 
-def default_mode_for(platform: str) -> str:
+def default_mode_for(platform: str, mobile: bool = False) -> str:
     """Map `navigator.platform` to the launcher's default screen mode."""
     if platform == "macOS":
         return "cap_to_host"
+    # A handset reports "Linux" too, and the host monitor is not a phone
+    # screen: that pair is the one reading no real handset could give. Only a
+    # desktop Linux takes the host.
+    if mobile:
+        return "profile"
     if platform in ("Windows", "Linux"):
         return "use_host"
     return "profile"
