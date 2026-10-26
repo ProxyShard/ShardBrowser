@@ -469,6 +469,7 @@ pub fn enrich_new_config(
 ) {
     randomize_platform_version(obj);
     randomize_hardware(obj);
+    ensure_phone_voices(obj);
     if let Some(w) = window {
         clamp_screen_to_real_display(w, obj);
     }
@@ -1407,6 +1408,70 @@ pub fn ensure_default_noise(cfg: &mut serde_json::Map<String, Value>) {
             "fonts":        { "enabled": false, "seed": 0 }
         }),
     );
+}
+
+/// The voices an Android handset offers. Chrome on Android enumerates the
+/// Google TTS engine's voices rather than the machine's, and the names are the
+/// engine's own — the same "Google <language>" roster Chrome ships on Linux,
+/// every one of them network-backed. `is_default` is Chrome's own rule: the
+/// first voice in the list is the default one.
+const ANDROID_SPEECH_VOICES: &[(&str, &str)] = &[
+    ("Google US English", "en-US"),
+    ("Google UK English Female", "en-GB"),
+    ("Google UK English Male", "en-GB"),
+    ("Google Deutsch", "de-DE"),
+    ("Google español", "es-ES"),
+    ("Google español de Estados Unidos", "es-US"),
+    ("Google français", "fr-FR"),
+    ("Google हिन्दी", "hi-IN"),
+    ("Google Bahasa Indonesia", "id-ID"),
+    ("Google italiano", "it-IT"),
+    ("Google 日本語", "ja-JP"),
+    ("Google 한국의", "ko-KR"),
+    ("Google Nederlands", "nl-NL"),
+    ("Google polski", "pl-PL"),
+    ("Google português do Brasil", "pt-BR"),
+    ("Google русский", "ru-RU"),
+    ("Google\u{a0}普通话（中国大陆）", "zh-CN"),
+    ("Google\u{a0}粤語（香港）", "zh-HK"),
+    ("Google 國語（臺灣）", "zh-TW"),
+];
+
+/// Add the voices block to a profile that claims a phone and carries none.
+///
+/// Without a block the engine enumerates the voices of the machine the launcher
+/// runs on: an Android profile on this computer offered its Mac's 63 Chrome
+/// voices, all local, which is the list no handset has. Every desktop template
+/// in the library carries a block, so this is only ever a phone, and only when
+/// the template, an imported config or an older profile left it out. An empty
+/// list is not the fix: the engine reads it as no claim and falls back to the
+/// host, so the roster itself has to be there.
+pub fn ensure_phone_voices(cfg: &mut serde_json::Map<String, Value>) {
+    if !space::profile::claims_mobile(cfg) {
+        return;
+    }
+    let declared = cfg
+        .get("speech")
+        .and_then(|s| s.get("voices"))
+        .and_then(|v| v.as_array())
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if declared {
+        return;
+    }
+    let voices: Vec<Value> = ANDROID_SPEECH_VOICES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, lang))| {
+            serde_json::json!({
+                "name": name,
+                "lang": lang,
+                "local_service": false,
+                "is_default": i == 0,
+            })
+        })
+        .collect();
+    cfg.insert("speech".into(), serde_json::json!({ "voices": voices }));
 }
 
 #[derive(serde::Serialize)]
@@ -3135,5 +3200,71 @@ mod mobile_randomize_tests {
         let v = p["navigator"]["platform_version"].as_str().unwrap();
         assert!(MACOS_PLATFORM_VERSIONS.contains(&v));
         assert!(!ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_is_given_the_handsets_voices_not_this_computers() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        ensure_phone_voices(&mut p);
+        let voices = p["speech"]["voices"].as_array().expect("a voices list");
+        assert_eq!(voices.len(), ANDROID_SPEECH_VOICES.len());
+        // Chrome's rule: the first voice in the list is the default one.
+        assert_eq!(voices[0]["is_default"], true);
+        assert_eq!(voices[0]["name"], "Google US English");
+        assert!(voices[1..].iter().all(|v| v["is_default"] == false));
+        // Android's voices come from Google TTS, so none of them is on the device.
+        assert!(voices.iter().all(|v| v["local_service"] == false));
+        // And the engine reads these two fields for every voice it lists.
+        assert!(voices.iter().all(|v| v["name"].is_string() && v["lang"].is_string()));
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_own_voices() {
+        // Every desktop template carries a block already; the helper must not
+        // replace it with a handset's.
+        let mut p = serde_json::Map::new();
+        p.insert(
+            "navigator".into(),
+            serde_json::json!({
+                "platform": "macOS",
+                "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/156.0.0.0 Safari/537.36"
+            }),
+        );
+        p.insert(
+            "speech".into(),
+            serde_json::json!({ "voices": [{ "name": "Samantha", "lang": "en-US", "local_service": true, "is_default": true }] }),
+        );
+        ensure_phone_voices(&mut p);
+        assert_eq!(p["speech"]["voices"].as_array().unwrap().len(), 1);
+        assert_eq!(p["speech"]["voices"][0]["name"], "Samantha");
+    }
+
+    #[test]
+    fn a_phone_that_declares_its_own_voices_is_left_alone() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "speech".into(),
+            serde_json::json!({ "voices": [{ "name": "English (United States)", "lang": "en-US", "local_service": true, "is_default": true }] }),
+        );
+        ensure_phone_voices(&mut p);
+        let voices = p["speech"]["voices"].as_array().unwrap();
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0]["name"], "English (United States)");
+    }
+
+    #[test]
+    fn an_empty_voice_list_is_not_a_claim() {
+        // The engine reads an empty list as none and enumerates the host's
+        // voices anyway, so a phone carrying one still needs the roster.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert("speech".into(), serde_json::json!({ "voices": [] }));
+        ensure_phone_voices(&mut p);
+        assert_eq!(
+            p["speech"]["voices"].as_array().unwrap().len(),
+            ANDROID_SPEECH_VOICES.len()
+        );
     }
 }

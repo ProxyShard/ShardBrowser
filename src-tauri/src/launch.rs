@@ -634,6 +634,10 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
     // Strip `_meta` wrapper and resolve "auto" sentinels before serialising.
     let mut raw = engine_config(&input.stored);
     resolve_auto_fields(&mut raw, input.proxy.as_ref()).await;
+    // Profiles saved before the library carried the block would otherwise offer
+    // this computer's voices from an Android handset. Filled here rather than at
+    // save so a profile that already exists is fixed on its next start.
+    crate::ensure_phone_voices(&mut raw);
     // The proxy probe and the geo lookup are the slow part: a cancel made
     // while they ran stops here, before anything is written.
     check_cancel(&input.profile_id)?;

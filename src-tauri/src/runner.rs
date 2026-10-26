@@ -527,6 +527,7 @@ fn make_profile(
         cfg.insert("name".into(), json!(name));
     }
     crate::ensure_default_noise(&mut cfg);
+    crate::ensure_phone_voices(&mut cfg);
 
     let mut meta = json!({ "id": "", "folder": folder, "temporary": temporary });
     if let Some(pstr) = inline_proxy {

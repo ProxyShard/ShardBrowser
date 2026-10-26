@@ -29,6 +29,88 @@ fn noise_seed(id: &str, slot: &str) -> u32 {
     }
 }
 
+/// The voices an Android handset offers. Chrome on Android enumerates the Google
+/// TTS engine's voices, and the names are the engine's own: the same "Google
+/// <language>" roster Chrome ships on Linux, every one of them network-backed.
+const ANDROID_SPEECH_VOICES: &[(&str, &str)] = &[
+    ("Google US English", "en-US"),
+    ("Google UK English Female", "en-GB"),
+    ("Google UK English Male", "en-GB"),
+    ("Google Deutsch", "de-DE"),
+    ("Google español", "es-ES"),
+    ("Google español de Estados Unidos", "es-US"),
+    ("Google français", "fr-FR"),
+    ("Google हिन्दी", "hi-IN"),
+    ("Google Bahasa Indonesia", "id-ID"),
+    ("Google italiano", "it-IT"),
+    ("Google 日本語", "ja-JP"),
+    ("Google 한국의", "ko-KR"),
+    ("Google Nederlands", "nl-NL"),
+    ("Google polski", "pl-PL"),
+    ("Google português do Brasil", "pt-BR"),
+    ("Google русский", "ru-RU"),
+    ("Google\u{a0}普通话（中国大陆）", "zh-CN"),
+    ("Google\u{a0}粤語（香港）", "zh-HK"),
+    ("Google 國語（臺灣）", "zh-TW"),
+];
+
+/// Give a profile that claims a phone the handset's voices when it names none.
+///
+/// Without a block the engine enumerates the voices of the machine it runs on:
+/// an Android profile on a Mac offered the Mac's 63 Chrome voices, all local,
+/// which is the list no handset has. An empty list is not the fix either — the
+/// engine reads it as no claim and falls back to the host — so the roster has to
+/// be there. A phone that declares its own voices is left alone.
+fn apply_phone_voices(config: &mut serde_json::Value) {
+    let Some(obj) = config.as_object_mut() else {
+        return;
+    };
+    let nav = obj.get("navigator");
+    let ch = obj.get("client_hints");
+    let phone = ch
+        .and_then(|c| c.get("mobile"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+        || ch
+            .and_then(|c| c.get("platform"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .starts_with("android")
+        || nav
+            .and_then(|n| n.get("user_agent"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+            .contains("android");
+    if !phone {
+        return;
+    }
+    let declared = obj
+        .get("speech")
+        .and_then(|s| s.get("voices"))
+        .and_then(|v| v.as_array())
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if declared {
+        return;
+    }
+    // Chrome's rule: the first voice in the list is the default one.
+    let voices: Vec<serde_json::Value> = ANDROID_SPEECH_VOICES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, lang))| {
+            serde_json::json!({
+                "name": name,
+                "lang": lang,
+                "local_service": false,
+                "is_default": i == 0,
+            })
+        })
+        .collect();
+    obj.insert("speech".into(), serde_json::json!({ "voices": voices }));
+}
+
 /// Add the default noise block when absent, then fill any seed-0 vector with a
 /// stable per-profile value — without it every profile shares seed 0 and gets
 /// an identical canvas/audio/WebGL fingerprint.
@@ -195,6 +277,7 @@ impl Browser {
         if profile.claims_mobile() {
             crate::profile::apply_chrome_brand(&mut profile.config);
         }
+        apply_phone_voices(&mut profile.config);
         apply_noise_seeds(&mut profile.config, &profile.id);
         let fp_file = udd.join("fingerprint.json");
         std::fs::write(&fp_file, serde_json::to_string(&profile.config)?)?;

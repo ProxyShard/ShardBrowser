@@ -322,6 +322,7 @@ async fn persist_created(door: Door, t: &Ticket, folder_override: Option<String>
         crate::notify_store_changed("proxies");
     }
     crate::ensure_default_noise(&mut cfg);
+    crate::ensure_phone_voices(&mut cfg);
     if let Some(hz) = body.refresh_rate {
         apply_refresh_rate(&mut cfg, hz).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     }
@@ -380,6 +381,7 @@ async fn create_temporary(Extension(t): Extension<Ticket>, Json(body): Json<Temp
         cfg.insert("name".into(), json!(n));
     }
     crate::ensure_default_noise(&mut cfg);
+    crate::ensure_phone_voices(&mut cfg);
     if let Some(n) = body.noise.as_ref() {
         apply_noise_overrides(&mut cfg, n)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
