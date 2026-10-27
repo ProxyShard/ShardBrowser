@@ -640,6 +640,11 @@ fn migrate_dir_to(
             if fix_phone_touch_points(obj) {
                 changed = true;
             }
+            // And its battery drains at the rate the template names, not at the
+            // one constant the engine falls back to.
+            if fix_phone_battery_drain(obj) {
+                changed = true;
+            }
         }
 
         if changed {
@@ -1053,6 +1058,156 @@ mod phone_screen_avail_tests {
     }
 }
 
+/// Expresses a phone's `battery.discharging_time` as the `drain_per_hour` the
+/// engine actually reads, so `navigator.getBattery()` reports the time to empty
+/// the template asks for instead of one derived from a shared constant.
+///
+/// The engine ignores `battery.discharging_time`: it answers
+/// `trunc(level * 100 / drain_per_hour * 3600)` and, with no `drain_per_hour`,
+/// falls back to 7.5 %/h. So the bundle's 24 discharging Android templates ask
+/// for 2..8 hours and are answered 2.7..11.5, and because none of them sets a
+/// rate, all 50 phones report one identical drain curve — a cross-profile
+/// signal no two real phones share. Writing the rate the template meant gives
+/// each phone its own curve and the answer it asked for.
+///
+/// A profile that names its own rate is left alone — that is a deliberate claim
+/// about how the device drains. So is a charging profile (`discharging_time` is
+/// `Infinity` and nothing drains) and one with no `level` to derive from.
+fn fix_phone_battery_drain(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(bat) = cfg.get_mut("battery").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    if bat.get("drain_per_hour").is_some() {
+        return false;
+    }
+    if bat.get("charging").and_then(|v| v.as_bool()) != Some(false) {
+        return false;
+    }
+    let Some(level) = bat.get("level").and_then(|v| v.as_f64()) else {
+        return false;
+    };
+    let Some(secs) = bat.get("discharging_time").and_then(|v| v.as_f64()) else {
+        return false;
+    };
+    if !(level > 0.0) || !(secs > 0.0) {
+        return false;
+    }
+    let drain = level / (secs / 3600.0) * 100.0;
+    bat.insert("drain_per_hour".into(), serde_json::Value::from(drain));
+    true
+}
+
+#[cfg(test)]
+mod phone_battery_drain_tests {
+    use super::fix_phone_battery_drain;
+    use serde_json::{json, Value};
+
+    fn phone(battery: Value) -> serde_json::Map<String, Value> {
+        json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "battery": battery,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    // The engine answers `trunc(level * 100 / drain * 3600)`; that is what the
+    // page sees. Comparing within a second leaves its truncation out of it.
+    fn seconds_to_empty(p: &serde_json::Map<String, Value>) -> f64 {
+        let level = p["battery"]["level"].as_f64().unwrap();
+        let drain = p["battery"]["drain_per_hour"].as_f64().unwrap();
+        level / (drain / 100.0) * 3600.0
+    }
+
+    #[test]
+    fn the_time_to_empty_becomes_the_templates_own() {
+        // android-samsung-galaxy-s24-ultra, as it shipped: asks 6 h, answered 7 h 20 m.
+        let mut p = phone(json!({ "charging": false, "level": 0.55,
+            "charging_time": "Infinity", "discharging_time": 21600 }));
+        assert!(fix_phone_battery_drain(&mut p));
+        assert!((seconds_to_empty(&p) - 21600.0).abs() < 1.0);
+        assert!(!fix_phone_battery_drain(&mut p), "once");
+    }
+
+    #[test]
+    fn a_phone_the_fallback_already_suited_keeps_its_answer() {
+        // android-motorola-moto-g-power-2025: level 0.6 over 8 h is exactly the
+        // engine's 7.5 %/h fallback, so its answer does not move.
+        let mut p = phone(json!({ "charging": false, "level": 0.6,
+            "charging_time": "Infinity", "discharging_time": 28800 }));
+        assert!(fix_phone_battery_drain(&mut p));
+        assert!((p["battery"]["drain_per_hour"].as_f64().unwrap() - 7.5).abs() < 1e-9);
+        assert!((seconds_to_empty(&p) - 28800.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_rate_differs_between_phones() {
+        // The whole pool shared one curve because every template left the rate
+        // unset; the repair gives each phone its own.
+        let mut fast = phone(json!({ "charging": false, "level": 0.86,
+            "discharging_time": 7200 }));
+        let mut slow = phone(json!({ "charging": false, "level": 0.29,
+            "discharging_time": 28800 }));
+        assert!(fix_phone_battery_drain(&mut fast));
+        assert!(fix_phone_battery_drain(&mut slow));
+        assert_ne!(fast["battery"]["drain_per_hour"], slow["battery"]["drain_per_hour"]);
+        assert!((seconds_to_empty(&fast) - 7200.0).abs() < 1.0);
+        assert!((seconds_to_empty(&slow) - 28800.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_rate_the_profile_names_is_kept() {
+        let mut p = phone(json!({ "charging": false, "level": 0.55,
+            "discharging_time": 21600, "drain_per_hour": 12.0 }));
+        let before = p.clone();
+        assert!(!fix_phone_battery_drain(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_charging_phone_is_left_alone() {
+        let mut p = phone(json!({ "charging": true, "level": 0.42,
+            "charging_time": 3600, "discharging_time": "Infinity" }));
+        let before = p.clone();
+        assert!(!fix_phone_battery_drain(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_phone_and_a_bare_block_are_left_alone() {
+        let mut desktop = json!({
+            "navigator": { "platform": "macOS" },
+            "client_hints": { "mobile": false, "platform": "macOS" },
+            "battery": { "charging": false, "level": 0.5, "discharging_time": 21600 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = desktop.clone();
+        assert!(!fix_phone_battery_drain(&mut desktop));
+        assert_eq!(desktop, before);
+
+        // A field the template does not carry is the engine's own answer, not a claim.
+        let mut bare = phone(json!({ "charging": false, "level": 0.5 }));
+        assert!(!fix_phone_battery_drain(&mut bare));
+        assert!(bare["battery"].get("drain_per_hour").is_none());
+
+        let mut no_block = json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(!fix_phone_battery_drain(&mut no_block));
+    }
+}
+
 #[cfg(test)]
 mod chrome_brand_tests {
     use super::add_chrome_brand;
@@ -1347,10 +1502,12 @@ fn adopt_into(
         // WebGL backend carries the bare driver pair the engine would hand to
         // the page.
         changed |= fix_phone_webgl_angle(obj);
-        // A saved profile carries its template's screen and touchscreen values,
-        // so a profile from a defective template needs the same correction.
+        // A saved profile carries its template's screen, touchscreen and battery
+        // values, so a profile from a defective template needs the same
+        // correction.
         changed |= fix_phone_screen_avail(obj);
         changed |= fix_phone_touch_points(obj);
+        changed |= fix_phone_battery_drain(obj);
     }
     changed
 }
@@ -1505,7 +1662,7 @@ fn migrate_all_to(
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 7;
+const MIGRATION_REV: u32 = 8;
 
 /// What a migration was applied for; the install path and the start share it.
 ///
