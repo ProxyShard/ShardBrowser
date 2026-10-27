@@ -1,0 +1,205 @@
+name: Build ShardX Chinese
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Add Simplified Chinese UI layer
+        shell: pwsh
+        run: |
+          $b64 = @'
+          Ly8gU2hhcmRYIOeugOS9k+S4reaWh+eVjOmdouWxggovLyDku4Xnv7vor5EgTGF1bmNoZXIg5Y+v6KeB55WM6Z2i77yM5LiN5L+u
+          5pS5IFNoYXJkWCBDaHJvbWl1bSBlbmdpbmUg5oiW5Lia5Yqh5pWw5o2u44CCCgpjb25zdCBleGFjdDogUmVjb3JkPHN0cmluZywg
+          c3RyaW5nPiA9IHsKICAiV29ya3NwYWNlIjogIuW3peS9nOWMuiIsCiAgIkJyb3dzZXJzIjogIua1j+iniOWZqOeOr+WigyIsCiAg
+          IkJyb3dzZXIiOiAi5rWP6KeI5ZmoIiwKICAiUHJveGllcyI6ICLku6PnkIYiLAogICJQcm94eSI6ICLku6PnkIYiLAogICJQcm94
+          eVNoYXJkIjogIlByb3h5U2hhcmQiLAogICJMaWJyYXJ5IjogIui1hOa6kOW6kyIsCiAgIkZpbmdlcnByaW50cyI6ICLmjIfnurnm
+          qKHmnb8iLAogICJGaW5nZXJwcmludCI6ICLmjIfnurkiLAogICJTeXN0ZW0iOiAi57O757ufIiwKICAiU2V0dGluZ3MiOiAi6K6+
+          572uIiwKICAiUHJvZmlsZXMiOiAi546v5aKD5pWw6YePIiwKICAiUHJvZmlsZSI6ICLmtY/op4jlmajnjq/looMiLAogICJSdW5u
+          aW5nIjogIui/kOihjOS4rSIsCiAgIlNlYXJjaC4uLiI6ICLmkJzntKIuLi4iLAogICJTZWFyY2giOiAi5pCc57SiIiwKICAiSW1w
+          b3J0IjogIuWvvOWFpSIsCiAgIkV4cG9ydCI6ICLlr7zlh7oiLAogICJGcm9tIHRlbXBsYXRlIjogIuS7juaooeadv+WIm+W7uiIs
+          CiAgIisgTmV3IHByb2ZpbGUiOiAiKyDmlrDlu7rnjq/looMiLAogICJOZXcgcHJvZmlsZSI6ICLmlrDlu7rnjq/looMiLAogICJO
+          ZXcgUHJvZmlsZSI6ICLmlrDlu7rnjq/looMiLAogICJBbGwiOiAi5YWo6YOoIiwKICAiTmFtZSI6ICLlkI3np7AiLAogICJTdGF0
+          dXMiOiAi54q25oCBIiwKICAiTm90ZXMiOiAi5aSH5rOoIiwKICAiVGltZSI6ICLml7bpl7QiLAogICJObyBwcm9maWxlcyB5ZXQi
+          OiAi6L+Y5rKh5pyJ5rWP6KeI5Zmo546v5aKDIiwKICAiUGljayBhIGZpbmdlcnByaW50IHRlbXBsYXRlIHRvIHN0YXJ0IGEgY3Vy
+          YXRlZCByZWFsLUNocm9tZSBzbmFwc2hvdCwgb3IgYnVpbGQgb25lIGZyb20gc2NyYXRjaC4iOiAi6YCJ5oup5LiA5Liq5oyH57q5
+          5qih5p2/5b+r6YCf5Yib5bu6546v5aKD77yM5oiW5LuO6Zu25byA5aeL6YWN572u44CCIiwKICAiTGlnaHQiOiAi5rWF6ImyIiwK
+          ICAiRGFyayI6ICLmt7HoibIiLAogICJ1cCB0byBkYXRlIjogIuW3suaYr+acgOaWsOeJiOacrCIsCiAgIkRvd25sb2FkIE1DUCI6
+          ICLkuIvovb0gTUNQIiwKICAiRG9jdW1lbnRhdGlvbiI6ICLkvb/nlKjmlofmoaMiLAogICJBVVRPTUFUSU9OIEFQSSI6ICLoh6rl
+          iqjljJYgQVBJIiwKICAiQXV0b21hdGlvbiBBUEkiOiAi6Ieq5Yqo5YyWIEFQSSIsCiAgIkNhbmNlbCI6ICLlj5bmtogiLAogICJE
+          ZWxldGUiOiAi5Yig6ZmkIiwKICAiT0siOiAi56Gu5a6aIiwKICAiQ29uZmlybSI6ICLnoa7orqQiLAogICJDbG9zZSI6ICLlhbPp
+          l60iLAogICJTYXZlIjogIuS/neWtmCIsCiAgIkNyZWF0ZSI6ICLliJvlu7oiLAogICJBZGQiOiAi5re75YqgIiwKICAiRWRpdCI6
+          ICLnvJbovpEiLAogICJDbG9uZSI6ICLlhYvpmoYiLAogICJEdXBsaWNhdGUiOiAi5aSN5Yi2546v5aKDIiwKICAiU3RhcnQiOiAi
+          5ZCv5YqoIiwKICAiU3RvcCI6ICLlgZzmraIiLAogICJMYXVuY2giOiAi5ZCv5YqoIiwKICAiT3BlbiI6ICLmiZPlvIAiLAogICJS
+          ZWZyZXNoIjogIuWIt+aWsCIsCiAgIkNvcHkiOiAi5aSN5Yi2IiwKICAiUGFzdGUiOiAi57KY6LS0IiwKICAiUmVtb3ZlIjogIuen
+          u+mZpCIsCiAgIlRlc3QiOiAi5rWL6K+VIiwKICAiVGVzdGluZy4uLiI6ICLmtYvor5XkuK0uLi4iLAogICJTdWNjZXNzIjogIuaI
+          kOWKnyIsCiAgIkZhaWxlZCI6ICLlpLHotKUiLAogICJFcnJvciI6ICLplJnor68iLAogICJFbmFibGVkIjogIuW3suWQr+eUqCIs
+          CiAgIkRpc2FibGVkIjogIuW3suemgeeUqCIsCiAgIk5vbmUiOiAi5pegIiwKICAiRGVmYXVsdCI6ICLpu5jorqQiLAogICJBdXRv
+          IjogIuiHquWKqCIsCiAgIk1hbnVhbCI6ICLmiYvliqgiLAogICJDdXN0b20iOiAi6Ieq5a6a5LmJIiwKICAiR2VuZXJhbCI6ICLl
+          uLjop4QiLAogICJBZHZhbmNlZCI6ICLpq5jnuqciLAogICJOZXR3b3JrIjogIue9kee7nCIsCiAgIkxvY2FsZSI6ICLor63oqIDk
+          uI7lnLDljLoiLAogICJMYW5ndWFnZSI6ICLor63oqIAiLAogICJUaW1lem9uZSI6ICLml7bljLoiLAogICJHZW9sb2NhdGlvbiI6
+          ICLlnLDnkIbkvY3nva4iLAogICJDb3VudHJ5IjogIuWbveWuti/lnLDljLoiLAogICJDaXR5IjogIuWfjuW4giIsCiAgIkxhdGl0
+          dWRlIjogIue6rOW6piIsCiAgIkxvbmdpdHVkZSI6ICLnu4/luqYiLAogICJVc2VybmFtZSI6ICLnlKjmiLflkI0iLAogICJQYXNz
+          d29yZCI6ICLlr4bnoIEiLAogICJIb3N0IjogIuS4u+acuiIsCiAgIlBvcnQiOiAi56uv5Y+jIiwKICAiVHlwZSI6ICLnsbvlnosi
+          LAogICJQcm90b2NvbCI6ICLljY/orq4iLAogICJGb2xkZXIiOiAi5paH5Lu25aS5IiwKICAiVGFncyI6ICLmoIfnrb4iLAogICJQ
+          aW5uZWQiOiAi572u6aG2IiwKICAiUGluIjogIue9rumhtiIsCiAgIlVucGluIjogIuWPlua2iOe9rumhtiIsCiAgIkNvb2tpZXMi
+          OiAiQ29va2llIiwKICAiQ29va2llIjogIkNvb2tpZSIsCiAgIkV4dGVuc2lvbnMiOiAi5omp5bGV56iL5bqPIiwKICAiU2NyZWVu
+          IjogIuWxj+W5lSIsCiAgIlJlc29sdXRpb24iOiAi5YiG6L6o546HIiwKICAiUGxhdGZvcm0iOiAi5bmz5Y+wIiwKICAiT3BlcmF0
+          aW5nIHN5c3RlbSI6ICLmk43kvZzns7vnu58iLAogICJEZXZpY2UiOiAi6K6+5aSHIiwKICAiQ1BVIjogIuWkhOeQhuWZqCIsCiAg
+          Ik1lbW9yeSI6ICLlhoXlrZgiLAogICJGb250cyI6ICLlrZfkvZMiLAogICJBdWRpbyI6ICLpn7PpopEiLAogICJXZWJHTCI6ICJX
+          ZWJHTCIsCiAgIldlYkdQVSI6ICJXZWJHUFUiLAogICJXZWJSVEMiOiAiV2ViUlRDIiwKICAiVXNlciBhZ2VudCI6ICLnlKjmiLfk
+          u6PnkIYiLAogICJVc2VyIEFnZW50IjogIueUqOaIt+S7o+eQhiIsCiAgIkRldmljZSBpZGVudGl0eSI6ICLorr7lpIfouqvku70i
+          LAogICJObyBwcm94eSI6ICLkuI3kvb/nlKjku6PnkIYiLAogICJObyBQcm94eSI6ICLkuI3kvb/nlKjku6PnkIYiLAogICJBZGQg
+          cHJveHkiOiAi5re75Yqg5Luj55CGIiwKICAiTmV3IHByb3h5IjogIuaWsOW7uuS7o+eQhiIsCiAgIlByb3h5IG1hbmFnZXIiOiAi
+          5Luj55CG566h55CGIiwKICAiUHJveHkgTWFuYWdlciI6ICLku6PnkIbnrqHnkIYiLAogICJJbXBvcnQgcHJveGllcyI6ICLlr7zl
+          haXku6PnkIYiLAogICJCdWxrIGltcG9ydCI6ICLmibnph4/lr7zlhaUiLAogICJDaGVjayBwcm94eSI6ICLmo4DmtYvku6PnkIYi
+          LAogICJDaGVjayI6ICLmo4DmtYsiLAogICJPbmxpbmUiOiAi5Zyo57q/IiwKICAiT2ZmbGluZSI6ICLnprvnur8iLAogICJVbmtu
+          b3duIjogIuacquefpSIsCiAgIk5ldmVyIjogIuS7juacqiIsCiAgIkxhc3QgbGF1bmNoZWQiOiAi5LiK5qyh5ZCv5YqoIiwKICAi
+          Q3JlYXRlZCI6ICLliJvlu7rml7bpl7QiLAogICJDcmVhdGVkIGF0IjogIuWIm+W7uuaXtumXtCIsCiAgIlJ1bnRpbWUiOiAi6L+Q
+          6KGM5pe26ZW/IiwKICAiQWN0aW9ucyI6ICLmk43kvZwiLAogICJBcHBseSI6ICLlupTnlKgiLAogICJSZXNldCI6ICLph43nva4i
+          LAogICJSYW5kb21pemUiOiAi6ZqP5py655Sf5oiQIiwKICAiR2VuZXJhdGUiOiAi55Sf5oiQIiwKICAiVGVtcGxhdGUiOiAi5qih
+          5p2/IiwKICAiVGVtcGxhdGVzIjogIuaooeadvyIsCiAgIlNlbGVjdCI6ICLpgInmi6kiLAogICJTZWxlY3QgYWxsIjogIuWFqOmA
+          iSIsCiAgIkNsZWFyIjogIua4hemZpCIsCiAgIkJhY2siOiAi6L+U5ZueIiwKICAiTmV4dCI6ICLkuIvkuIDmraUiLAogICJEb25l
+          IjogIuWujOaIkCIsCiAgIkNvbnRpbnVlIjogIue7p+e7rSIsCiAgIkxvYWRpbmcuLi4iOiAi5q2j5Zyo5Yqg6L29Li4uIiwKICAi
+          RG93bmxvYWRpbmcuLi4iOiAi5q2j5Zyo5LiL6L29Li4uIiwKICAiSW5zdGFsbGluZy4uLiI6ICLmraPlnKjlronoo4UuLi4iLAog
+          ICJTYXZpbmcuLi4iOiAi5q2j5Zyo5L+d5a2YLi4uIiwKICAiQ29waWVkIjogIuW3suWkjeWItiIsCiAgIkNvcGllZCEiOiAi5bey
+          5aSN5Yi277yBIiwKICAiUmVhZHkiOiAi5bCx57uqIiwKICAiQWN0aXZlIjogIua0u+WKqCIsCiAgIkluYWN0aXZlIjogIuacqua0
+          u+WKqCIsCiAgIlJ1bm5pbmcuLi4iOiAi5q2j5Zyo6L+Q6KGMLi4uIiwKICAiU3RvcHBpbmcuLi4iOiAi5q2j5Zyo5YGc5q2iLi4u
+          IiwKICAiTWF5YmUgbGF0ZXIiOiAi5Lul5ZCO5YaN6K+0IiwKICAiU3RhciBvbiBHaXRIdWIiOiAi5ZyoIEdpdEh1YiDngrkgU3Rh
+          ciIsCiAgIkVuam95aW5nIFNoYXJkWD8iOiAi6KeJ5b6XIFNoYXJkWCDlpb3nlKjlkJfvvJ8iLAogICJPcGVuIGRhc2hib2FyZCI6
+          ICLmiZPlvIDmjqfliLblj7AiLAogICJEYXNoYm9hcmQiOiAi5o6n5Yi25Y+wIiwKICAiQWNjb3VudCI6ICLotKbmiLciLAogICJB
+          UEkga2V5IjogIkFQSSDlr4bpkqUiLAogICJBUEkgS2V5IjogIkFQSSDlr4bpkqUiLAogICJUaGVtZSI6ICLkuLvpopgiLAogICJC
+          cm93c2VyIHBhdGgiOiAi5rWP6KeI5Zmo6Lev5b6EIiwKICAiQnJvd3NlciBQYXRoIjogIua1j+iniOWZqOi3r+W+hCIsCiAgIlVz
+          ZSBzeXN0ZW0iOiAi6Lef6ZqP57O757ufIiwKICAiVmVyc2lvbiI6ICLniYjmnKwiLAogICJVcGRhdGUiOiAi5pu05pawIiwKICAi
+          Q2hlY2sgZm9yIHVwZGF0ZXMiOiAi5qOA5p+l5pu05pawIiwKICAiQWJvdXQiOiAi5YWz5LqOIiwKICAiTm8gcHJveGllcyB5ZXQi
+          OiAi6L+Y5rKh5pyJ5Luj55CGIiwKICAiTm8gZmluZ2VycHJpbnRzIHlldCI6ICLov5jmsqHmnInmjIfnurnmqKHmnb8iLAogICJD
+          aG9vc2UgYSBwcm9maWxlIjogIumAieaLqea1j+iniOWZqOeOr+WigyIsCiAgIkNyZWF0ZSBwcm9maWxlIjogIuWIm+W7uueOr+Wi
+          gyIsCiAgIkVkaXQgcHJvZmlsZSI6ICLnvJbovpHnjq/looMiLAogICJEZWxldGUgcHJvZmlsZSI6ICLliKDpmaTnjq/looMiLAog
+          ICJDbG9uZSBwcm9maWxlIjogIuWFi+mahueOr+WigyIsCiAgIlN0YXJ0IHByb2ZpbGUiOiAi5ZCv5Yqo546v5aKDIiwKICAiU3Rv
+          cCBwcm9maWxlIjogIuWBnOatoueOr+WigyIsCiAgIlByb2ZpbGUgbmFtZSI6ICLnjq/looPlkI3np7AiLAogICJQcm9maWxlIG5v
+          dGVzIjogIueOr+Wig+Wkh+azqCIsCiAgIkZpbmdlcnByaW50IHRlbXBsYXRlIjogIuaMh+e6ueaooeadvyIsCiAgIkNob29zZSBm
+          aW5nZXJwcmludCI6ICLpgInmi6nmjIfnurkiLAogICJQcm94eSBzZXR0aW5ncyI6ICLku6PnkIborr7nva4iLAogICJGaW5nZXJw
+          cmludCBzZXR0aW5ncyI6ICLmjIfnurnorr7nva4iLAogICJCcm93c2VyIHNldHRpbmdzIjogIua1j+iniOWZqOiuvue9riIsCiAg
+          IkNvbm5lY3Rpb24iOiAi6L+e5o6lIiwKICAiQXV0aGVudGljYXRpb24iOiAi6Lqr5Lu96aqM6K+BIiwKICAiTm8gbm90ZXMiOiAi
+          5peg5aSH5rOoIiwKICAiTm8gcHJveHkgYXNzaWduZWQiOiAi5pyq57uR5a6a5Luj55CGIiwKICAiTm8gcHJveHkgc2VsZWN0ZWQi
+          OiAi5pyq6YCJ5oup5Luj55CGIiwKICAiVXNlIHByb3h5IjogIuS9v+eUqOS7o+eQhiIsCiAgIlVzZSB0aGlzIHRlbXBsYXRlIjog
+          IuS9v+eUqOatpOaooeadvyIsCiAgIkNyZWF0ZSBmcm9tIHRlbXBsYXRlIjogIuS7juaooeadv+WIm+W7uiIsCiAgIkZyb20gc2Ny
+          YXRjaCI6ICLku47pm7bliJvlu7oiLAogICJJbXBvcnQgcHJvZmlsZSI6ICLlr7zlhaXnjq/looMiLAogICJFeHBvcnQgcHJvZmls
+          ZSI6ICLlr7zlh7rnjq/looMiLAogICJJbXBvcnQgY29va2llcyI6ICLlr7zlhaUgQ29va2llIiwKICAiRXhwb3J0IGNvb2tpZXMi
+          OiAi5a+85Ye6IENvb2tpZSIsCiAgIlByb2ZpbGUgY3JlYXRlZCI6ICLnjq/looPlt7LliJvlu7oiLAogICJQcm9maWxlIGRlbGV0
+          ZWQiOiAi546v5aKD5bey5Yig6ZmkIiwKICAiUHJvZmlsZSBzYXZlZCI6ICLnjq/looPlt7Lkv53lrZgiLAogICJQcm94eSBzYXZl
+          ZCI6ICLku6PnkIblt7Lkv53lrZgiLAogICJQcm94eSBkZWxldGVkIjogIuS7o+eQhuW3suWIoOmZpCIsCiAgIkZpbmdlcnByaW50
+          IHNhdmVkIjogIuaMh+e6ueW3suS/neWtmCIKfTsKCmNvbnN0IGF0dHJzID0gWyJwbGFjZWhvbGRlciIsICJ0aXRsZSIsICJhcmlh
+          LWxhYmVsIl0gYXMgY29uc3Q7CgpmdW5jdGlvbiBwcmVzZXJ2ZVdoaXRlc3BhY2Uob3JpZ2luYWw6IHN0cmluZywgdHJhbnNsYXRl
+          ZDogc3RyaW5nKSB7CiAgY29uc3QgbGVhZCA9IG9yaWdpbmFsLm1hdGNoKC9eXHMqLyk/LlswXSA/PyAiIjsKICBjb25zdCB0YWls
+          ID0gb3JpZ2luYWwubWF0Y2goL1xzKiQvKT8uWzBdID8/ICIiOwogIHJldHVybiBsZWFkICsgdHJhbnNsYXRlZCArIHRhaWw7Cn0K
+          CmZ1bmN0aW9uIHRyYW5zbGF0ZVRleHROb2RlKG5vZGU6IFRleHQpIHsKICBjb25zdCByYXcgPSBub2RlLm5vZGVWYWx1ZSA/PyAi
+          IjsKICBjb25zdCBrZXkgPSByYXcudHJpbSgpOwogIGlmICgha2V5KSByZXR1cm47CiAgY29uc3QgaGl0ID0gZXhhY3Rba2V5XTsK
+          ICBpZiAoaGl0KSB7CiAgICBub2RlLm5vZGVWYWx1ZSA9IHByZXNlcnZlV2hpdGVzcGFjZShyYXcsIGhpdCk7CiAgICByZXR1cm47
+          CiAgfQoKICAvLyDlsJHph4/lronlhajnmoTmlbTlj6XmqKHlvI/vvJvpgb/lhY3mlLnliqjnlKjmiLfovpPlhaXjgIFQcm9maWxl
+          IOWQjeensOOAgee9keermeaVsOaNruOAggogIGNvbnN0IHBhdHRlcm5zOiBBcnJheTxbUmVnRXhwLCBzdHJpbmddPiA9IFsKICAg
+          IFsvXihcZCspXHMrcHJvZmlsZXM/JC9pLCAiJDEg5Liq546v5aKDIl0sCiAgICBbL14oXGQrKVxzK3J1bm5pbmckL2ksICIkMSDk
+          uKrov5DooYzkuK0iXSwKICAgIFsvXkRlbGV0ZVxzKyIoLispIlw/JC9pLCAn5Yig6Zmk4oCcJDHigJ3vvJ8nXSwKICAgIFsvXlN0
+          YXJ0XHMrIiguKykiJC9pLCAn5ZCv5Yqo4oCcJDHigJ0nXSwKICAgIFsvXlN0b3BccysiKC4rKSIkL2ksICflgZzmraLigJwkMeKA
+          nSddLAogIF07CiAgZm9yIChjb25zdCBbcmUsIHJlcGxhY2VtZW50XSBvZiBwYXR0ZXJucykgewogICAgaWYgKHJlLnRlc3Qoa2V5
+          KSkgewogICAgICBub2RlLm5vZGVWYWx1ZSA9IHByZXNlcnZlV2hpdGVzcGFjZShyYXcsIGtleS5yZXBsYWNlKHJlLCByZXBsYWNl
+          bWVudCkpOwogICAgICByZXR1cm47CiAgICB9CiAgfQp9CgpmdW5jdGlvbiB0cmFuc2xhdGVBdHRyaWJ1dGVzKGVsOiBFbGVtZW50
+          KSB7CiAgZm9yIChjb25zdCBhdHRyIG9mIGF0dHJzKSB7CiAgICBjb25zdCB2YWx1ZSA9IGVsLmdldEF0dHJpYnV0ZShhdHRyKTsK
+          ICAgIGlmICghdmFsdWUpIGNvbnRpbnVlOwogICAgY29uc3QgaGl0ID0gZXhhY3RbdmFsdWUudHJpbSgpXTsKICAgIGlmIChoaXQp
+          IGVsLnNldEF0dHJpYnV0ZShhdHRyLCBoaXQpOwogIH0KfQoKZnVuY3Rpb24gd2Fsayhyb290OiBOb2RlKSB7CiAgaWYgKHJvb3Qu
+          bm9kZVR5cGUgPT09IE5vZGUuVEVYVF9OT0RFKSB7CiAgICB0cmFuc2xhdGVUZXh0Tm9kZShyb290IGFzIFRleHQpOwogICAgcmV0
+          dXJuOwogIH0KICBpZiAocm9vdC5ub2RlVHlwZSAhPT0gTm9kZS5FTEVNRU5UX05PREUgJiYgcm9vdC5ub2RlVHlwZSAhPT0gTm9k
+          ZS5ET0NVTUVOVF9OT0RFICYmIHJvb3Qubm9kZVR5cGUgIT09IE5vZGUuRE9DVU1FTlRfRlJBR01FTlRfTk9ERSkgewogICAgcmV0
+          dXJuOwogIH0KCiAgaWYgKHJvb3Qubm9kZVR5cGUgPT09IE5vZGUuRUxFTUVOVF9OT0RFKSB7CiAgICBjb25zdCBlbCA9IHJvb3Qg
+          YXMgRWxlbWVudDsKICAgIC8vIOS4jee/u+ivkeaWh+acrOi+k+WFpeahhuWGhemDqOWAvO+8jOS5n+S4jeeisOS7o+eggeWdly/n
+          lKjmiLfmlbDmja7jgIIKICAgIGlmIChlbC5tYXRjaGVzKCJzY3JpcHQsc3R5bGUsY29kZSxwcmUsaW5wdXQsdGV4dGFyZWEiKSkg
+          ewogICAgICB0cmFuc2xhdGVBdHRyaWJ1dGVzKGVsKTsKICAgICAgcmV0dXJuOwogICAgfQogICAgdHJhbnNsYXRlQXR0cmlidXRl
+          cyhlbCk7CiAgfQoKICByb290LmNoaWxkTm9kZXMuZm9yRWFjaCh3YWxrKTsKfQoKZXhwb3J0IGZ1bmN0aW9uIGluc3RhbGxaaENO
+          KCkgewogIGRvY3VtZW50LmRvY3VtZW50RWxlbWVudC5sYW5nID0gInpoLUNOIjsKCiAgY29uc3Qgc3RhcnQgPSAoKSA9PiB7CiAg
+          ICB3YWxrKGRvY3VtZW50LmJvZHkpOwoKICAgIGNvbnN0IG9ic2VydmVyID0gbmV3IE11dGF0aW9uT2JzZXJ2ZXIoKG11dGF0aW9u
+          cykgPT4gewogICAgICBmb3IgKGNvbnN0IG0gb2YgbXV0YXRpb25zKSB7CiAgICAgICAgaWYgKG0udHlwZSA9PT0gImNoYXJhY3Rl
+          ckRhdGEiKSB7CiAgICAgICAgICB0cmFuc2xhdGVUZXh0Tm9kZShtLnRhcmdldCBhcyBUZXh0KTsKICAgICAgICB9CiAgICAgICAg
+          Zm9yIChjb25zdCBuIG9mIEFycmF5LmZyb20obS5hZGRlZE5vZGVzKSkgd2FsayhuKTsKICAgICAgICBpZiAobS50eXBlID09PSAi
+          YXR0cmlidXRlcyIgJiYgbS50YXJnZXQgaW5zdGFuY2VvZiBFbGVtZW50KSB7CiAgICAgICAgICB0cmFuc2xhdGVBdHRyaWJ1dGVz
+          KG0udGFyZ2V0KTsKICAgICAgICB9CiAgICAgIH0KICAgIH0pOwoKICAgIG9ic2VydmVyLm9ic2VydmUoZG9jdW1lbnQuYm9keSwg
+          ewogICAgICBzdWJ0cmVlOiB0cnVlLAogICAgICBjaGlsZExpc3Q6IHRydWUsCiAgICAgIGNoYXJhY3RlckRhdGE6IHRydWUsCiAg
+          ICAgIGF0dHJpYnV0ZXM6IHRydWUsCiAgICAgIGF0dHJpYnV0ZUZpbHRlcjogWy4uLmF0dHJzXSwKICAgIH0pOwogIH07CgogIGlm
+          IChkb2N1bWVudC5ib2R5KSBzdGFydCgpOwogIGVsc2Ugd2luZG93LmFkZEV2ZW50TGlzdGVuZXIoIkRPTUNvbnRlbnRMb2FkZWQi
+          LCBzdGFydCwgeyBvbmNlOiB0cnVlIH0pOwp9Cg==
+          '@
+          $clean = $b64 -replace "\s", ""
+          [IO.File]::WriteAllBytes("src/zh-cn.ts", [Convert]::FromBase64String($clean))
+
+          $main = Get-Content "src/main.tsx" -Raw -Encoding UTF8
+          if ($main -notmatch 'installZhCN') {
+            $main = $main.Replace(
+              'import App from "./App";',
+              "import App from `"./App`";`r`nimport { installZhCN } from `"./zh-cn`";"
+            )
+            $main = $main + "`r`n`r`ninstallZhCN();`r`n"
+            Set-Content "src/main.tsx" $main -Encoding UTF8
+          }
+
+          $confPath = "src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw -Encoding UTF8
+          $conf = $conf.Replace('"title": "ShardX Launcher"', '"title": "ShardX Launcher 中文版"')
+          Set-Content $confPath $conf -Encoding UTF8
+
+      - name: Build Chinese Windows version
+        run: npx tauri build --target x86_64-pc-windows-msvc
+
+      - name: Prepare downloadable EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifact" | Out-Null
+          $release = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $source = Join-Path $release "ShardX Launcher.exe"
+          if (-not (Test-Path $source)) {
+            $source = Join-Path $release "shardx-launcher.exe"
+          }
+          if (-not (Test-Path $source)) {
+            $source = Get-ChildItem $release -Filter "*.exe" -File |
+              Where-Object { $_.Name -notmatch "build|setup" } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $source -or -not (Test-Path $source)) {
+            throw "Could not find compiled ShardX Launcher EXE."
+          }
+          Copy-Item $source "artifact/ShardX-Launcher-中文版.exe"
+
+          $msi = Get-ChildItem "$release/bundle" -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+          if ($msi) {
+            Copy-Item $msi.FullName "artifact/ShardX-Launcher-中文版.msi"
+          }
+
+      - name: Upload Chinese build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShardX-Launcher-Chinese-Windows
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
