@@ -528,6 +528,7 @@ fn make_profile(
     }
     crate::ensure_default_noise(&mut cfg);
     crate::ensure_phone_voices(&mut cfg);
+    crate::ensure_phone_platform_version(&mut cfg);
 
     let mut meta = json!({ "id": "", "folder": folder, "temporary": temporary });
     if let Some(pstr) = inline_proxy {

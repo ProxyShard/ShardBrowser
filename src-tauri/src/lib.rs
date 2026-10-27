@@ -470,6 +470,7 @@ pub fn enrich_new_config(
     randomize_platform_version(obj);
     randomize_hardware(obj);
     ensure_phone_voices(obj);
+    ensure_phone_platform_version(obj);
     if let Some(w) = window {
         clamp_screen_to_real_display(w, obj);
     }
@@ -1472,6 +1473,41 @@ pub fn ensure_phone_voices(cfg: &mut serde_json::Map<String, Value>) {
         })
         .collect();
     cfg.insert("speech".into(), serde_json::json!({ "voices": voices }));
+}
+
+/// Fill a phone's `client_hints.platform_version` when the profile carries none.
+///
+/// A blank or absent version is not "no claim" to the engine — it answers the
+/// HOST's release instead. An Android profile started on this Mac reported
+/// `Sec-CH-UA-Platform-Version: 27.0.1`, which is macOS, so a handset claimed
+/// a desktop release under an Android platform name. Every bundled template
+/// carries a version, so this only reaches a profile that lost it: an imported
+/// config, a hand-edited one, or one drawn before the Android pool existed. A
+/// version already present is kept — it may be one this profile drew.
+pub fn ensure_phone_platform_version(cfg: &mut serde_json::Map<String, Value>) {
+    if !space::profile::claims_mobile(cfg) {
+        return;
+    }
+    let declared = cfg
+        .get("client_hints")
+        .and_then(|c| c.get("platform_version"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if declared {
+        return;
+    }
+    let pick_idx = (uuid::Uuid::new_v4().as_bytes()[0] as usize) % ANDROID_PLATFORM_VERSIONS.len();
+    let version = Value::String(ANDROID_PLATFORM_VERSIONS[pick_idx].to_string());
+    if let Some(ch) = cfg.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
+        ch.insert("platform_version".into(), version);
+    } else {
+        // No client_hints block at all: one holding just this is what the
+        // engine reads the version from, and an absent block answers the host.
+        cfg.insert(
+            "client_hints".into(),
+            serde_json::json!({ "platform_version": ANDROID_PLATFORM_VERSIONS[pick_idx] }),
+        );
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -3266,5 +3302,74 @@ mod mobile_randomize_tests {
             p["speech"]["voices"].as_array().unwrap().len(),
             ANDROID_SPEECH_VOICES.len()
         );
+    }
+
+    #[test]
+    fn a_phone_with_no_platform_version_is_given_an_android_release() {
+        // A blank version is not "no claim" to the engine: it answers the HOST's
+        // release, so this Mac's 27.0.1 under an Android platform name.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert("client_hints".into(), serde_json::json!({ "mobile": true }));
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().expect("a version");
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v), "{v} is an Android release");
+        assert!(!MACOS_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_blank_platform_version_counts_as_none() {
+        // The templates leave the field out, but a hand-edited or imported
+        // profile can carry it empty — the engine answers the host for that too.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": true, "platform_version": "" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_that_declares_its_own_version_keeps_it() {
+        // It may be one this profile drew, and the pool offers several.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": true, "platform_version": "13.0.0" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        assert_eq!(p["client_hints"]["platform_version"], "13.0.0");
+    }
+
+    #[test]
+    fn a_phone_with_no_client_hints_block_still_gets_a_version() {
+        // The engine reads the version from client_hints alone, so the block
+        // has to exist for the claim to reach it.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_platform_version() {
+        // A desktop profile answers its own release already; the helper must
+        // not hand it an Android one.
+        let mut p = serde_json::Map::new();
+        p.insert(
+            "navigator".into(),
+            serde_json::json!({ "platform": "macOS", "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/156.0.0.0 Safari/537.36" }),
+        );
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": false, "platform_version": "15.6.1" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        assert_eq!(p["client_hints"]["platform_version"], "15.6.1");
     }
 }

@@ -638,6 +638,9 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
     // this computer's voices from an Android handset. Filled here rather than at
     // save so a profile that already exists is fixed on its next start.
     crate::ensure_phone_voices(&mut raw);
+    // And a phone that carries no platform version would answer this computer's
+    // macOS release under an Android platform name, so one is drawn for it.
+    crate::ensure_phone_platform_version(&mut raw);
     // The proxy probe and the geo lookup are the slow part: a cancel made
     // while they ran stops here, before anything is written.
     check_cancel(&input.profile_id)?;
