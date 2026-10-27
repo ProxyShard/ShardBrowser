@@ -632,6 +632,14 @@ fn migrate_dir_to(
             if fix_phone_webgl_angle(obj) {
                 changed = true;
             }
+            // A handset's screen has no window chrome, and its touchscreen
+            // takes five fingers.
+            if fix_phone_screen_avail(obj) {
+                changed = true;
+            }
+            if fix_phone_touch_points(obj) {
+                changed = true;
+            }
         }
 
         if changed {
@@ -837,6 +845,211 @@ mod phone_webgl_angle_tests {
             .unwrap()
             .clone();
         assert!(!fix_phone_webgl_angle(&mut p));
+    }
+}
+
+/// A handset's screen has no window chrome, so its available area is the whole
+/// screen.
+///
+/// `screen.availWidth`/`availHeight` come from `Screen::GetRect(available=true)`,
+/// which answers `screen_info.available_rect`; `DisplayUtil::DisplayToScreenInfo`
+/// fills that from the display's work area. On Android the work area is only
+/// ever the display's real one behind `kAndroidUseCorrectDisplayWorkArea` —
+/// `DisplayAndroidManager::DoUpdateDisplay` otherwise calls
+/// `set_work_area(bounds)` — and `ui/android/ui_android_features.cc` declares
+/// that feature `FEATURE_DISABLED_BY_DEFAULT`. So Chrome on Android answers
+/// `availHeight == height`, `availTop == 0`, `availLeft == 0` on every device,
+/// whatever the status bar is doing.
+///
+/// 8 of the bundle's 50 Android templates carry a desktop-shaped inset instead
+/// (avail_height 37..84 px short, avail_top 32..40), and the engine passes the
+/// pair through unchanged. The 42 that claim the full screen are already right
+/// and are left exactly as they are; so is a field the template does not carry,
+/// which is the engine's own default rather than a claim.
+fn fix_phone_screen_avail(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(scr) = cfg.get_mut("screen").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let (Some(w), Some(h)) = (
+        scr.get("width").and_then(|v| v.as_i64()),
+        scr.get("height").and_then(|v| v.as_i64()),
+    ) else {
+        return false;
+    };
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let mut changed = false;
+    for (key, want) in [
+        ("avail_width", w),
+        ("avail_height", h),
+        ("avail_top", 0),
+        ("avail_left", 0),
+    ] {
+        match scr.get(key).and_then(|v| v.as_i64()) {
+            None => continue,
+            Some(got) if got == want => continue,
+            Some(_) => {}
+        }
+        scr.insert(key.into(), serde_json::Value::from(want));
+        changed = true;
+    }
+    changed
+}
+
+/// The least a phone's touchscreen reports.
+///
+/// `navigator.maxTouchPoints` is the digitizer's maximum, and every handset
+/// Chrome runs on reports five or more — five is the platform's own baseline.
+/// One of the bundle's 50 Android templates (`android-realme-c63`) carries 2,
+/// and the engine passes the value through verbatim, so the profile answers a
+/// two-finger touchscreen: a device no Android phone has been in a decade.
+const PHONE_MIN_TOUCH_POINTS: i64 = 5;
+
+fn fix_phone_touch_points(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(nav) = cfg.get_mut("navigator").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(got) = nav.get("max_touch_points").and_then(|v| v.as_i64()) else {
+        return false;
+    };
+    if got >= PHONE_MIN_TOUCH_POINTS {
+        return false;
+    }
+    nav.insert(
+        "max_touch_points".into(),
+        serde_json::Value::from(PHONE_MIN_TOUCH_POINTS),
+    );
+    true
+}
+
+#[cfg(test)]
+mod phone_screen_avail_tests {
+    use super::{fix_phone_screen_avail, fix_phone_touch_points};
+    use serde_json::{json, Value};
+
+    fn phone(screen: Value) -> serde_json::Map<String, Value> {
+        json!({
+            "navigator": { "platform": "Android", "max_touch_points": 5 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "screen": screen,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    fn full() -> Value {
+        json!({ "width": 360, "height": 800, "avail_width": 360, "avail_height": 800,
+                "avail_top": 0, "avail_left": 0, "device_pixel_ratio": 2.0 })
+    }
+
+    #[test]
+    fn a_status_bar_inset_is_removed() {
+        // android-samsung-galaxy-s24-ultra, as it shipped.
+        let mut p = phone(json!({ "width": 412, "height": 892, "avail_width": 412,
+            "avail_height": 808, "avail_top": 36, "avail_left": 0,
+            "device_pixel_ratio": 2.625 }));
+        assert!(fix_phone_screen_avail(&mut p));
+        assert_eq!(p["screen"]["avail_width"], 412);
+        assert_eq!(p["screen"]["avail_height"], 892);
+        assert_eq!(p["screen"]["avail_top"], 0);
+        assert_eq!(p["screen"]["avail_left"], 0);
+        // Everything else is the template's own.
+        assert_eq!(p["screen"]["device_pixel_ratio"], 2.625);
+        assert!(!fix_phone_screen_avail(&mut p), "once");
+    }
+
+    #[test]
+    fn a_phone_that_already_claims_the_whole_screen_is_untouched() {
+        let mut p = phone(full());
+        let before = p.clone();
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_field_the_template_does_not_carry_stays_absent() {
+        let mut p = phone(json!({ "width": 360, "height": 800 }));
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert!(p["screen"].get("avail_height").is_none());
+    }
+
+    #[test]
+    fn a_desktop_work_area_is_left_alone() {
+        // A Mac or Windows template's avail_* is its menu bar and taskbar, and
+        // the browser really does report the inset there.
+        let mut p = json!({
+            "navigator": { "platform": "macOS" },
+            "client_hints": { "mobile": false, "platform": "macOS" },
+            "screen": { "width": 1440, "height": 900, "avail_width": 1440,
+                        "avail_height": 875, "avail_top": 25, "avail_left": 0 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_two_point_touchscreen_is_raised_to_five() {
+        // android-realme-c63, as it shipped.
+        let mut p = json!({
+            "navigator": { "platform": "Android", "max_touch_points": 2 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(fix_phone_touch_points(&mut p));
+        assert_eq!(p["navigator"]["max_touch_points"], 5);
+        assert!(!fix_phone_touch_points(&mut p), "once");
+    }
+
+    #[test]
+    fn a_ten_point_touchscreen_is_kept() {
+        let mut p = json!({
+            "navigator": { "platform": "Android", "max_touch_points": 10 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_touch_points(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_and_a_missing_value_are_left_alone() {
+        let mut desktop = json!({
+            "navigator": { "platform": "Windows", "max_touch_points": 2 },
+            "client_hints": { "mobile": false, "platform": "Windows" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = desktop.clone();
+        assert!(!fix_phone_touch_points(&mut desktop));
+        assert_eq!(desktop, before);
+
+        let mut bare = json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(!fix_phone_touch_points(&mut bare));
+        assert!(bare["navigator"].get("max_touch_points").is_none());
     }
 }
 
@@ -1134,6 +1347,10 @@ fn adopt_into(
         // WebGL backend carries the bare driver pair the engine would hand to
         // the page.
         changed |= fix_phone_webgl_angle(obj);
+        // A saved profile carries its template's screen and touchscreen values,
+        // so a profile from a defective template needs the same correction.
+        changed |= fix_phone_screen_avail(obj);
+        changed |= fix_phone_touch_points(obj);
     }
     changed
 }
@@ -1288,7 +1505,7 @@ fn migrate_all_to(
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 6;
+const MIGRATION_REV: u32 = 7;
 
 /// What a migration was applied for; the install path and the start share it.
 ///
