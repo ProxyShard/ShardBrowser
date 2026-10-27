@@ -628,6 +628,11 @@ fn migrate_dir_to(
         if add_chrome_brand(&mut cfg) {
             changed = true;
         }
+        if let Some(obj) = cfg.as_object_mut() {
+            if fix_phone_webgl_angle(obj) {
+                changed = true;
+            }
+        }
 
         if changed {
             fs::write(&p, serde_json::to_string_pretty(&cfg)?)?;
@@ -690,6 +695,149 @@ fn add_apple_webgpu_features(cfg: &mut serde_json::Value) -> bool {
         changed = true;
     }
     changed
+}
+
+/// A phone's WebGL strings in the form ANGLE answers them.
+///
+/// Chromium on Android renders WebGL through ANGLE and nothing else: with the
+/// passthrough command decoder — the default — `GetAllowedGLImplementations()`
+/// in `ui/gl/init/gl_factory_android.cc` offers ANGLE's GLES and Vulkan backends
+/// and no direct GLES2, and ANGLE's `Context::initRendererString` always builds
+/// `ANGLE (vendor, renderer, version)`. So a handset never answers a bare
+/// `Qualcomm` / `Adreno (TM) 619`; that is the shape `glGetString` takes when
+/// the page talks to the driver itself.
+///
+/// 16 of the bundle's 50 Android templates carry the bare pair, and five of the
+/// GPU models they name — Mali-G57, Mali-G77 MC9, Mali-G68, Adreno 619, Adreno
+/// 750 — appear in the same library in ANGLE form under the same Chrome
+/// version, which no two devices of one model can do. Those 16 predate ANGLE's
+/// Android default, and the engine passes whatever string a profile names
+/// straight through to `UNMASKED_VENDOR_WEBGL`, so the pair reaches the page.
+///
+/// Only a bare pair is rewritten. A string already naming ANGLE, one from
+/// another vendor, or a GPU this cannot place is left exactly as it is.
+fn fix_phone_webgl_angle(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(webgl) = cfg.get_mut("webgl").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(renderer) = webgl.get("renderer").and_then(|v| v.as_str()).map(str::to_string) else {
+        return false;
+    };
+    let renderer = renderer.trim();
+    if renderer.is_empty() || renderer.starts_with("ANGLE (") {
+        return false;
+    }
+    // The backend vendor is the GPU's family, which is the name ANGLE puts in
+    // the first slot. A renderer it cannot place is left alone rather than
+    // guessed at.
+    let family = if renderer.starts_with("Mali") {
+        "ARM"
+    } else if renderer.starts_with("Adreno") {
+        "Qualcomm"
+    } else {
+        return false;
+    };
+    webgl.insert(
+        "vendor".into(),
+        serde_json::Value::String(format!("Google Inc. ({family})")),
+    );
+    webgl.insert(
+        "renderer".into(),
+        serde_json::Value::String(format!("ANGLE ({family}, {renderer}, OpenGL ES 3.2)")),
+    );
+    true
+}
+
+#[cfg(test)]
+mod phone_webgl_angle_tests {
+    use super::fix_phone_webgl_angle;
+    use serde_json::json;
+
+    fn phone(vendor: &str, renderer: &str) -> serde_json::Map<String, serde_json::Value> {
+        json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "webgl": { "vendor": vendor, "renderer": renderer, "extensions": ["EXT_sRGB"] },
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn a_bare_qualcomm_pair_is_given_angles_shape() {
+        let mut p = phone("Qualcomm", "Adreno (TM) 619");
+        assert!(fix_phone_webgl_angle(&mut p));
+        assert_eq!(p["webgl"]["vendor"], "Google Inc. (Qualcomm)");
+        assert_eq!(
+            p["webgl"]["renderer"],
+            "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)"
+        );
+        // The rest of the block is the profile's own.
+        assert_eq!(p["webgl"]["extensions"][0], "EXT_sRGB");
+        assert!(!fix_phone_webgl_angle(&mut p), "once");
+    }
+
+    #[test]
+    fn a_bare_mali_pair_is_given_angles_shape() {
+        let mut p = phone("ARM", "Mali-G57");
+        assert!(fix_phone_webgl_angle(&mut p));
+        assert_eq!(p["webgl"]["vendor"], "Google Inc. (ARM)");
+        assert_eq!(
+            p["webgl"]["renderer"],
+            "ANGLE (ARM, Mali-G57, OpenGL ES 3.2)"
+        );
+    }
+
+    #[test]
+    fn a_pair_already_naming_angle_is_kept() {
+        let mut p = phone(
+            "Google Inc. (Qualcomm)",
+            "ANGLE (Qualcomm, Adreno (TM) 750, OpenGL ES 3.2)",
+        );
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_gpu_that_cannot_be_placed_is_left_alone() {
+        // Apple and NVIDIA handset strings are not a thing, and inventing an
+        // ANGLE prefix for one would be a claim this cannot back.
+        let mut p = phone("Apple", "Apple GPU");
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_bare_string() {
+        // The bare shape is only wrong where ANGLE is the only backend, which
+        // is Android. A desktop that names one is not this fix's to touch.
+        let mut p = json!({
+            "navigator": { "platform": "Linux" },
+            "client_hints": { "mobile": false },
+            "webgl": { "vendor": "X.Org", "renderer": "AMD CEDAR (DRM 2.49.0)" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_phone_with_no_webgl_block_is_left_alone() {
+        let mut p = json!({ "client_hints": { "mobile": true } })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+    }
 }
 
 #[cfg(test)]
@@ -982,6 +1130,10 @@ fn adopt_into(
     // Android pool existed is the template's, which may be a Mac's.
     if let Some(obj) = cfg.as_object_mut() {
         changed |= fix_phone_platform_version(obj, src);
+        // And one drawn from a template from before ANGLE was Android's only
+        // WebGL backend carries the bare driver pair the engine would hand to
+        // the page.
+        changed |= fix_phone_webgl_angle(obj);
     }
     changed
 }
@@ -1136,7 +1288,7 @@ fn migrate_all_to(
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 5;
+const MIGRATION_REV: u32 = 6;
 
 /// What a migration was applied for; the install path and the start share it.
 ///
