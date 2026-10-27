@@ -387,31 +387,68 @@ pub fn clamp_screen_to_real_display(
         return;
     }
 
-    let Some(scr) = payload.get("screen").and_then(|v| v.as_object()) else {
-        eprintln!("[launcher] display: profile has no `screen` block — clamp skipped");
+    // A phone's screen is the handset's, never this monitor's. The clamp exists
+    // so a window can fit the display it opens on; a handset's screen is not a
+    // window and nothing about it is this computer's to rewrite. `wants_real_screen`
+    // already leaves a phone out of the host-screen mode for the same reason, so
+    // letting the clamp through here would put the host's resolution on the one
+    // reading no real phone can give — and it did: every Android profile opened
+    // on a 1440x900 monitor answered that instead of its own screen.
+    if crate::space::profile::claims_mobile(payload) {
+        eprintln!("[launcher] display: phone profile — keeping its own screen");
         return;
+    }
+    match clamp_screen_block(payload, real_w, real_h, scale) {
+        ClampOutcome::Clamped { fp_w, fp_h } => eprintln!(
+            "[launcher] display: CLAMPED screen to real {real_w}x{real_h} \
+             (dpr {scale}) — FP claimed {fp_w}x{fp_h}"
+        ),
+        ClampOutcome::Kept => eprintln!(
+            "[launcher] display: real {real_w}x{real_h} >= FP — keeping FP screen"
+        ),
+        ClampOutcome::NoScreen => {
+            eprintln!("[launcher] display: profile has no usable `screen` block — clamp skipped")
+        }
+    }
+}
+
+/// What `clamp_screen_block` did, so the caller can say so.
+#[derive(Debug, PartialEq, Eq)]
+enum ClampOutcome {
+    /// The screen was rewritten to the host's; carries what the profile claimed.
+    Clamped { fp_w: i64, fp_h: i64 },
+    /// The host display could hold the claimed screen, so it stands.
+    Kept,
+    /// No usable `screen` block to work from.
+    NoScreen,
+}
+
+/// Fit a profile's declared screen and window to the display it will open on.
+///
+/// A screen the profile declares is kept whenever the real display can hold it;
+/// the clamp exists for the other case, where a window simply cannot be bigger
+/// than the monitor it opens on. This used to be the macOS rule only, and
+/// Windows/Linux overwrote the declared screen with the host display on every
+/// start — handing every profile on one machine the SAME high-entropy pair.
+///
+/// Split from the monitor read so the rule itself can be tested; a handset is
+/// never sent here (`claims_mobile` is checked before the call).
+fn clamp_screen_block(
+    payload: &mut serde_json::Map<String, Value>,
+    real_w: i64,
+    real_h: i64,
+    scale: f64,
+) -> ClampOutcome {
+    let Some(scr) = payload.get("screen").and_then(|v| v.as_object()) else {
+        return ClampOutcome::NoScreen;
     };
     let fp_w = scr.get("width").and_then(|v| v.as_i64()).unwrap_or(0);
     let fp_h = scr.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
-    eprintln!("[launcher] display: fingerprint screen={fp_w}x{fp_h}");
     if fp_w <= 0 || fp_h <= 0 {
-        return;
+        return ClampOutcome::NoScreen;
     }
-    // A screen the profile declares is kept whenever the real display can hold
-    // it; the clamp exists for the other case, where a window simply cannot be
-    // bigger than the monitor it opens on.
-    //
-    // This used to be the macOS rule only, and Windows/Linux overwrote the
-    // declared screen with the host display on every start. That handed every
-    // profile on one machine the SAME high-entropy pair — on a 5120x1440
-    // monitor, all of them said 5120x1440 — which is the opposite of what a
-    // per-profile screen is for, and it ignored what the profile's own API
-    // caller had asked for.
     if real_w >= fp_w && real_h >= fp_h {
-        eprintln!(
-            "[launcher] display: real {real_w}x{real_h} >= fp {fp_w}x{fp_h} — keeping FP screen"
-        );
-        return;
+        return ClampOutcome::Kept;
     }
 
     // Preserve FP menubar/dock insets for avail_*.
@@ -441,10 +478,7 @@ pub fn clamp_screen_to_real_display(
         win.insert("outer_height".into(), Value::from(outer_h));
         win.insert("inner_height".into(), Value::from((outer_h - 87).max(1)));
     }
-    eprintln!(
-        "[launcher] display: CLAMPED screen to real {real_w}x{real_h} \
-         (avail {avail_w}x{avail_h}, dpr {scale}) — FP claimed {fp_w}x{fp_h}"
-    );
+    ClampOutcome::Clamped { fp_w, fp_h }
 }
 
 /// `epoch` is the space's edition the interface read under: a save asked in
@@ -3371,5 +3405,76 @@ mod mobile_randomize_tests {
         );
         ensure_phone_platform_version(&mut p);
         assert_eq!(p["client_hints"]["platform_version"], "15.6.1");
+    }
+}
+
+#[cfg(test)]
+mod screen_clamp_tests {
+    use super::{clamp_screen_block, ClampOutcome};
+    use serde_json::{json, Value};
+
+    fn profile(screen: Value, window: Option<Value>) -> serde_json::Map<String, Value> {
+        let mut p = serde_json::Map::new();
+        p.insert("screen".into(), screen);
+        if let Some(w) = window {
+            p.insert("window".into(), w);
+        }
+        p
+    }
+
+    fn desktop_screen() -> Value {
+        json!({
+            "width": 1920, "height": 1080,
+            "avail_width": 1920, "avail_height": 1032,
+            "device_pixel_ratio": 1.0,
+        })
+    }
+
+    #[test]
+    fn a_display_that_holds_the_claim_leaves_it_alone() {
+        let mut p = profile(desktop_screen(), None);
+        let before = p["screen"].clone();
+        assert_eq!(clamp_screen_block(&mut p, 2560, 1440, 2.0), ClampOutcome::Kept);
+        assert_eq!(p["screen"], before, "the claimed screen stands");
+    }
+
+    #[test]
+    fn a_claim_bigger_than_the_display_is_clamped_to_it() {
+        let mut p = profile(desktop_screen(), None);
+        assert_eq!(
+            clamp_screen_block(&mut p, 1440, 900, 2.0),
+            ClampOutcome::Clamped { fp_w: 1920, fp_h: 1080 }
+        );
+        let s = &p["screen"];
+        assert_eq!((s["width"].as_i64(), s["height"].as_i64()), (Some(1440), Some(900)));
+        assert_eq!(s["device_pixel_ratio"].as_f64(), Some(2.0));
+        // The template's 48 px taskbar inset travels with the clamp.
+        assert_eq!(s["avail_height"].as_i64(), Some(852));
+    }
+
+    #[test]
+    fn a_clamp_keeps_the_window_inside_the_new_screen() {
+        let mut p = profile(
+            desktop_screen(),
+            Some(json!({ "outer_width": 1920, "outer_height": 1079,
+                         "inner_width": 1920, "inner_height": 992 })),
+        );
+        assert!(matches!(
+            clamp_screen_block(&mut p, 1440, 900, 2.0),
+            ClampOutcome::Clamped { .. }
+        ));
+        let w = &p["window"];
+        assert_eq!(w["outer_width"].as_i64(), Some(1440));
+        assert_eq!(w["outer_height"].as_i64(), Some(851));
+        assert_eq!(w["inner_height"].as_i64(), Some(851 - 87));
+    }
+
+    #[test]
+    fn a_profile_with_no_screen_has_nothing_to_clamp() {
+        let mut p = serde_json::Map::new();
+        assert_eq!(clamp_screen_block(&mut p, 1440, 900, 2.0), ClampOutcome::NoScreen);
+        // A screen with no usable size is the same as none.
+        let mut zero = profile(json!({ "width": 0, "height": 0 }), None);
+        assert_eq!(clamp_screen_block(&mut zero, 1440, 900, 2.0), ClampOutcome::NoScreen);
     }
 }
