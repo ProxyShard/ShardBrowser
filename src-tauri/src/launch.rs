@@ -316,19 +316,6 @@ pub fn launch_input(start: &Granted<Start>, cdp: Option<&Granted<Cookies>>, pass
         (profile::load_raw(profile_id)?, profile::user_data_dir(profile_id)?, None)
     };
 
-    // A browser left over from an earlier run of the launcher holds the
-    // profile's lock but is in nobody's tracker. Starting another one does
-    // not open a second window: Chromium's singleton hands the command line
-    // to the browser already there and the new process exits at once, so the
-    // profile looked like it refused to start while its window sat open on
-    // the desktop. Say what is actually happening instead.
-    if crate::reset::lock_is_live(&udd) {
-        anyhow::bail!(
-            "profile {profile_id} is already open in a browser this launcher did not start \
-             — close that window, then start it again"
-        );
-    }
-
     let proxy = bound_proxy(&stored, profile_id, proxy::get)?;
     // Extensions from the library; an id the library no longer has is skipped.
     let (ext_ids, extensions) = stored
@@ -526,6 +513,21 @@ async fn launch_using(
             // An extension swap is waited out; none starts until the browser is tracked.
             _held = Some(extensions::begin_launch(profile_id).await?);
             let mut input = launch_input(&start, cookies.as_ref(), opts.password)?;
+            // A browser left over from an earlier run of the launcher holds the
+            // profile's lock but is in nobody's tracker. Starting another one
+            // would not open a window: Chromium's singleton hands the command
+            // line to the browser already there and the new process exits at
+            // once. So that browser is closed first, and this start goes on.
+            if crate::reset::lock_is_live(&input.udd) {
+                eprintln!("[launcher] closing a browser left open on {profile_id} before starting it");
+                process::end_browser(&input.udd, None).await;
+                if crate::reset::lock_is_live(&input.udd) {
+                    anyhow::bail!(
+                        "profile {profile_id} is still open in a browser that would not close \
+                         — close that window, then start it again"
+                    );
+                }
+            }
             // Synced: under the lease of the person's space, its session brought up to date.
             // A protected profile is never synced: its data leaves this machine only sealed.
             if !matches!(input.exit, ExitHook::Sealed(_)) {
