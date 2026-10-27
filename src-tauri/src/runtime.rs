@@ -500,6 +500,38 @@ mod manifest_fetch_tests {
     }
 }
 
+#[cfg(test)]
+mod migration_signature_tests {
+    use super::{migration_signature, RemoteManifest};
+
+    fn manifest(fp_etag: &str) -> RemoteManifest {
+        let mut m = RemoteManifest {
+            chromium_version: Some("156.0.8078.48".into()),
+            grease_brand: Some("Not:A-Brand".into()),
+            grease_version: Some("8".into()),
+            ..Default::default()
+        };
+        m.archives
+            .insert(super::FINGERPRINTS_ARCHIVE_KEY.into(), fp_etag.into());
+        m
+    }
+
+    #[test]
+    fn a_reseeded_fingerprint_library_remigrates() {
+        // The bundle's Android templates ship without GREASE, and the seed copies
+        // them over the migrated copies. The etag moving is the only sign the
+        // library is stale again, so it has to be part of the signature.
+        let before = migration_signature("156.0.8078.48", &manifest("aaa"));
+        let after = migration_signature("156.0.8078.48", &manifest("bbb"));
+        assert_ne!(before, after, "a re-seed must not be read as already migrated");
+        assert_eq!(
+            migration_signature("156.0.8078.48", &manifest("aaa")),
+            before,
+            "the same inputs must answer the same signature"
+        );
+    }
+}
+
 /// Migrate every `*.json` in `dir` to a new engine descriptor: bump
 /// `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
 /// `client_hints` — `brand_version` / `brand_full_version` / `chrome_build` /
@@ -752,6 +784,132 @@ mod apple_webgpu_tests {
     }
 }
 
+#[cfg(test)]
+mod android_grease_tests {
+    use super::migrate_dir_to;
+    use serde_json::json;
+
+    /// The bundle's Android templates, in the shape they ship: brand present,
+    /// no GREASE at all, and the phone-only fields that must survive.
+    fn phone() -> serde_json::Value {
+        json!({
+            "name": "android-samsung-galaxy-s24-ultra",
+            "navigator": {
+                "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+                "platform": "Android", "platform_value": "Linux armv81", "max_touch_points": 5,
+            },
+            "client_hints": {
+                "brand": "Google Chrome", "brand_version": "156", "brand_full_version": "156.0.8078.48",
+                "platform_version": "16.0.0", "model": "SM-S928B", "architecture": "", "bitness": "", "mobile": true,
+            },
+            "screen": { "width": 412, "height": 892, "device_pixel_ratio": 2.625 },
+        })
+    }
+
+    #[test]
+    fn a_phone_template_gains_grease_and_keeps_its_own_fields() {
+        // Without GREASE the engine drops "Google Chrome" from userAgentData.brands,
+        // leaving a two-entry list no Chrome reports.
+        let dir = std::env::temp_dir().join(format!("shardx-android-grease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("android-samsung-galaxy-s24-ultra.json");
+        std::fs::write(&file, phone().to_string()).unwrap();
+
+        let n = migrate_dir_to(&dir, "156.0.8078.48", Some("Not:A-Brand"), Some("8"), None).unwrap();
+        assert_eq!(n, 1);
+
+        let got: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let ch = &got["client_hints"];
+        assert_eq!(ch["grease_brand"], "Not:A-Brand");
+        assert_eq!(ch["grease_version"], "8");
+        assert_eq!(ch["grease_full_version"], "8.0.0.0");
+        // The phone's own fields are untouched — an empty architecture stays empty,
+        // because Chromium's Android branch really does report one.
+        assert_eq!(ch["brand"], "Google Chrome");
+        assert_eq!(ch["model"], "SM-S928B");
+        assert_eq!(ch["architecture"], "");
+        assert_eq!(ch["bitness"], "");
+        assert_eq!(ch["platform_version"], "16.0.0");
+        assert_eq!(got["navigator"]["max_touch_points"], 5);
+        assert_eq!(got["screen"]["device_pixel_ratio"], 2.625);
+
+        assert_eq!(
+            migrate_dir_to(&dir, "156.0.8078.48", Some("Not:A-Brand"), Some("8"), None).unwrap(),
+            0,
+            "a second run must write nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manifest_without_grease_leaves_the_list_alone() {
+        // GREASE rotates per release and travels as data; absent means the
+        // manifest did not say, so nothing is invented.
+        let dir = std::env::temp_dir().join(format!("shardx-android-nogrease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("android-samsung-galaxy-s24-ultra.json");
+        std::fs::write(&file, phone().to_string()).unwrap();
+
+        migrate_dir_to(&dir, "156.0.8078.48", None, None, None).unwrap();
+        let got: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(got["client_hints"].get("grease_brand").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A handset's `Sec-CH-UA-Platform-Version` is always `N.0.0` — Chromium reports
+/// the release number alone, never a point release. A phone carrying anything
+/// else was built while `randomize_platform_version` had no Android pool and
+/// every platform fell through to the template's own value, which for a phone
+/// preset taken from a Mac template was a macOS version ("15.6.1"). Such a
+/// profile answers `platform: Android` with an iOS-shaped version, a pair no
+/// handset reports, and the engine passes it through unchanged.
+fn android_shaped_version(v: &str) -> bool {
+    let mut parts = v.split('.');
+    let major = parts.next().and_then(|s| s.parse::<u32>().ok());
+    matches!((major, parts.next(), parts.next(), parts.next()),
+             (Some(m), Some("0"), Some("0"), None) if m >= 10)
+}
+
+/// Correct a phone's platform version to its template's own. The version is not
+/// an operator's choice — nothing in the form edits it, and `bbee2a5` made a new
+/// phone draw an Android release — so a phone carrying a desktop-shaped one is a
+/// profile from before that fix, and is answered from its template. A version
+/// already Android-shaped is left alone: it may be one this profile drew.
+fn fix_phone_platform_version(
+    cfg: &mut serde_json::Map<String, serde_json::Value>,
+    src: &serde_json::Value,
+) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(want) = src
+        .pointer("/client_hints/platform_version")
+        .and_then(|v| v.as_str())
+        .filter(|s| android_shaped_version(s))
+    else {
+        return false;
+    };
+    let got = cfg
+        .get("client_hints")
+        .and_then(|c| c.get("platform_version"))
+        .and_then(|v| v.as_str());
+    if got.is_some_and(android_shaped_version) {
+        return false;
+    }
+    if let Some(ch) = cfg.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
+        ch.insert("platform_version".into(), serde_json::Value::from(want));
+    }
+    if let Some(nav) = cfg.get_mut("navigator").and_then(|v| v.as_object_mut()) {
+        if nav.contains_key("platform_version") {
+            nav.insert("platform_version".into(), serde_json::Value::from(want));
+        }
+    }
+    true
+}
+
 /// Fields a profile was created before the library had. A profile keeps its own
 /// copy of the fingerprint, so updating the library never reaches it; these are
 /// copied across by name, and only where the profile carries none of its own. A
@@ -777,39 +935,147 @@ fn adopt_library_fields(dir: &Path) -> Result<usize> {
         }
         let Ok(text) = fs::read_to_string(&p) else { continue };
         let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-        let key = cfg
-            .pointer("/_meta/gpu_preset_id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .or_else(|| cfg.get("name").and_then(|v| v.as_str()))
-            .map(String::from);
-        let Some(src) = key.as_deref().and_then(|k| lib.get(k)) else { continue };
-        let mut changed = false;
-        for key in ["fonts", "fonts_local"] {
-            if cfg.get(key).is_none() {
-                if let Some(v) = src.get(key) {
-                    cfg[key] = v.clone();
-                    changed = true;
-                }
-            }
+        if !adopt_into(&mut cfg, &lib) {
+            continue;
         }
-        // features live inside the webgpu block the profile already has; a
-        // profile without that block claims a machine with no adapter.
-        if cfg.pointer("/webgpu/features").is_none() {
-            if let Some(f) = src.pointer("/webgpu/features") {
-                if let Some(w) = cfg.get_mut("webgpu").and_then(|v| v.as_object_mut()) {
-                    w.insert("features".into(), f.clone());
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            if fs::write(&p, serde_json::to_string_pretty(&cfg).unwrap_or(text)).is_ok() {
-                n += 1;
-            }
+        if fs::write(&p, serde_json::to_string_pretty(&cfg).unwrap_or(text)).is_ok() {
+            n += 1;
         }
     }
     Ok(n)
+}
+
+/// The per-profile half of `adopt_library_fields`, so a test can hand it a
+/// library of its own instead of the machine's. Answers whether it changed
+/// anything.
+fn adopt_into(
+    cfg: &mut serde_json::Value,
+    lib: &std::collections::HashMap<String, serde_json::Value>,
+) -> bool {
+    let key = cfg
+        .pointer("/_meta/gpu_preset_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.get("name").and_then(|v| v.as_str()))
+        .map(String::from);
+    let Some(src) = key.as_deref().and_then(|k| lib.get(k)) else { return false };
+    let mut changed = false;
+    for key in ["fonts", "fonts_local"] {
+        if cfg.get(key).is_none() {
+            if let Some(v) = src.get(key) {
+                cfg[key] = v.clone();
+                changed = true;
+            }
+        }
+    }
+    // features live inside the webgpu block the profile already has; a
+    // profile without that block claims a machine with no adapter.
+    if cfg.pointer("/webgpu/features").is_none() {
+        if let Some(f) = src.pointer("/webgpu/features") {
+            if let Some(w) = cfg.get_mut("webgpu").and_then(|v| v.as_object_mut()) {
+                w.insert("features".into(), f.clone());
+                changed = true;
+            }
+        }
+    }
+    // A phone keeps the version it was built with; one drawn before the
+    // Android pool existed is the template's, which may be a Mac's.
+    if let Some(obj) = cfg.as_object_mut() {
+        changed |= fix_phone_platform_version(obj, src);
+    }
+    changed
+}
+
+#[cfg(test)]
+mod phone_platform_version_tests {
+    use super::{adopt_into, android_shaped_version};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn lib() -> HashMap<String, serde_json::Value> {
+        let mut m = HashMap::new();
+        m.insert(
+            "android-vivo-y19s-5g".to_string(),
+            json!({
+                "name": "android-vivo-y19s-5g",
+                "navigator": { "platform": "Android", "platform_value": "Linux armv81" },
+                "client_hints": { "mobile": true, "platform": "Android", "platform_version": "16.0.0" },
+            }),
+        );
+        m.insert(
+            "mac-m3-air13".to_string(),
+            json!({
+                "name": "mac-m3-air13",
+                "navigator": { "platform": "macOS", "platform_version": "15.6.1" },
+                "client_hints": { "mobile": false, "platform": "macOS", "platform_version": "15.6.1" },
+            }),
+        );
+        m
+    }
+
+    fn phone(preset: &str, pv: &str) -> serde_json::Value {
+        json!({
+            "name": "shop phone",
+            "_meta": { "gpu_preset_id": preset },
+            "navigator": { "platform": "Android", "platform_version": pv },
+            "client_hints": { "mobile": true, "platform": "Android", "platform_version": pv },
+        })
+    }
+
+    #[test]
+    fn only_a_release_shaped_version_is_android() {
+        for v in ["13.0.0", "14.0.0", "15.0.0", "16.0.0"] {
+            assert!(android_shaped_version(v), "{v} is what a handset reports");
+        }
+        // The macOS pool, and an Android point release Chromium never reports.
+        for v in ["15.6.1", "14.7.2", "26.1", "15.4", "15.1.0"] {
+            assert!(!android_shaped_version(v), "{v} is no Android release");
+        }
+    }
+
+    #[test]
+    fn a_phone_keeps_the_version_it_drew() {
+        // It may be one this profile drew, and the template's is only one of
+        // the several an Android release pool offers.
+        let mut cfg = phone("android-vivo-y19s-5g", "14.0.0");
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "14.0.0");
+    }
+
+    #[test]
+    fn a_phone_from_before_the_android_pool_gains_its_template_version() {
+        // 15.6.1 is the macOS pool's, so this phone answers an iOS-shaped
+        // version — the pair no handset reports, and the one the engine
+        // passes through untouched.
+        let mut cfg = phone("android-vivo-y19s-5g", "15.6.1");
+        assert!(adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "16.0.0");
+        assert_eq!(cfg["navigator"]["platform_version"], "16.0.0");
+        // Everything else the profile owns is untouched.
+        assert_eq!(cfg["_meta"]["gpu_preset_id"], "android-vivo-y19s-5g");
+        assert_eq!(cfg["name"], "shop phone");
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_version() {
+        // 15.6.1 is a real macOS release, so it is right where it stands.
+        let mut cfg = json!({
+            "name": "desk",
+            "_meta": { "gpu_preset_id": "mac-m3-air13" },
+            "navigator": { "platform": "macOS", "platform_version": "15.6.1" },
+            "client_hints": { "mobile": false, "platform": "macOS", "platform_version": "15.6.1" },
+        });
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "15.6.1");
+    }
+
+    #[test]
+    fn a_phone_with_no_library_entry_is_left_alone() {
+        // The operator's own capture: no template says what its version is.
+        let mut cfg = phone("my own capture", "15.6.1");
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "15.6.1");
+    }
 }
 
 #[cfg(test)]
@@ -870,16 +1136,25 @@ fn migrate_all_to(
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 3;
+const MIGRATION_REV: u32 = 5;
 
 /// What a migration was applied for; the install path and the start share it.
+///
+/// The fingerprint archive's etag belongs in here: `install_fingerprints` copies the
+/// archive verbatim, so a re-seed overwrites migrated templates with whatever the
+/// bundle ships. The bundle's 50 Android templates carry no GREASE at all, and a
+/// phone without it loses "Google Chrome" from `userAgentData.brands` — a brand
+/// list only "Chromium" and the GREASE placeholder answers, which no Chrome does.
+/// Without the etag in the signature that re-seed left the library unmigrated until
+/// some unrelated manifest field happened to change.
 fn migration_signature(target: &str, m: &RemoteManifest) -> String {
     format!(
-        "{target}|{}|{}|{}|{}|m{MIGRATION_REV}",
+        "{target}|{}|{}|{}|{}|{}|m{MIGRATION_REV}",
         m.grease_brand.as_deref().unwrap_or(""),
         m.grease_version.as_deref().unwrap_or(""),
         m.tls.as_ref().map(|t| t.to_string()).unwrap_or_default(),
         m.engine_build.as_deref().unwrap_or(""),
+        m.archives.get(FINGERPRINTS_ARCHIVE_KEY).map(|s| s.as_str()).unwrap_or(""),
     )
 }
 
