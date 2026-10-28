@@ -500,6 +500,38 @@ mod manifest_fetch_tests {
     }
 }
 
+#[cfg(test)]
+mod migration_signature_tests {
+    use super::{migration_signature, RemoteManifest};
+
+    fn manifest(fp_etag: &str) -> RemoteManifest {
+        let mut m = RemoteManifest {
+            chromium_version: Some("156.0.8078.48".into()),
+            grease_brand: Some("Not:A-Brand".into()),
+            grease_version: Some("8".into()),
+            ..Default::default()
+        };
+        m.archives
+            .insert(super::FINGERPRINTS_ARCHIVE_KEY.into(), fp_etag.into());
+        m
+    }
+
+    #[test]
+    fn a_reseeded_fingerprint_library_remigrates() {
+        // The bundle's Android templates ship without GREASE, and the seed copies
+        // them over the migrated copies. The etag moving is the only sign the
+        // library is stale again, so it has to be part of the signature.
+        let before = migration_signature("156.0.8078.48", &manifest("aaa"));
+        let after = migration_signature("156.0.8078.48", &manifest("bbb"));
+        assert_ne!(before, after, "a re-seed must not be read as already migrated");
+        assert_eq!(
+            migration_signature("156.0.8078.48", &manifest("aaa")),
+            before,
+            "the same inputs must answer the same signature"
+        );
+    }
+}
+
 /// Migrate every `*.json` in `dir` to a new engine descriptor: bump
 /// `navigator.user_agent` (Chrome/<major>.0.0.0) and the version fields in
 /// `client_hints` — `brand_version` / `brand_full_version` / `chrome_build` /
@@ -596,6 +628,24 @@ fn migrate_dir_to(
         if add_chrome_brand(&mut cfg) {
             changed = true;
         }
+        if let Some(obj) = cfg.as_object_mut() {
+            if fix_phone_webgl_angle(obj) {
+                changed = true;
+            }
+            // A handset's screen has no window chrome, and its touchscreen
+            // takes five fingers.
+            if fix_phone_screen_avail(obj) {
+                changed = true;
+            }
+            if fix_phone_touch_points(obj) {
+                changed = true;
+            }
+            // And its battery drains at the rate the template names, not at the
+            // one constant the engine falls back to.
+            if fix_phone_battery_drain(obj) {
+                changed = true;
+            }
+        }
 
         if changed {
             fs::write(&p, serde_json::to_string_pretty(&cfg)?)?;
@@ -658,6 +708,504 @@ fn add_apple_webgpu_features(cfg: &mut serde_json::Value) -> bool {
         changed = true;
     }
     changed
+}
+
+/// A phone's WebGL strings in the form ANGLE answers them.
+///
+/// Chromium on Android renders WebGL through ANGLE and nothing else: with the
+/// passthrough command decoder — the default — `GetAllowedGLImplementations()`
+/// in `ui/gl/init/gl_factory_android.cc` offers ANGLE's GLES and Vulkan backends
+/// and no direct GLES2, and ANGLE's `Context::initRendererString` always builds
+/// `ANGLE (vendor, renderer, version)`. So a handset never answers a bare
+/// `Qualcomm` / `Adreno (TM) 619`; that is the shape `glGetString` takes when
+/// the page talks to the driver itself.
+///
+/// 16 of the bundle's 50 Android templates carry the bare pair, and five of the
+/// GPU models they name — Mali-G57, Mali-G77 MC9, Mali-G68, Adreno 619, Adreno
+/// 750 — appear in the same library in ANGLE form under the same Chrome
+/// version, which no two devices of one model can do. Those 16 predate ANGLE's
+/// Android default, and the engine passes whatever string a profile names
+/// straight through to `UNMASKED_VENDOR_WEBGL`, so the pair reaches the page.
+///
+/// Only a bare pair is rewritten. A string already naming ANGLE, one from
+/// another vendor, or a GPU this cannot place is left exactly as it is.
+fn fix_phone_webgl_angle(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(webgl) = cfg.get_mut("webgl").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(renderer) = webgl.get("renderer").and_then(|v| v.as_str()).map(str::to_string) else {
+        return false;
+    };
+    let renderer = renderer.trim();
+    if renderer.is_empty() || renderer.starts_with("ANGLE (") {
+        return false;
+    }
+    // The backend vendor is the GPU's family, which is the name ANGLE puts in
+    // the first slot. A renderer it cannot place is left alone rather than
+    // guessed at.
+    let family = if renderer.starts_with("Mali") {
+        "ARM"
+    } else if renderer.starts_with("Adreno") {
+        "Qualcomm"
+    } else {
+        return false;
+    };
+    webgl.insert(
+        "vendor".into(),
+        serde_json::Value::String(format!("Google Inc. ({family})")),
+    );
+    webgl.insert(
+        "renderer".into(),
+        serde_json::Value::String(format!("ANGLE ({family}, {renderer}, OpenGL ES 3.2)")),
+    );
+    true
+}
+
+#[cfg(test)]
+mod phone_webgl_angle_tests {
+    use super::fix_phone_webgl_angle;
+    use serde_json::json;
+
+    fn phone(vendor: &str, renderer: &str) -> serde_json::Map<String, serde_json::Value> {
+        json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "webgl": { "vendor": vendor, "renderer": renderer, "extensions": ["EXT_sRGB"] },
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    #[test]
+    fn a_bare_qualcomm_pair_is_given_angles_shape() {
+        let mut p = phone("Qualcomm", "Adreno (TM) 619");
+        assert!(fix_phone_webgl_angle(&mut p));
+        assert_eq!(p["webgl"]["vendor"], "Google Inc. (Qualcomm)");
+        assert_eq!(
+            p["webgl"]["renderer"],
+            "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)"
+        );
+        // The rest of the block is the profile's own.
+        assert_eq!(p["webgl"]["extensions"][0], "EXT_sRGB");
+        assert!(!fix_phone_webgl_angle(&mut p), "once");
+    }
+
+    #[test]
+    fn a_bare_mali_pair_is_given_angles_shape() {
+        let mut p = phone("ARM", "Mali-G57");
+        assert!(fix_phone_webgl_angle(&mut p));
+        assert_eq!(p["webgl"]["vendor"], "Google Inc. (ARM)");
+        assert_eq!(
+            p["webgl"]["renderer"],
+            "ANGLE (ARM, Mali-G57, OpenGL ES 3.2)"
+        );
+    }
+
+    #[test]
+    fn a_pair_already_naming_angle_is_kept() {
+        let mut p = phone(
+            "Google Inc. (Qualcomm)",
+            "ANGLE (Qualcomm, Adreno (TM) 750, OpenGL ES 3.2)",
+        );
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_gpu_that_cannot_be_placed_is_left_alone() {
+        // Apple and NVIDIA handset strings are not a thing, and inventing an
+        // ANGLE prefix for one would be a claim this cannot back.
+        let mut p = phone("Apple", "Apple GPU");
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_bare_string() {
+        // The bare shape is only wrong where ANGLE is the only backend, which
+        // is Android. A desktop that names one is not this fix's to touch.
+        let mut p = json!({
+            "navigator": { "platform": "Linux" },
+            "client_hints": { "mobile": false },
+            "webgl": { "vendor": "X.Org", "renderer": "AMD CEDAR (DRM 2.49.0)" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_phone_with_no_webgl_block_is_left_alone() {
+        let mut p = json!({ "client_hints": { "mobile": true } })
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(!fix_phone_webgl_angle(&mut p));
+    }
+}
+
+/// A handset's screen has no window chrome, so its available area is the whole
+/// screen.
+///
+/// `screen.availWidth`/`availHeight` come from `Screen::GetRect(available=true)`,
+/// which answers `screen_info.available_rect`; `DisplayUtil::DisplayToScreenInfo`
+/// fills that from the display's work area. On Android the work area is only
+/// ever the display's real one behind `kAndroidUseCorrectDisplayWorkArea` —
+/// `DisplayAndroidManager::DoUpdateDisplay` otherwise calls
+/// `set_work_area(bounds)` — and `ui/android/ui_android_features.cc` declares
+/// that feature `FEATURE_DISABLED_BY_DEFAULT`. So Chrome on Android answers
+/// `availHeight == height`, `availTop == 0`, `availLeft == 0` on every device,
+/// whatever the status bar is doing.
+///
+/// 8 of the bundle's 50 Android templates carry a desktop-shaped inset instead
+/// (avail_height 37..84 px short, avail_top 32..40), and the engine passes the
+/// pair through unchanged. The 42 that claim the full screen are already right
+/// and are left exactly as they are; so is a field the template does not carry,
+/// which is the engine's own default rather than a claim.
+fn fix_phone_screen_avail(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(scr) = cfg.get_mut("screen").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let (Some(w), Some(h)) = (
+        scr.get("width").and_then(|v| v.as_i64()),
+        scr.get("height").and_then(|v| v.as_i64()),
+    ) else {
+        return false;
+    };
+    if w <= 0 || h <= 0 {
+        return false;
+    }
+    let mut changed = false;
+    for (key, want) in [
+        ("avail_width", w),
+        ("avail_height", h),
+        ("avail_top", 0),
+        ("avail_left", 0),
+    ] {
+        match scr.get(key).and_then(|v| v.as_i64()) {
+            None => continue,
+            Some(got) if got == want => continue,
+            Some(_) => {}
+        }
+        scr.insert(key.into(), serde_json::Value::from(want));
+        changed = true;
+    }
+    changed
+}
+
+/// The least a phone's touchscreen reports.
+///
+/// `navigator.maxTouchPoints` is the digitizer's maximum, and every handset
+/// Chrome runs on reports five or more — five is the platform's own baseline.
+/// One of the bundle's 50 Android templates (`android-realme-c63`) carries 2,
+/// and the engine passes the value through verbatim, so the profile answers a
+/// two-finger touchscreen: a device no Android phone has been in a decade.
+const PHONE_MIN_TOUCH_POINTS: i64 = 5;
+
+fn fix_phone_touch_points(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(nav) = cfg.get_mut("navigator").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    let Some(got) = nav.get("max_touch_points").and_then(|v| v.as_i64()) else {
+        return false;
+    };
+    if got >= PHONE_MIN_TOUCH_POINTS {
+        return false;
+    }
+    nav.insert(
+        "max_touch_points".into(),
+        serde_json::Value::from(PHONE_MIN_TOUCH_POINTS),
+    );
+    true
+}
+
+#[cfg(test)]
+mod phone_screen_avail_tests {
+    use super::{fix_phone_screen_avail, fix_phone_touch_points};
+    use serde_json::{json, Value};
+
+    fn phone(screen: Value) -> serde_json::Map<String, Value> {
+        json!({
+            "navigator": { "platform": "Android", "max_touch_points": 5 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "screen": screen,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    fn full() -> Value {
+        json!({ "width": 360, "height": 800, "avail_width": 360, "avail_height": 800,
+                "avail_top": 0, "avail_left": 0, "device_pixel_ratio": 2.0 })
+    }
+
+    #[test]
+    fn a_status_bar_inset_is_removed() {
+        // android-samsung-galaxy-s24-ultra, as it shipped.
+        let mut p = phone(json!({ "width": 412, "height": 892, "avail_width": 412,
+            "avail_height": 808, "avail_top": 36, "avail_left": 0,
+            "device_pixel_ratio": 2.625 }));
+        assert!(fix_phone_screen_avail(&mut p));
+        assert_eq!(p["screen"]["avail_width"], 412);
+        assert_eq!(p["screen"]["avail_height"], 892);
+        assert_eq!(p["screen"]["avail_top"], 0);
+        assert_eq!(p["screen"]["avail_left"], 0);
+        // Everything else is the template's own.
+        assert_eq!(p["screen"]["device_pixel_ratio"], 2.625);
+        assert!(!fix_phone_screen_avail(&mut p), "once");
+    }
+
+    #[test]
+    fn a_phone_that_already_claims_the_whole_screen_is_untouched() {
+        let mut p = phone(full());
+        let before = p.clone();
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_field_the_template_does_not_carry_stays_absent() {
+        let mut p = phone(json!({ "width": 360, "height": 800 }));
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert!(p["screen"].get("avail_height").is_none());
+    }
+
+    #[test]
+    fn a_desktop_work_area_is_left_alone() {
+        // A Mac or Windows template's avail_* is its menu bar and taskbar, and
+        // the browser really does report the inset there.
+        let mut p = json!({
+            "navigator": { "platform": "macOS" },
+            "client_hints": { "mobile": false, "platform": "macOS" },
+            "screen": { "width": 1440, "height": 900, "avail_width": 1440,
+                        "avail_height": 875, "avail_top": 25, "avail_left": 0 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_screen_avail(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_two_point_touchscreen_is_raised_to_five() {
+        // android-realme-c63, as it shipped.
+        let mut p = json!({
+            "navigator": { "platform": "Android", "max_touch_points": 2 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(fix_phone_touch_points(&mut p));
+        assert_eq!(p["navigator"]["max_touch_points"], 5);
+        assert!(!fix_phone_touch_points(&mut p), "once");
+    }
+
+    #[test]
+    fn a_ten_point_touchscreen_is_kept() {
+        let mut p = json!({
+            "navigator": { "platform": "Android", "max_touch_points": 10 },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = p.clone();
+        assert!(!fix_phone_touch_points(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_and_a_missing_value_are_left_alone() {
+        let mut desktop = json!({
+            "navigator": { "platform": "Windows", "max_touch_points": 2 },
+            "client_hints": { "mobile": false, "platform": "Windows" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = desktop.clone();
+        assert!(!fix_phone_touch_points(&mut desktop));
+        assert_eq!(desktop, before);
+
+        let mut bare = json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(!fix_phone_touch_points(&mut bare));
+        assert!(bare["navigator"].get("max_touch_points").is_none());
+    }
+}
+
+/// Expresses a phone's `battery.discharging_time` as the `drain_per_hour` the
+/// engine actually reads, so `navigator.getBattery()` reports the time to empty
+/// the template asks for instead of one derived from a shared constant.
+///
+/// The engine ignores `battery.discharging_time`: it answers
+/// `trunc(level * 100 / drain_per_hour * 3600)` and, with no `drain_per_hour`,
+/// falls back to 7.5 %/h. So the bundle's 24 discharging Android templates ask
+/// for 2..8 hours and are answered 2.7..11.5, and because none of them sets a
+/// rate, all 50 phones report one identical drain curve — a cross-profile
+/// signal no two real phones share. Writing the rate the template meant gives
+/// each phone its own curve and the answer it asked for.
+///
+/// A profile that names its own rate is left alone — that is a deliberate claim
+/// about how the device drains. So is a charging profile (`discharging_time` is
+/// `Infinity` and nothing drains) and one with no `level` to derive from.
+fn fix_phone_battery_drain(cfg: &mut serde_json::Map<String, serde_json::Value>) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(bat) = cfg.get_mut("battery").and_then(|v| v.as_object_mut()) else {
+        return false;
+    };
+    if bat.get("drain_per_hour").is_some() {
+        return false;
+    }
+    if bat.get("charging").and_then(|v| v.as_bool()) != Some(false) {
+        return false;
+    }
+    let Some(level) = bat.get("level").and_then(|v| v.as_f64()) else {
+        return false;
+    };
+    let Some(secs) = bat.get("discharging_time").and_then(|v| v.as_f64()) else {
+        return false;
+    };
+    if !(level > 0.0) || !(secs > 0.0) {
+        return false;
+    }
+    let drain = level / (secs / 3600.0) * 100.0;
+    bat.insert("drain_per_hour".into(), serde_json::Value::from(drain));
+    true
+}
+
+#[cfg(test)]
+mod phone_battery_drain_tests {
+    use super::fix_phone_battery_drain;
+    use serde_json::{json, Value};
+
+    fn phone(battery: Value) -> serde_json::Map<String, Value> {
+        json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+            "battery": battery,
+        })
+        .as_object()
+        .unwrap()
+        .clone()
+    }
+
+    // The engine answers `trunc(level * 100 / drain * 3600)`; that is what the
+    // page sees. Comparing within a second leaves its truncation out of it.
+    fn seconds_to_empty(p: &serde_json::Map<String, Value>) -> f64 {
+        let level = p["battery"]["level"].as_f64().unwrap();
+        let drain = p["battery"]["drain_per_hour"].as_f64().unwrap();
+        level / (drain / 100.0) * 3600.0
+    }
+
+    #[test]
+    fn the_time_to_empty_becomes_the_templates_own() {
+        // android-samsung-galaxy-s24-ultra, as it shipped: asks 6 h, answered 7 h 20 m.
+        let mut p = phone(json!({ "charging": false, "level": 0.55,
+            "charging_time": "Infinity", "discharging_time": 21600 }));
+        assert!(fix_phone_battery_drain(&mut p));
+        assert!((seconds_to_empty(&p) - 21600.0).abs() < 1.0);
+        assert!(!fix_phone_battery_drain(&mut p), "once");
+    }
+
+    #[test]
+    fn a_phone_the_fallback_already_suited_keeps_its_answer() {
+        // android-motorola-moto-g-power-2025: level 0.6 over 8 h is exactly the
+        // engine's 7.5 %/h fallback, so its answer does not move.
+        let mut p = phone(json!({ "charging": false, "level": 0.6,
+            "charging_time": "Infinity", "discharging_time": 28800 }));
+        assert!(fix_phone_battery_drain(&mut p));
+        assert!((p["battery"]["drain_per_hour"].as_f64().unwrap() - 7.5).abs() < 1e-9);
+        assert!((seconds_to_empty(&p) - 28800.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn the_rate_differs_between_phones() {
+        // The whole pool shared one curve because every template left the rate
+        // unset; the repair gives each phone its own.
+        let mut fast = phone(json!({ "charging": false, "level": 0.86,
+            "discharging_time": 7200 }));
+        let mut slow = phone(json!({ "charging": false, "level": 0.29,
+            "discharging_time": 28800 }));
+        assert!(fix_phone_battery_drain(&mut fast));
+        assert!(fix_phone_battery_drain(&mut slow));
+        assert_ne!(fast["battery"]["drain_per_hour"], slow["battery"]["drain_per_hour"]);
+        assert!((seconds_to_empty(&fast) - 7200.0).abs() < 1.0);
+        assert!((seconds_to_empty(&slow) - 28800.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_rate_the_profile_names_is_kept() {
+        let mut p = phone(json!({ "charging": false, "level": 0.55,
+            "discharging_time": 21600, "drain_per_hour": 12.0 }));
+        let before = p.clone();
+        assert!(!fix_phone_battery_drain(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_charging_phone_is_left_alone() {
+        let mut p = phone(json!({ "charging": true, "level": 0.42,
+            "charging_time": 3600, "discharging_time": "Infinity" }));
+        let before = p.clone();
+        assert!(!fix_phone_battery_drain(&mut p));
+        assert_eq!(p, before);
+    }
+
+    #[test]
+    fn a_desktop_phone_and_a_bare_block_are_left_alone() {
+        let mut desktop = json!({
+            "navigator": { "platform": "macOS" },
+            "client_hints": { "mobile": false, "platform": "macOS" },
+            "battery": { "charging": false, "level": 0.5, "discharging_time": 21600 },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        let before = desktop.clone();
+        assert!(!fix_phone_battery_drain(&mut desktop));
+        assert_eq!(desktop, before);
+
+        // A field the template does not carry is the engine's own answer, not a claim.
+        let mut bare = phone(json!({ "charging": false, "level": 0.5 }));
+        assert!(!fix_phone_battery_drain(&mut bare));
+        assert!(bare["battery"].get("drain_per_hour").is_none());
+
+        let mut no_block = json!({
+            "navigator": { "platform": "Android" },
+            "client_hints": { "mobile": true, "platform": "Android" },
+        })
+        .as_object()
+        .unwrap()
+        .clone();
+        assert!(!fix_phone_battery_drain(&mut no_block));
+    }
 }
 
 #[cfg(test)]
@@ -752,6 +1300,132 @@ mod apple_webgpu_tests {
     }
 }
 
+#[cfg(test)]
+mod android_grease_tests {
+    use super::migrate_dir_to;
+    use serde_json::json;
+
+    /// The bundle's Android templates, in the shape they ship: brand present,
+    /// no GREASE at all, and the phone-only fields that must survive.
+    fn phone() -> serde_json::Value {
+        json!({
+            "name": "android-samsung-galaxy-s24-ultra",
+            "navigator": {
+                "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+                "platform": "Android", "platform_value": "Linux armv81", "max_touch_points": 5,
+            },
+            "client_hints": {
+                "brand": "Google Chrome", "brand_version": "156", "brand_full_version": "156.0.8078.48",
+                "platform_version": "16.0.0", "model": "SM-S928B", "architecture": "", "bitness": "", "mobile": true,
+            },
+            "screen": { "width": 412, "height": 892, "device_pixel_ratio": 2.625 },
+        })
+    }
+
+    #[test]
+    fn a_phone_template_gains_grease_and_keeps_its_own_fields() {
+        // Without GREASE the engine drops "Google Chrome" from userAgentData.brands,
+        // leaving a two-entry list no Chrome reports.
+        let dir = std::env::temp_dir().join(format!("shardx-android-grease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("android-samsung-galaxy-s24-ultra.json");
+        std::fs::write(&file, phone().to_string()).unwrap();
+
+        let n = migrate_dir_to(&dir, "156.0.8078.48", Some("Not:A-Brand"), Some("8"), None).unwrap();
+        assert_eq!(n, 1);
+
+        let got: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let ch = &got["client_hints"];
+        assert_eq!(ch["grease_brand"], "Not:A-Brand");
+        assert_eq!(ch["grease_version"], "8");
+        assert_eq!(ch["grease_full_version"], "8.0.0.0");
+        // The phone's own fields are untouched — an empty architecture stays empty,
+        // because Chromium's Android branch really does report one.
+        assert_eq!(ch["brand"], "Google Chrome");
+        assert_eq!(ch["model"], "SM-S928B");
+        assert_eq!(ch["architecture"], "");
+        assert_eq!(ch["bitness"], "");
+        assert_eq!(ch["platform_version"], "16.0.0");
+        assert_eq!(got["navigator"]["max_touch_points"], 5);
+        assert_eq!(got["screen"]["device_pixel_ratio"], 2.625);
+
+        assert_eq!(
+            migrate_dir_to(&dir, "156.0.8078.48", Some("Not:A-Brand"), Some("8"), None).unwrap(),
+            0,
+            "a second run must write nothing"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_manifest_without_grease_leaves_the_list_alone() {
+        // GREASE rotates per release and travels as data; absent means the
+        // manifest did not say, so nothing is invented.
+        let dir = std::env::temp_dir().join(format!("shardx-android-nogrease-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("android-samsung-galaxy-s24-ultra.json");
+        std::fs::write(&file, phone().to_string()).unwrap();
+
+        migrate_dir_to(&dir, "156.0.8078.48", None, None, None).unwrap();
+        let got: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(got["client_hints"].get("grease_brand").is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// A handset's `Sec-CH-UA-Platform-Version` is always `N.0.0` — Chromium reports
+/// the release number alone, never a point release. A phone carrying anything
+/// else was built while `randomize_platform_version` had no Android pool and
+/// every platform fell through to the template's own value, which for a phone
+/// preset taken from a Mac template was a macOS version ("15.6.1"). Such a
+/// profile answers `platform: Android` with an iOS-shaped version, a pair no
+/// handset reports, and the engine passes it through unchanged.
+fn android_shaped_version(v: &str) -> bool {
+    let mut parts = v.split('.');
+    let major = parts.next().and_then(|s| s.parse::<u32>().ok());
+    matches!((major, parts.next(), parts.next(), parts.next()),
+             (Some(m), Some("0"), Some("0"), None) if m >= 10)
+}
+
+/// Correct a phone's platform version to its template's own. The version is not
+/// an operator's choice — nothing in the form edits it, and `bbee2a5` made a new
+/// phone draw an Android release — so a phone carrying a desktop-shaped one is a
+/// profile from before that fix, and is answered from its template. A version
+/// already Android-shaped is left alone: it may be one this profile drew.
+fn fix_phone_platform_version(
+    cfg: &mut serde_json::Map<String, serde_json::Value>,
+    src: &serde_json::Value,
+) -> bool {
+    if !crate::space::profile::claims_mobile(cfg) {
+        return false;
+    }
+    let Some(want) = src
+        .pointer("/client_hints/platform_version")
+        .and_then(|v| v.as_str())
+        .filter(|s| android_shaped_version(s))
+    else {
+        return false;
+    };
+    let got = cfg
+        .get("client_hints")
+        .and_then(|c| c.get("platform_version"))
+        .and_then(|v| v.as_str());
+    if got.is_some_and(android_shaped_version) {
+        return false;
+    }
+    if let Some(ch) = cfg.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
+        ch.insert("platform_version".into(), serde_json::Value::from(want));
+    }
+    if let Some(nav) = cfg.get_mut("navigator").and_then(|v| v.as_object_mut()) {
+        if nav.contains_key("platform_version") {
+            nav.insert("platform_version".into(), serde_json::Value::from(want));
+        }
+    }
+    true
+}
+
 /// Fields a profile was created before the library had. A profile keeps its own
 /// copy of the fingerprint, so updating the library never reaches it; these are
 /// copied across by name, and only where the profile carries none of its own. A
@@ -777,39 +1451,157 @@ fn adopt_library_fields(dir: &Path) -> Result<usize> {
         }
         let Ok(text) = fs::read_to_string(&p) else { continue };
         let Ok(mut cfg) = serde_json::from_str::<serde_json::Value>(&text) else { continue };
-        let key = cfg
-            .pointer("/_meta/gpu_preset_id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty())
-            .or_else(|| cfg.get("name").and_then(|v| v.as_str()))
-            .map(String::from);
-        let Some(src) = key.as_deref().and_then(|k| lib.get(k)) else { continue };
-        let mut changed = false;
-        for key in ["fonts", "fonts_local"] {
-            if cfg.get(key).is_none() {
-                if let Some(v) = src.get(key) {
-                    cfg[key] = v.clone();
-                    changed = true;
-                }
-            }
+        if !adopt_into(&mut cfg, &lib) {
+            continue;
         }
-        // features live inside the webgpu block the profile already has; a
-        // profile without that block claims a machine with no adapter.
-        if cfg.pointer("/webgpu/features").is_none() {
-            if let Some(f) = src.pointer("/webgpu/features") {
-                if let Some(w) = cfg.get_mut("webgpu").and_then(|v| v.as_object_mut()) {
-                    w.insert("features".into(), f.clone());
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            if fs::write(&p, serde_json::to_string_pretty(&cfg).unwrap_or(text)).is_ok() {
-                n += 1;
-            }
+        if fs::write(&p, serde_json::to_string_pretty(&cfg).unwrap_or(text)).is_ok() {
+            n += 1;
         }
     }
     Ok(n)
+}
+
+/// The per-profile half of `adopt_library_fields`, so a test can hand it a
+/// library of its own instead of the machine's. Answers whether it changed
+/// anything.
+fn adopt_into(
+    cfg: &mut serde_json::Value,
+    lib: &std::collections::HashMap<String, serde_json::Value>,
+) -> bool {
+    let key = cfg
+        .pointer("/_meta/gpu_preset_id")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| cfg.get("name").and_then(|v| v.as_str()))
+        .map(String::from);
+    let Some(src) = key.as_deref().and_then(|k| lib.get(k)) else { return false };
+    let mut changed = false;
+    for key in ["fonts", "fonts_local"] {
+        if cfg.get(key).is_none() {
+            if let Some(v) = src.get(key) {
+                cfg[key] = v.clone();
+                changed = true;
+            }
+        }
+    }
+    // features live inside the webgpu block the profile already has; a
+    // profile without that block claims a machine with no adapter.
+    if cfg.pointer("/webgpu/features").is_none() {
+        if let Some(f) = src.pointer("/webgpu/features") {
+            if let Some(w) = cfg.get_mut("webgpu").and_then(|v| v.as_object_mut()) {
+                w.insert("features".into(), f.clone());
+                changed = true;
+            }
+        }
+    }
+    // A phone keeps the version it was built with; one drawn before the
+    // Android pool existed is the template's, which may be a Mac's.
+    if let Some(obj) = cfg.as_object_mut() {
+        changed |= fix_phone_platform_version(obj, src);
+        // And one drawn from a template from before ANGLE was Android's only
+        // WebGL backend carries the bare driver pair the engine would hand to
+        // the page.
+        changed |= fix_phone_webgl_angle(obj);
+        // A saved profile carries its template's screen, touchscreen and battery
+        // values, so a profile from a defective template needs the same
+        // correction.
+        changed |= fix_phone_screen_avail(obj);
+        changed |= fix_phone_touch_points(obj);
+        changed |= fix_phone_battery_drain(obj);
+    }
+    changed
+}
+
+#[cfg(test)]
+mod phone_platform_version_tests {
+    use super::{adopt_into, android_shaped_version};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn lib() -> HashMap<String, serde_json::Value> {
+        let mut m = HashMap::new();
+        m.insert(
+            "android-vivo-y19s-5g".to_string(),
+            json!({
+                "name": "android-vivo-y19s-5g",
+                "navigator": { "platform": "Android", "platform_value": "Linux armv81" },
+                "client_hints": { "mobile": true, "platform": "Android", "platform_version": "16.0.0" },
+            }),
+        );
+        m.insert(
+            "mac-m3-air13".to_string(),
+            json!({
+                "name": "mac-m3-air13",
+                "navigator": { "platform": "macOS", "platform_version": "15.6.1" },
+                "client_hints": { "mobile": false, "platform": "macOS", "platform_version": "15.6.1" },
+            }),
+        );
+        m
+    }
+
+    fn phone(preset: &str, pv: &str) -> serde_json::Value {
+        json!({
+            "name": "shop phone",
+            "_meta": { "gpu_preset_id": preset },
+            "navigator": { "platform": "Android", "platform_version": pv },
+            "client_hints": { "mobile": true, "platform": "Android", "platform_version": pv },
+        })
+    }
+
+    #[test]
+    fn only_a_release_shaped_version_is_android() {
+        for v in ["13.0.0", "14.0.0", "15.0.0", "16.0.0"] {
+            assert!(android_shaped_version(v), "{v} is what a handset reports");
+        }
+        // The macOS pool, and an Android point release Chromium never reports.
+        for v in ["15.6.1", "14.7.2", "26.1", "15.4", "15.1.0"] {
+            assert!(!android_shaped_version(v), "{v} is no Android release");
+        }
+    }
+
+    #[test]
+    fn a_phone_keeps_the_version_it_drew() {
+        // It may be one this profile drew, and the template's is only one of
+        // the several an Android release pool offers.
+        let mut cfg = phone("android-vivo-y19s-5g", "14.0.0");
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "14.0.0");
+    }
+
+    #[test]
+    fn a_phone_from_before_the_android_pool_gains_its_template_version() {
+        // 15.6.1 is the macOS pool's, so this phone answers an iOS-shaped
+        // version — the pair no handset reports, and the one the engine
+        // passes through untouched.
+        let mut cfg = phone("android-vivo-y19s-5g", "15.6.1");
+        assert!(adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "16.0.0");
+        assert_eq!(cfg["navigator"]["platform_version"], "16.0.0");
+        // Everything else the profile owns is untouched.
+        assert_eq!(cfg["_meta"]["gpu_preset_id"], "android-vivo-y19s-5g");
+        assert_eq!(cfg["name"], "shop phone");
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_version() {
+        // 15.6.1 is a real macOS release, so it is right where it stands.
+        let mut cfg = json!({
+            "name": "desk",
+            "_meta": { "gpu_preset_id": "mac-m3-air13" },
+            "navigator": { "platform": "macOS", "platform_version": "15.6.1" },
+            "client_hints": { "mobile": false, "platform": "macOS", "platform_version": "15.6.1" },
+        });
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "15.6.1");
+    }
+
+    #[test]
+    fn a_phone_with_no_library_entry_is_left_alone() {
+        // The operator's own capture: no template says what its version is.
+        let mut cfg = phone("my own capture", "15.6.1");
+        assert!(!adopt_into(&mut cfg, &lib()));
+        assert_eq!(cfg["client_hints"]["platform_version"], "15.6.1");
+    }
 }
 
 #[cfg(test)]
@@ -870,16 +1662,25 @@ fn migrate_all_to(
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 3;
+const MIGRATION_REV: u32 = 8;
 
 /// What a migration was applied for; the install path and the start share it.
+///
+/// The fingerprint archive's etag belongs in here: `install_fingerprints` copies the
+/// archive verbatim, so a re-seed overwrites migrated templates with whatever the
+/// bundle ships. The bundle's 50 Android templates carry no GREASE at all, and a
+/// phone without it loses "Google Chrome" from `userAgentData.brands` — a brand
+/// list only "Chromium" and the GREASE placeholder answers, which no Chrome does.
+/// Without the etag in the signature that re-seed left the library unmigrated until
+/// some unrelated manifest field happened to change.
 fn migration_signature(target: &str, m: &RemoteManifest) -> String {
     format!(
-        "{target}|{}|{}|{}|{}|m{MIGRATION_REV}",
+        "{target}|{}|{}|{}|{}|{}|m{MIGRATION_REV}",
         m.grease_brand.as_deref().unwrap_or(""),
         m.grease_version.as_deref().unwrap_or(""),
         m.tls.as_ref().map(|t| t.to_string()).unwrap_or_default(),
         m.engine_build.as_deref().unwrap_or(""),
+        m.archives.get(FINGERPRINTS_ARCHIVE_KEY).map(|s| s.as_str()).unwrap_or(""),
     )
 }
 

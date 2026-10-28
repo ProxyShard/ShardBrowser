@@ -213,6 +213,20 @@ fn fill_window_from_screen(
 /// This computer's monitor: width and height in CSS px, and its pixel ratio.
 pub type HostScreen = (i64, i64, f64);
 
+/// Whether this launch reports the host's screen, the global switch being
+/// "real". A profile whose resolution the operator picked is left out, or the
+/// switch would report the host's screen over exactly the one they asked for.
+/// A phone is left out too: its screen is the handset's, and this computer's
+/// monitor over it is the one reading no real phone could give — a 2560x1440
+/// phone is a profile that says it is a phone and is not one.
+fn wants_real_screen(
+    mode: Option<&str>,
+    picked_by_hand: bool,
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    mode == Some("real") && !picked_by_hand && !profile::claims_mobile(config)
+}
+
 /// A new Windows or Linux profile claims this computer's screen (`host`, in CSS
 /// px, with its pixel ratio), keeping the fingerprint's taskbar insets; macOS,
 /// phones, a screen picked by hand (`_meta.screen_custom`) and a profile that
@@ -609,17 +623,24 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
         false
     };
 
-    // "Real screen" is a global switch, and it exists for macOS profiles. A
-    // Win/Linux profile whose resolution the operator picked in the editor is
-    // left out of it, or the switch would report the host's screen over exactly
-    // the one they asked for.
+    // "Real screen" is a global switch, and it exists for desktop profiles.
     let s = settings::load()?;
-    let use_real_screen =
-        s.screen_resolution_mode.as_deref() == Some("real") && !input.stored.meta.screen_custom;
+    let use_real_screen = wants_real_screen(
+        s.screen_resolution_mode.as_deref(),
+        input.stored.meta.screen_custom,
+        &input.stored.config,
+    );
 
     // Strip `_meta` wrapper and resolve "auto" sentinels before serialising.
     let mut raw = engine_config(&input.stored);
     resolve_auto_fields(&mut raw, input.proxy.as_ref()).await;
+    // Profiles saved before the library carried the block would otherwise offer
+    // this computer's voices from an Android handset. Filled here rather than at
+    // save so a profile that already exists is fixed on its next start.
+    crate::ensure_phone_voices(&mut raw);
+    // And a phone that carries no platform version would answer this computer's
+    // macOS release under an Android platform name, so one is drawn for it.
+    crate::ensure_phone_platform_version(&mut raw);
     // The proxy probe and the geo lookup are the slow part: a cancel made
     // while they ran stops here, before anything is written.
     check_cancel(&input.profile_id)?;
@@ -1459,7 +1480,7 @@ mod tests {
 
     // ---- A new Windows/Linux profile takes this computer's screen ----
 
-    use super::claim_host_screen;
+    use super::{claim_host_screen, wants_real_screen};
 
     const WIN_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36";
     const LINUX_UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36";
@@ -1526,6 +1547,24 @@ mod tests {
             assert!(!claim_host_screen(&mut raw, Some((2560, 1440, 1.5))), "{platform}");
             assert_eq!(raw, before, "{platform}");
         }
+    }
+
+    /// The global "real screen" switch is for desktops. A phone given this
+    /// computer's monitor says it is a handset and then reports a screen no
+    /// handset has — the pair deviceinfo.me flags first.
+    #[test]
+    fn the_real_screen_switch_leaves_a_phone_its_own_screen() {
+        let phone = template("Android", PHONE_UA);
+        assert!(!wants_real_screen(Some("real"), false, &phone));
+        // A handset whose platform says plain "Linux" is still a phone.
+        let linux_phone = template("Linux", PHONE_UA);
+        assert!(!wants_real_screen(Some("real"), false, &linux_phone));
+        // A desktop still takes the host screen, and a hand-picked resolution
+        // still wins over the switch.
+        let desktop = template("Windows", WIN_UA);
+        assert!(wants_real_screen(Some("real"), false, &desktop));
+        assert!(!wants_real_screen(Some("real"), true, &desktop));
+        assert!(!wants_real_screen(Some("fingerprint"), false, &desktop));
     }
 
     #[test]

@@ -322,6 +322,8 @@ async fn persist_created(door: Door, t: &Ticket, folder_override: Option<String>
         crate::notify_store_changed("proxies");
     }
     crate::ensure_default_noise(&mut cfg);
+    crate::ensure_phone_voices(&mut cfg);
+    crate::ensure_phone_platform_version(&mut cfg);
     if let Some(hz) = body.refresh_rate {
         apply_refresh_rate(&mut cfg, hz).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     }
@@ -380,6 +382,8 @@ async fn create_temporary(Extension(t): Extension<Ticket>, Json(body): Json<Temp
         cfg.insert("name".into(), json!(n));
     }
     crate::ensure_default_noise(&mut cfg);
+    crate::ensure_phone_voices(&mut cfg);
+    crate::ensure_phone_platform_version(&mut cfg);
     if let Some(n) = body.noise.as_ref() {
         apply_noise_overrides(&mut cfg, n)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
@@ -954,6 +958,7 @@ fn normalize_platform(p: &str) -> String {
         "windows" | "win" => "Windows".into(),
         "linux" => "Linux".into(),
         "mac" | "macos" | "osx" | "darwin" => "macOS".into(),
+        "android" | "phone" | "mobile" => "Android".into(),
         other => other.to_string(),
     }
 }
@@ -968,11 +973,18 @@ fn random_fingerprint_for(platform: Option<&str>) -> Result<String, ApiError> {
     if all.is_empty() {
         return Err(err(StatusCode::NOT_FOUND, "fingerprint library is empty"));
     }
-    let matching: Vec<crate::fingerprints::LibraryEntry> = all
-        .iter()
-        .filter(|e| e.platform.eq_ignore_ascii_case(&want))
-        .cloned()
-        .collect();
+    // Library entries keep the template's navigator.platform, which is "Android"
+    // for a phone; the OS name alone matched none of them and the caller got a
+    // desktop profile instead. A "Linux arm…" platform is a phone too.
+    let phone = want == "Android";
+    let matches = |e: &crate::fingerprints::LibraryEntry| {
+        if phone {
+            e.platform.eq_ignore_ascii_case("android") || e.platform.to_ascii_lowercase().starts_with("linux arm")
+        } else {
+            e.platform.eq_ignore_ascii_case(&want)
+        }
+    };
+    let matching: Vec<crate::fingerprints::LibraryEntry> = all.iter().filter(|e| matches(e)).cloned().collect();
     let pool = if matching.is_empty() { all } else { matching };
     let idx = (uuid::Uuid::new_v4().as_bytes()[0] as usize) % pool.len();
     Ok(pool[idx].id.clone())

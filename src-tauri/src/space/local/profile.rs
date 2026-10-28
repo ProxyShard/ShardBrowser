@@ -876,7 +876,7 @@ mod tests {
         assert!(m(r#"{"navigator":{"user_agent":"Mozilla/5.0 (Linux; Android 15) Chrome"}}"#));
         assert!(!m(r#"{"navigator":{"user_agent":"Mozilla/5.0 (Macintosh) Chrome"}}"#));
         // navigator.platform is the field that lies: Chrome for Android says
-        // "Linux armv8l" there, and a desktop Linux profile says "Linux x86_64".
+        // "Linux armv81" there, and a desktop Linux profile says "Linux x86_64".
         assert!(!m(r#"{"navigator":{"platform":"Linux armv8l"}}"#));
     }
 }

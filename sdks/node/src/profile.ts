@@ -218,6 +218,59 @@ export function applyChromeBrand(config: Record<string, unknown>): void {
   ch["brand"] = CHROME_BRAND;
 }
 
+/** The voices an Android handset offers. Chrome on Android enumerates the Google
+ *  TTS engine's voices, and the names are the engine's own: the same "Google
+ *  <language>" roster Chrome ships on Linux, every one of them network-backed. */
+export const ANDROID_SPEECH_VOICES: readonly (readonly [string, string])[] = [
+  ["Google US English", "en-US"],
+  ["Google UK English Female", "en-GB"],
+  ["Google UK English Male", "en-GB"],
+  ["Google Deutsch", "de-DE"],
+  ["Google español", "es-ES"],
+  ["Google español de Estados Unidos", "es-US"],
+  ["Google français", "fr-FR"],
+  ["Google हिन्दी", "hi-IN"],
+  ["Google Bahasa Indonesia", "id-ID"],
+  ["Google italiano", "it-IT"],
+  ["Google 日本語", "ja-JP"],
+  ["Google 한국의", "ko-KR"],
+  ["Google Nederlands", "nl-NL"],
+  ["Google polski", "pl-PL"],
+  ["Google português do Brasil", "pt-BR"],
+  ["Google русский", "ru-RU"],
+  ["Google 普通话（中国大陆）", "zh-CN"],
+  ["Google 粤語（香港）", "zh-HK"],
+  ["Google 國語（臺灣）", "zh-TW"],
+];
+
+/**
+ * Give a profile that claims a phone the handset's voices when it names none.
+ *
+ * Without a block the engine enumerates the voices of the machine it runs on: an
+ * Android profile on a Mac offered the Mac's 63 Chrome voices, all local, which
+ * is the list no handset has. An empty list is not the fix either — the engine
+ * reads it as no claim and falls back to the host — so the roster has to be
+ * there. A phone that declares its own voices is left alone. Mutates `config`.
+ */
+export function applyPhoneVoices(config: Record<string, unknown>): void {
+  const nav = (config["navigator"] ?? {}) as Record<string, unknown>;
+  const ch = (config["client_hints"] ?? {}) as Record<string, unknown>;
+  const phone =
+    ch["mobile"] === true ||
+    String(ch["platform"] ?? "").toLowerCase().startsWith("android") ||
+    String(nav["user_agent"] ?? "").toLowerCase().includes("android");
+  if (!phone) return;
+  const speech = config["speech"] as Record<string, unknown> | undefined;
+  const declared = speech?.["voices"];
+  if (Array.isArray(declared) && declared.length > 0) return;
+  // Chrome's rule: the first voice in the list is the default one.
+  config["speech"] = {
+    voices: ANDROID_SPEECH_VOICES.map(([name, lang], i) => ({
+      name, lang, local_service: false, is_default: i === 0,
+    })),
+  };
+}
+
 /** WebGPU features Chrome 156 reports on Apple M-series that older templates lack. */
 const APPLE_WEBGPU_ADDED = ["texture-compression-unaligned"];
 

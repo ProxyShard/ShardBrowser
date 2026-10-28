@@ -55,7 +55,7 @@ fn tag_color_for(platform: &str) -> String {
         "macOS" => "#8b5cf6".into(),
         "Windows" => "#5dade2".into(),
         "Linux" => "#4ade80".into(),
-        // navigator.platform on a phone is "Linux armv8l", so a handset is
+        // navigator.platform on a phone is "Linux armv81", so a handset is
         // matched on the prefix rather than on equality.
         p if p.starts_with("Android") || p.starts_with("Linux arm") => "#fb923c".into(),
         _ => "#a78bfa".into(),

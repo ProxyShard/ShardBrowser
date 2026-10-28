@@ -18,8 +18,13 @@ pub enum ScreenStrategy {
     UseHost,
 }
 
-/// Default screen mode for a `navigator.platform`, matching the launcher.
-pub fn default_screen_mode_for(platform: &str) -> ScreenStrategy {
+/// Default screen mode for a `navigator.platform`, matching the launcher. A
+/// phone is `Profile` whatever its platform says: a handset reports "Linux"
+/// too, and the host monitor is not a phone screen.
+pub fn default_screen_mode_for(platform: &str, mobile: bool) -> ScreenStrategy {
+    if mobile {
+        return ScreenStrategy::Profile;
+    }
     match platform {
         "macOS" => ScreenStrategy::CapToHost,
         "Windows" | "Linux" => ScreenStrategy::UseHost,

@@ -159,6 +159,14 @@ const WINDOWS_PLATFORM_VERSIONS: &[&str] = &[
     "17.0.0",
 ];
 
+// Android release version, as Sec-CH-UA-Platform-Version reports it. Weighted to
+// the releases a handset in use still runs; every entry is a version Chrome ships on.
+const ANDROID_PLATFORM_VERSIONS: &[&str] = &[
+    "13.0.0", "14.0.0", "14.0.0",
+    "15.0.0", "15.0.0", "15.0.0",
+    "16.0.0", "16.0.0",
+];
+
 // LTS kernels + current mainline.
 const LINUX_PLATFORM_VERSIONS: &[&str] = &[
     "5.15.0", "6.1.0", "6.5.0",
@@ -173,9 +181,13 @@ pub(crate) fn randomize_platform_version(payload: &mut serde_json::Map<String, V
         .and_then(|n| n.get("platform"))
         .and_then(|v| v.as_str())
         .unwrap_or("");
+    // A handset's navigator.platform says "Android" ("Linux armv81" when imported);
+    // matching only the desktop names left phones on the template's own version.
+    let phone = platform.starts_with("Android") || platform.starts_with("Linux arm");
     let pool: &[&str] = match platform {
         "macOS"   => MACOS_PLATFORM_VERSIONS,
         "Windows" => WINDOWS_PLATFORM_VERSIONS,
+        _ if phone => ANDROID_PLATFORM_VERSIONS,
         "Linux"   => LINUX_PLATFORM_VERSIONS,
         _         => return,
     };
@@ -288,6 +300,21 @@ pub(crate) fn randomize_hardware(payload: &mut serde_json::Map<String, Value>) {
 
     let (cores, mem): (u32, u32) = if let Some(pool) = mac_hw_configs(model) {
         pool[pick8() % pool.len()]
+    } else if platform.starts_with("Android") || platform.starts_with("Linux arm") {
+        // A handset's core count is its SoC's and its memory the bucket the model
+        // is sold in: both describe the real device the template was sampled
+        // from, so they stay as the template has them. The desktop tables below
+        // would read this computer's x86 core count — a number that says nothing
+        // about a phone, and one no handset of that model has. A template that
+        // names neither (a hand-written import) gets plausible phone values.
+        let nav = payload.get("navigator");
+        let num = |k: &str, fallback: u32| -> u32 {
+            nav.and_then(|n| n.get(k))
+                .and_then(|v| v.as_u64())
+                .map(|v| v as u32)
+                .unwrap_or(fallback)
+        };
+        (num("hardware_concurrency", 8), num("device_memory", 8))
     } else if platform == "Windows" || platform == "Linux" {
         let c = host_logical_cores();
         // Real x86 logical-core counts (SMT + Intel hybrid); bracket host within [C-4, C+2].
@@ -360,31 +387,68 @@ pub fn clamp_screen_to_real_display(
         return;
     }
 
-    let Some(scr) = payload.get("screen").and_then(|v| v.as_object()) else {
-        eprintln!("[launcher] display: profile has no `screen` block — clamp skipped");
+    // A phone's screen is the handset's, never this monitor's. The clamp exists
+    // so a window can fit the display it opens on; a handset's screen is not a
+    // window and nothing about it is this computer's to rewrite. `wants_real_screen`
+    // already leaves a phone out of the host-screen mode for the same reason, so
+    // letting the clamp through here would put the host's resolution on the one
+    // reading no real phone can give — and it did: every Android profile opened
+    // on a 1440x900 monitor answered that instead of its own screen.
+    if crate::space::profile::claims_mobile(payload) {
+        eprintln!("[launcher] display: phone profile — keeping its own screen");
         return;
+    }
+    match clamp_screen_block(payload, real_w, real_h, scale) {
+        ClampOutcome::Clamped { fp_w, fp_h } => eprintln!(
+            "[launcher] display: CLAMPED screen to real {real_w}x{real_h} \
+             (dpr {scale}) — FP claimed {fp_w}x{fp_h}"
+        ),
+        ClampOutcome::Kept => eprintln!(
+            "[launcher] display: real {real_w}x{real_h} >= FP — keeping FP screen"
+        ),
+        ClampOutcome::NoScreen => {
+            eprintln!("[launcher] display: profile has no usable `screen` block — clamp skipped")
+        }
+    }
+}
+
+/// What `clamp_screen_block` did, so the caller can say so.
+#[derive(Debug, PartialEq, Eq)]
+enum ClampOutcome {
+    /// The screen was rewritten to the host's; carries what the profile claimed.
+    Clamped { fp_w: i64, fp_h: i64 },
+    /// The host display could hold the claimed screen, so it stands.
+    Kept,
+    /// No usable `screen` block to work from.
+    NoScreen,
+}
+
+/// Fit a profile's declared screen and window to the display it will open on.
+///
+/// A screen the profile declares is kept whenever the real display can hold it;
+/// the clamp exists for the other case, where a window simply cannot be bigger
+/// than the monitor it opens on. This used to be the macOS rule only, and
+/// Windows/Linux overwrote the declared screen with the host display on every
+/// start — handing every profile on one machine the SAME high-entropy pair.
+///
+/// Split from the monitor read so the rule itself can be tested; a handset is
+/// never sent here (`claims_mobile` is checked before the call).
+fn clamp_screen_block(
+    payload: &mut serde_json::Map<String, Value>,
+    real_w: i64,
+    real_h: i64,
+    scale: f64,
+) -> ClampOutcome {
+    let Some(scr) = payload.get("screen").and_then(|v| v.as_object()) else {
+        return ClampOutcome::NoScreen;
     };
     let fp_w = scr.get("width").and_then(|v| v.as_i64()).unwrap_or(0);
     let fp_h = scr.get("height").and_then(|v| v.as_i64()).unwrap_or(0);
-    eprintln!("[launcher] display: fingerprint screen={fp_w}x{fp_h}");
     if fp_w <= 0 || fp_h <= 0 {
-        return;
+        return ClampOutcome::NoScreen;
     }
-    // A screen the profile declares is kept whenever the real display can hold
-    // it; the clamp exists for the other case, where a window simply cannot be
-    // bigger than the monitor it opens on.
-    //
-    // This used to be the macOS rule only, and Windows/Linux overwrote the
-    // declared screen with the host display on every start. That handed every
-    // profile on one machine the SAME high-entropy pair — on a 5120x1440
-    // monitor, all of them said 5120x1440 — which is the opposite of what a
-    // per-profile screen is for, and it ignored what the profile's own API
-    // caller had asked for.
     if real_w >= fp_w && real_h >= fp_h {
-        eprintln!(
-            "[launcher] display: real {real_w}x{real_h} >= fp {fp_w}x{fp_h} — keeping FP screen"
-        );
-        return;
+        return ClampOutcome::Kept;
     }
 
     // Preserve FP menubar/dock insets for avail_*.
@@ -414,10 +478,7 @@ pub fn clamp_screen_to_real_display(
         win.insert("outer_height".into(), Value::from(outer_h));
         win.insert("inner_height".into(), Value::from((outer_h - 87).max(1)));
     }
-    eprintln!(
-        "[launcher] display: CLAMPED screen to real {real_w}x{real_h} \
-         (avail {avail_w}x{avail_h}, dpr {scale}) — FP claimed {fp_w}x{fp_h}"
-    );
+    ClampOutcome::Clamped { fp_w, fp_h }
 }
 
 /// `epoch` is the space's edition the interface read under: a save asked in
@@ -442,6 +503,8 @@ pub fn enrich_new_config(
 ) {
     randomize_platform_version(obj);
     randomize_hardware(obj);
+    ensure_phone_voices(obj);
+    ensure_phone_platform_version(obj);
     if let Some(w) = window {
         clamp_screen_to_real_display(w, obj);
     }
@@ -1382,6 +1445,105 @@ pub fn ensure_default_noise(cfg: &mut serde_json::Map<String, Value>) {
     );
 }
 
+/// The voices an Android handset offers. Chrome on Android enumerates the
+/// Google TTS engine's voices rather than the machine's, and the names are the
+/// engine's own — the same "Google <language>" roster Chrome ships on Linux,
+/// every one of them network-backed. `is_default` is Chrome's own rule: the
+/// first voice in the list is the default one.
+const ANDROID_SPEECH_VOICES: &[(&str, &str)] = &[
+    ("Google US English", "en-US"),
+    ("Google UK English Female", "en-GB"),
+    ("Google UK English Male", "en-GB"),
+    ("Google Deutsch", "de-DE"),
+    ("Google español", "es-ES"),
+    ("Google español de Estados Unidos", "es-US"),
+    ("Google français", "fr-FR"),
+    ("Google हिन्दी", "hi-IN"),
+    ("Google Bahasa Indonesia", "id-ID"),
+    ("Google italiano", "it-IT"),
+    ("Google 日本語", "ja-JP"),
+    ("Google 한국의", "ko-KR"),
+    ("Google Nederlands", "nl-NL"),
+    ("Google polski", "pl-PL"),
+    ("Google português do Brasil", "pt-BR"),
+    ("Google русский", "ru-RU"),
+    ("Google\u{a0}普通话（中国大陆）", "zh-CN"),
+    ("Google\u{a0}粤語（香港）", "zh-HK"),
+    ("Google 國語（臺灣）", "zh-TW"),
+];
+
+/// Add the voices block to a profile that claims a phone and carries none.
+///
+/// Without a block the engine enumerates the voices of the machine the launcher
+/// runs on: an Android profile on this computer offered its Mac's 63 Chrome
+/// voices, all local, which is the list no handset has. Every desktop template
+/// in the library carries a block, so this is only ever a phone, and only when
+/// the template, an imported config or an older profile left it out. An empty
+/// list is not the fix: the engine reads it as no claim and falls back to the
+/// host, so the roster itself has to be there.
+pub fn ensure_phone_voices(cfg: &mut serde_json::Map<String, Value>) {
+    if !space::profile::claims_mobile(cfg) {
+        return;
+    }
+    let declared = cfg
+        .get("speech")
+        .and_then(|s| s.get("voices"))
+        .and_then(|v| v.as_array())
+        .map(|v| !v.is_empty())
+        .unwrap_or(false);
+    if declared {
+        return;
+    }
+    let voices: Vec<Value> = ANDROID_SPEECH_VOICES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, lang))| {
+            serde_json::json!({
+                "name": name,
+                "lang": lang,
+                "local_service": false,
+                "is_default": i == 0,
+            })
+        })
+        .collect();
+    cfg.insert("speech".into(), serde_json::json!({ "voices": voices }));
+}
+
+/// Fill a phone's `client_hints.platform_version` when the profile carries none.
+///
+/// A blank or absent version is not "no claim" to the engine — it answers the
+/// HOST's release instead. An Android profile started on this Mac reported
+/// `Sec-CH-UA-Platform-Version: 27.0.1`, which is macOS, so a handset claimed
+/// a desktop release under an Android platform name. Every bundled template
+/// carries a version, so this only reaches a profile that lost it: an imported
+/// config, a hand-edited one, or one drawn before the Android pool existed. A
+/// version already present is kept — it may be one this profile drew.
+pub fn ensure_phone_platform_version(cfg: &mut serde_json::Map<String, Value>) {
+    if !space::profile::claims_mobile(cfg) {
+        return;
+    }
+    let declared = cfg
+        .get("client_hints")
+        .and_then(|c| c.get("platform_version"))
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.trim().is_empty());
+    if declared {
+        return;
+    }
+    let pick_idx = (uuid::Uuid::new_v4().as_bytes()[0] as usize) % ANDROID_PLATFORM_VERSIONS.len();
+    let version = Value::String(ANDROID_PLATFORM_VERSIONS[pick_idx].to_string());
+    if let Some(ch) = cfg.get_mut("client_hints").and_then(|v| v.as_object_mut()) {
+        ch.insert("platform_version".into(), version);
+    } else {
+        // No client_hints block at all: one holding just this is what the
+        // engine reads the version from, and an absent block answers the host.
+        cfg.insert(
+            "client_hints".into(),
+            serde_json::json!({ "platform_version": ANDROID_PLATFORM_VERSIONS[pick_idx] }),
+        );
+    }
+}
+
 #[derive(serde::Serialize)]
 pub struct PresetEnrichPicks {
     pub hardware_concurrency: u32,
@@ -1418,14 +1580,18 @@ fn enrich_picks_for_preset(preset_id: String) -> Result<PresetEnrichPicks, Strin
         .get("navigator")
         .and_then(|v| v.as_object())
         .ok_or("internal: navigator missing after randomize")?;
-    let cores = nav
-        .get("hardware_concurrency")
-        .and_then(|v| v.as_u64())
-        .ok_or("internal: hardware_concurrency missing")? as u32;
-    let mem = nav
-        .get("device_memory")
-        .and_then(|v| v.as_u64())
-        .ok_or("internal: device_memory missing")? as u32;
+    // A platform no table covers (macOS in a build without a Mac model id, say)
+    // keeps the template's own pair rather than failing the call: the form's
+    // fallback is meant for a backend that cannot answer, not for one that can.
+    let templated = entry.payload.get("navigator");
+    let num = |k: &str, fallback: u64| -> u64 {
+        nav.get(k)
+            .or_else(|| templated.and_then(|n| n.get(k)))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(fallback)
+    };
+    let cores = num("hardware_concurrency", 8) as u32;
+    let mem = num("device_memory", 8) as u32;
     let pv = nav
         .get("platform_version")
         .and_then(|v| v.as_str())
@@ -3045,4 +3211,270 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         first.append(&MenuItem::with_id(app, "app_quit", label, true, Some("CmdOrCtrl+Q"))?)?;
     }
     Ok(menu)
+}
+
+#[cfg(test)]
+mod mobile_randomize_tests {
+    use super::*;
+
+    fn phone_nav() -> Value {
+        serde_json::json!({
+            "platform": "Android",
+            "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36",
+            "hardware_concurrency": 8,
+            "device_memory": 8.0
+        })
+    }
+
+    #[test]
+    fn a_phone_gets_an_android_version_not_a_desktop_one() {
+        for _ in 0..200 {
+            let mut p = serde_json::Map::new();
+            p.insert("navigator".into(), phone_nav());
+            p.insert("client_hints".into(), serde_json::json!({ "mobile": true }));
+            randomize_platform_version(&mut p);
+            let v = p["navigator"]["platform_version"].as_str().unwrap().to_string();
+            assert!(
+                ANDROID_PLATFORM_VERSIONS.contains(&v.as_str()),
+                "a phone must never be handed {v}"
+            );
+            assert_eq!(p["client_hints"]["platform_version"], v);
+        }
+    }
+
+    #[test]
+    fn an_imported_linux_arm_phone_is_a_phone() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), serde_json::json!({ "platform": "Linux armv8l" }));
+        randomize_platform_version(&mut p);
+        let v = p["navigator"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_keeps_its_own_cores_and_memory() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        for _ in 0..50 {
+            randomize_hardware(&mut p);
+            assert_eq!(p["navigator"]["hardware_concurrency"], 8);
+            assert_eq!(p["navigator"]["device_memory"], 8.0);
+        }
+    }
+
+    #[test]
+    fn a_desktop_still_gets_a_desktop_version() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), serde_json::json!({ "platform": "macOS" }));
+        randomize_platform_version(&mut p);
+        let v = p["navigator"]["platform_version"].as_str().unwrap();
+        assert!(MACOS_PLATFORM_VERSIONS.contains(&v));
+        assert!(!ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_is_given_the_handsets_voices_not_this_computers() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        ensure_phone_voices(&mut p);
+        let voices = p["speech"]["voices"].as_array().expect("a voices list");
+        assert_eq!(voices.len(), ANDROID_SPEECH_VOICES.len());
+        // Chrome's rule: the first voice in the list is the default one.
+        assert_eq!(voices[0]["is_default"], true);
+        assert_eq!(voices[0]["name"], "Google US English");
+        assert!(voices[1..].iter().all(|v| v["is_default"] == false));
+        // Android's voices come from Google TTS, so none of them is on the device.
+        assert!(voices.iter().all(|v| v["local_service"] == false));
+        // And the engine reads these two fields for every voice it lists.
+        assert!(voices.iter().all(|v| v["name"].is_string() && v["lang"].is_string()));
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_own_voices() {
+        // Every desktop template carries a block already; the helper must not
+        // replace it with a handset's.
+        let mut p = serde_json::Map::new();
+        p.insert(
+            "navigator".into(),
+            serde_json::json!({
+                "platform": "macOS",
+                "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/156.0.0.0 Safari/537.36"
+            }),
+        );
+        p.insert(
+            "speech".into(),
+            serde_json::json!({ "voices": [{ "name": "Samantha", "lang": "en-US", "local_service": true, "is_default": true }] }),
+        );
+        ensure_phone_voices(&mut p);
+        assert_eq!(p["speech"]["voices"].as_array().unwrap().len(), 1);
+        assert_eq!(p["speech"]["voices"][0]["name"], "Samantha");
+    }
+
+    #[test]
+    fn a_phone_that_declares_its_own_voices_is_left_alone() {
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "speech".into(),
+            serde_json::json!({ "voices": [{ "name": "English (United States)", "lang": "en-US", "local_service": true, "is_default": true }] }),
+        );
+        ensure_phone_voices(&mut p);
+        let voices = p["speech"]["voices"].as_array().unwrap();
+        assert_eq!(voices.len(), 1);
+        assert_eq!(voices[0]["name"], "English (United States)");
+    }
+
+    #[test]
+    fn an_empty_voice_list_is_not_a_claim() {
+        // The engine reads an empty list as none and enumerates the host's
+        // voices anyway, so a phone carrying one still needs the roster.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert("speech".into(), serde_json::json!({ "voices": [] }));
+        ensure_phone_voices(&mut p);
+        assert_eq!(
+            p["speech"]["voices"].as_array().unwrap().len(),
+            ANDROID_SPEECH_VOICES.len()
+        );
+    }
+
+    #[test]
+    fn a_phone_with_no_platform_version_is_given_an_android_release() {
+        // A blank version is not "no claim" to the engine: it answers the HOST's
+        // release, so this Mac's 27.0.1 under an Android platform name.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert("client_hints".into(), serde_json::json!({ "mobile": true }));
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().expect("a version");
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v), "{v} is an Android release");
+        assert!(!MACOS_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_blank_platform_version_counts_as_none() {
+        // The templates leave the field out, but a hand-edited or imported
+        // profile can carry it empty — the engine answers the host for that too.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": true, "platform_version": "" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_phone_that_declares_its_own_version_keeps_it() {
+        // It may be one this profile drew, and the pool offers several.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": true, "platform_version": "13.0.0" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        assert_eq!(p["client_hints"]["platform_version"], "13.0.0");
+    }
+
+    #[test]
+    fn a_phone_with_no_client_hints_block_still_gets_a_version() {
+        // The engine reads the version from client_hints alone, so the block
+        // has to exist for the claim to reach it.
+        let mut p = serde_json::Map::new();
+        p.insert("navigator".into(), phone_nav());
+        ensure_phone_platform_version(&mut p);
+        let v = p["client_hints"]["platform_version"].as_str().unwrap();
+        assert!(ANDROID_PLATFORM_VERSIONS.contains(&v));
+    }
+
+    #[test]
+    fn a_desktop_profile_keeps_its_platform_version() {
+        // A desktop profile answers its own release already; the helper must
+        // not hand it an Android one.
+        let mut p = serde_json::Map::new();
+        p.insert(
+            "navigator".into(),
+            serde_json::json!({ "platform": "macOS", "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/156.0.0.0 Safari/537.36" }),
+        );
+        p.insert(
+            "client_hints".into(),
+            serde_json::json!({ "mobile": false, "platform_version": "15.6.1" }),
+        );
+        ensure_phone_platform_version(&mut p);
+        assert_eq!(p["client_hints"]["platform_version"], "15.6.1");
+    }
+}
+
+#[cfg(test)]
+mod screen_clamp_tests {
+    use super::{clamp_screen_block, ClampOutcome};
+    use serde_json::{json, Value};
+
+    fn profile(screen: Value, window: Option<Value>) -> serde_json::Map<String, Value> {
+        let mut p = serde_json::Map::new();
+        p.insert("screen".into(), screen);
+        if let Some(w) = window {
+            p.insert("window".into(), w);
+        }
+        p
+    }
+
+    fn desktop_screen() -> Value {
+        json!({
+            "width": 1920, "height": 1080,
+            "avail_width": 1920, "avail_height": 1032,
+            "device_pixel_ratio": 1.0,
+        })
+    }
+
+    #[test]
+    fn a_display_that_holds_the_claim_leaves_it_alone() {
+        let mut p = profile(desktop_screen(), None);
+        let before = p["screen"].clone();
+        assert_eq!(clamp_screen_block(&mut p, 2560, 1440, 2.0), ClampOutcome::Kept);
+        assert_eq!(p["screen"], before, "the claimed screen stands");
+    }
+
+    #[test]
+    fn a_claim_bigger_than_the_display_is_clamped_to_it() {
+        let mut p = profile(desktop_screen(), None);
+        assert_eq!(
+            clamp_screen_block(&mut p, 1440, 900, 2.0),
+            ClampOutcome::Clamped { fp_w: 1920, fp_h: 1080 }
+        );
+        let s = &p["screen"];
+        assert_eq!((s["width"].as_i64(), s["height"].as_i64()), (Some(1440), Some(900)));
+        assert_eq!(s["device_pixel_ratio"].as_f64(), Some(2.0));
+        // The template's 48 px taskbar inset travels with the clamp.
+        assert_eq!(s["avail_height"].as_i64(), Some(852));
+    }
+
+    #[test]
+    fn a_clamp_keeps_the_window_inside_the_new_screen() {
+        let mut p = profile(
+            desktop_screen(),
+            Some(json!({ "outer_width": 1920, "outer_height": 1079,
+                         "inner_width": 1920, "inner_height": 992 })),
+        );
+        assert!(matches!(
+            clamp_screen_block(&mut p, 1440, 900, 2.0),
+            ClampOutcome::Clamped { .. }
+        ));
+        let w = &p["window"];
+        assert_eq!(w["outer_width"].as_i64(), Some(1440));
+        assert_eq!(w["outer_height"].as_i64(), Some(851));
+        assert_eq!(w["inner_height"].as_i64(), Some(851 - 87));
+    }
+
+    #[test]
+    fn a_profile_with_no_screen_has_nothing_to_clamp() {
+        let mut p = serde_json::Map::new();
+        assert_eq!(clamp_screen_block(&mut p, 1440, 900, 2.0), ClampOutcome::NoScreen);
+        // A screen with no usable size is the same as none.
+        let mut zero = profile(json!({ "width": 0, "height": 0 }), None);
+        assert_eq!(clamp_screen_block(&mut zero, 1440, 900, 2.0), ClampOutcome::NoScreen);
+    }
 }

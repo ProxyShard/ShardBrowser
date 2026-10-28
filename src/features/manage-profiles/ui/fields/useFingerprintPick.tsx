@@ -71,7 +71,10 @@ export function useFingerprintPick(
       gpu_preset_id: id,
       hardware_concurrency: picks.hardware_concurrency ?? nav.hardware_concurrency ?? f.hardware_concurrency,
       device_memory: picks.device_memory ?? nav.device_memory ?? f.device_memory,
-      platform_version: picks.platform_version ?? f.platform_version,
+      // The picked template's own version, never the form's: switching from a
+      // Mac template to a phone one would otherwise carry macOS 15.6.1 onto the
+      // handset, which is the pair no real phone reports.
+      platform_version: picks.platform_version ?? nav.platform_version ?? "",
       user_agent: nav.user_agent ?? f.user_agent,
     });
     // A pick of another OS (From template) moves the OS control with it.

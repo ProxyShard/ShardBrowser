@@ -60,6 +60,61 @@ def apply_noise_seeds(config: dict, profile_id: str) -> None:
             block["seed"] = _noise_seed(profile_id, slot)
 
 
+# The voices an Android handset offers. Chrome on Android enumerates the Google
+# TTS engine's voices, and the names are the engine's own: the same "Google
+# <language>" roster Chrome ships on Linux, every one of them network-backed.
+_ANDROID_SPEECH_VOICES = [
+    ("Google US English", "en-US"),
+    ("Google UK English Female", "en-GB"),
+    ("Google UK English Male", "en-GB"),
+    ("Google Deutsch", "de-DE"),
+    ("Google español", "es-ES"),
+    ("Google español de Estados Unidos", "es-US"),
+    ("Google français", "fr-FR"),
+    ("Google हिन्दी", "hi-IN"),
+    ("Google Bahasa Indonesia", "id-ID"),
+    ("Google italiano", "it-IT"),
+    ("Google 日本語", "ja-JP"),
+    ("Google 한국의", "ko-KR"),
+    ("Google Nederlands", "nl-NL"),
+    ("Google polski", "pl-PL"),
+    ("Google português do Brasil", "pt-BR"),
+    ("Google русский", "ru-RU"),
+    ("Google 普通话（中国大陆）", "zh-CN"),
+    ("Google 粤語（香港）", "zh-HK"),
+    ("Google 國語（臺灣）", "zh-TW"),
+]
+
+
+def apply_phone_voices(config: dict) -> None:
+    """Give a profile that claims a phone the handset's voices when it names none.
+
+    Without a block the engine enumerates the voices of the machine it runs on:
+    an Android profile on a Mac offered the Mac's 63 Chrome voices, all local,
+    which is the list no handset has. An empty list is not the fix either — the
+    engine reads it as no claim and falls back to the host — so the roster has
+    to be there. A phone that declares its own voices is left alone."""
+    nav = config.get("navigator") or {}
+    ch = config.get("client_hints") or {}
+    phone = (
+        ch.get("mobile") is True
+        or str(ch.get("platform") or "").lower().startswith("android")
+        or "android" in str(nav.get("user_agent") or "").lower()
+    )
+    if not phone:
+        return
+    declared = (config.get("speech") or {}).get("voices")
+    if isinstance(declared, list) and declared:
+        return
+    # Chrome's rule: the first voice in the list is the default one.
+    config["speech"] = {
+        "voices": [
+            {"name": name, "lang": lang, "local_service": False, "is_default": i == 0}
+            for i, (name, lang) in enumerate(_ANDROID_SPEECH_VOICES)
+        ]
+    }
+
+
 @dataclass
 class BrowserSession:
     pid: int
@@ -131,7 +186,7 @@ class Browser:
         if has_auto_fields(profile.config):
             geo = resolve_auto_fields(profile.config, parsed)
 
-        mode = screen_mode or default_mode_for(profile.platform)
+        mode = screen_mode or default_mode_for(profile.platform, profile.claims_mobile)
         apply_screen_strategy(profile.config, mode)
 
         proxy_udp_ms: Optional[float] = None
@@ -159,6 +214,7 @@ class Browser:
         apply_apple_webgpu_features(profile.config)
         if profile.claims_mobile:
             apply_chrome_brand(profile.config)
+        apply_phone_voices(profile.config)
         apply_noise_seeds(profile.config, profile.id)
         fp_file = udd / "fingerprint.json"
         fp_file.write_text(json.dumps(profile.config), encoding="utf-8")
