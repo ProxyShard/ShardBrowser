@@ -25,6 +25,9 @@ dependencies = [
     "patchright>=1.49",
 ]
 
+[project.scripts]
+shardx = "shardx.cli:main"
+
 [project.urls]
 Homepage      = "https://github.com/ProxyShard/ShardBrowser"
 Repository    = "https://github.com/ProxyShard/ShardBrowser"

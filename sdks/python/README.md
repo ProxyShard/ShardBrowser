@@ -4,8 +4,8 @@ Self-contained Python SDK for the **ShardX anti-detect browser** by the
 [ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team.
 
 This package does **not** depend on the desktop launcher. On first use
-it downloads the patched Chromium 152 engine, Widevine CDM, and the
-220-profile fingerprint library from our CDN into a local cache, then
+it downloads the latest patched Chromium engine, Widevine CDM, and the
+220-profile fingerprint library from our CDN into a local cache (if not already downloaded), then
 launches isolated browser sessions on demand.
 
 Driven by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)
@@ -17,6 +17,14 @@ Driven by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python
 ```bash
 pip install shardx
 ```
+
+To install the browser, use:
+
+```bash
+shardx install
+```
+
+If you don't run `shardx install` directly from the command line, the browser will automatically be installed on the first run.
 
 Supported hosts: **macOS arm64**, **Windows x64**, **Linux x64**.
 
