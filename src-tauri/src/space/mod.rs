@@ -296,6 +296,67 @@ pub mod profile {
         CmdError::Missing(format!("no profile {id} in this team")).into()
     }
 
+    /// A protected profile's browser data, open for one start: sealed again when this goes.
+    pub struct Unsealed {
+        id: String,
+        key: Option<super::local::seal::DataKey>,
+    }
+
+    /// How many protected profiles have their data open now: quitting waits for them to seal.
+    static UNSEALED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// Protected profiles whose data a crash left open: sealed again at their next start.
+    pub fn left_open() -> Vec<String> {
+        super::local::protect::left_open()
+    }
+
+    pub fn any_unsealed() -> bool {
+        UNSEALED.load(std::sync::atomic::Ordering::SeqCst) > 0
+    }
+
+    /// Quitting: close the protected profiles running here, then wait for their data to seal.
+    pub async fn close_unsealed(limit: std::time::Duration) {
+        let tracker = crate::process::Tracker::shared();
+        for r in tracker.running() {
+            if is_protected(&r.profile_id) {
+                let _ = tracker.kill(&r.profile_id).await;
+            }
+        }
+        let until = std::time::Instant::now() + limit;
+        while any_unsealed() && std::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        if any_unsealed() {
+            eprintln!("[launcher] a protected profile did not close in time: sealed at its next start");
+        }
+    }
+
+    impl Unsealed {
+        /// An edit made for this start (an engine migration), sealed with the rest.
+        pub fn save(&self, full: &StoredProfile) -> Result<()> {
+            super::local::protect::save_full(full, self.key.as_ref().expect("open"))
+        }
+
+        /// Seal now, and say whether it worked; dropping does the same and only logs.
+        pub fn seal(mut self) -> Result<()> {
+            let key = self.key.take().expect("sealed once");
+            let out = super::local::protect::seal_data(&self.id, &key);
+            UNSEALED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            out
+        }
+    }
+
+    impl Drop for Unsealed {
+        fn drop(&mut self) {
+            if let Some(key) = self.key.take() {
+                if let Err(e) = super::local::protect::seal_data(&self.id, &key) {
+                    eprintln!("[launcher] {}: browser data left unsealed: {e:#}", self.id);
+                }
+                UNSEALED.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+    }
+
     pub fn list_all() -> Result<Vec<ProfileMeta>> {
         match team_now() {
             Some(team) => Ok(cache::profiles(&team)),
@@ -373,6 +434,10 @@ pub mod profile {
     /// a save on top of a change made elsewhere would revert it.
     pub fn save_here(mut stored: StoredProfile, opts: SaveOpts) -> Result<ProfileMeta> {
         personal_only()?;
+        // A lock is bound to its profile's id and data: a copy or an import of one opens nothing.
+        if stored.meta.id.is_empty() && stored.meta.lock.is_some() {
+            anyhow::bail!(NOT_FOR_PROTECTED);
+        }
         if !stored.meta.id.is_empty() {
             if let Some(sent) = opts.sent_rev {
                 let on_disk = local::current_rev(&stored.meta.id);
@@ -386,7 +451,15 @@ pub mod profile {
                 }
             }
         }
-        local::save_raw(&mut stored)?;
+        match opts.password.as_deref() {
+            // An edit of a protected profile: sealed again under its key, nothing written readable.
+            Some(pw) if local::load_raw(&stored.meta.id).is_ok_and(|p| p.meta.lock.is_some()) => {
+                let (_, key) = super::local::protect::unlock(&stored.meta.id, pw)?;
+                super::local::protect::save_full(&stored, &key)?;
+                stored = local::load_raw(&stored.meta.id)?;
+            }
+            _ => local::save_raw(&mut stored)?,
+        }
         // save_raw keeps the folder when it is blank; a move to no folder is set apart.
         if let Some(f) = opts.move_to {
             local::set_folder(&stored.meta.id, &f)?;
@@ -421,10 +494,58 @@ pub mod profile {
             open_on: None,
             tags: None,
             sync: None,
+            protected: stored.meta.lock.is_some(),
         }
     }
 
     /// This machine's own write, for the launcher's own fixes and a run's steps.
+    pub use super::local::protect::{NOT_FOR_PROTECTED, PASSWORD_REQUIRED};
+    /// Sync sends a profile readable: it is turned off before the profile is locked.
+    pub const SYNCED_FIRST: &str = "turn off sync for this profile first";
+
+    pub fn is_protected(id: &str) -> bool {
+        team_now().is_none() && local::load_raw(id).is_ok_and(|p| p.meta.lock.is_some())
+    }
+
+    /// Lock profile `id` under `password` (#127).
+    pub fn protect(id: &str, password: &str) -> Result<ProfileMeta> {
+        personal_only()?;
+        if super::sync::picked(id) {
+            anyhow::bail!(SYNCED_FIRST);
+        }
+        super::local::protect::protect(id, password)?;
+        super::sync::touched();
+        Ok(meta_of(&local::load_raw(id)?))
+    }
+
+    pub fn unprotect(id: &str, password: &str) -> Result<ProfileMeta> {
+        personal_only()?;
+        super::local::protect::unprotect(id, password)?;
+        super::sync::touched();
+        Ok(meta_of(&local::load_raw(id)?))
+    }
+
+    pub fn change_password(id: &str, old: &str, new: &str) -> Result<()> {
+        personal_only()?;
+        super::local::protect::change_password(id, old, new)
+    }
+
+    /// The whole of protected profile `id`, for the editor; nothing of it is written.
+    pub fn unlock(id: &str, password: &str) -> Result<StoredProfile> {
+        personal_only()?;
+        Ok(super::local::protect::unlock(id, password)?.0)
+    }
+
+    /// Protected profile `id` opened for one start: the whole profile, its browser data
+    /// folder, and the guard that seals that folder again.
+    pub fn open_protected(id: &str, password: &str) -> Result<(StoredProfile, PathBuf, Unsealed)> {
+        personal_only()?;
+        let (full, key) = super::local::protect::unlock(id, password)?;
+        let udd = super::local::protect::open_data(id, &key)?;
+        UNSEALED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok((full, udd, Unsealed { id: id.to_string(), key: Some(key) }))
+    }
+
     pub fn save_raw(stored: &mut StoredProfile) -> Result<()> {
         personal_only()?;
         local::save_raw(stored)
@@ -795,6 +916,22 @@ pub mod bookmarks {
                 local::delete(id)
             }
         }
+    }
+
+    /// A team's server takes one at a time: each in turn, past a failure, and
+    /// the first failure is the answer.
+    pub async fn delete_many(door: Door, t: &Ticket, ids: &[String]) -> Result<()> {
+        let Some(team) = t.team() else {
+            t.still()?;
+            return local::delete_many(ids);
+        };
+        let mut first = None;
+        for id in ids {
+            if let Err(e) = items::delete_bookmark(door, t, team, id).await {
+                first.get_or_insert(e);
+            }
+        }
+        first.map_or(Ok(()), Err)
     }
 
     /// This machine's own, for a personal profile's launch.

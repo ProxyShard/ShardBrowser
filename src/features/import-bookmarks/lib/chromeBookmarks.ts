@@ -1,60 +1,87 @@
 // Chrome's own bookmarks file (`Bookmarks` in a profile folder, no
-// extension), read into the launcher's flat list. No imports: node --test runs it.
+// extension), read with its roots and folders. No imports: node --test runs it.
 
-/** One bookmark from the file: its name and its address, as Chrome wrote them. */
-export type ChromeMark = { title: string; url: string };
+/** Chrome's root a bookmark sits in: "" is the bookmarks bar. */
+export type ChromeRoot = "" | "other" | "synced";
+
+/** One bookmark from the file: its name, its address and its place, as Chrome wrote them. */
+export type ChromeMark = {
+  title: string;
+  url: string;
+  root: ChromeRoot;
+  /** The folders inside that root, outermost first. */
+  path: string[];
+};
 
 /** What the file holds: the bookmarks to bring in, in Chrome's order, and how many it had. */
 export type ChromeFile = {
-  /** Every bookmark with an address a profile opens, repeats included. */
+  /** Every bookmark a profile can keep, repeats included. */
   marks: ChromeMark[];
   /** Every bookmark in the file. */
   found: number;
-  /** Bookmarklets, empty addresses and others that open no page. */
+  /** Empty addresses and links that are neither a page nor a bookmarklet (mailto:, data:). */
   skipped: number;
+  /** Folders holding at least one of `marks`, at any depth. */
+  folders: number;
 };
 
-/** Chrome's roots, in the order its bookmark manager shows them. */
-const ROOTS = ["bookmark_bar", "other", "synced"];
+/** Chrome's roots in its bookmark manager's order, each with the root it goes to here. */
+const ROOTS = new Map<string, ChromeRoot>([["bookmark_bar", ""], ["other", "other"], ["synced", "synced"]]);
 
 type Node = { type?: unknown; name?: unknown; url?: unknown; children?: unknown };
+type Placed = { node: unknown; root: ChromeRoot; path: string[] };
 const isNode = (v: unknown): v is Node => typeof v === "object" && v !== null && !Array.isArray(v);
 const isFolder = (v: unknown): v is Node & { children: unknown[] } => isNode(v) && Array.isArray(v.children);
+const nameOf = (n: Node) => (typeof n.name === "string" ? n.name.trim() : "");
 
-/** An address a profile can open: a scheme with "//" (https, chrome, file).
- *  A bookmarklet (javascript:), mailto: or data: is not one. */
-const opensAPage = (url: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(url);
+/** An address a profile keeps as a bookmark: a page (a scheme with "//": https,
+ *  chrome, file) or a bookmarklet with its script. Not mailto: or data:. */
+const keepable = (url: string) => /^[a-z][a-z0-9+.-]*:\/\//i.test(url) || /^javascript:\s*\S/i.test(url);
 
-/** The file's bookmarks, folders flattened, or null when the text is not
+/** The file's bookmarks with their places, or null when the text is not
  *  Chrome's bookmarks file ({"roots": {"bookmark_bar": …}, "version": 1}). */
 export function readChromeBookmarks(text: string): ChromeFile | null {
   let doc: unknown;
   try { doc = JSON.parse(text); } catch { return null; }
   if (!isNode(doc) || !isNode((doc as { roots?: unknown }).roots)) return null;
   const roots = (doc as { roots: Record<string, unknown> }).roots;
-  // The known roots first, then any other folder a later Chrome adds.
-  const keys = [...ROOTS.filter((k) => k in roots), ...Object.keys(roots).filter((k) => !ROOTS.includes(k))];
-  const folders = keys.map((k) => roots[k]).filter(isFolder);
-  if (!ROOTS.some((k) => isFolder(roots[k]))) return null;
+  const known = [...ROOTS.keys()];
+  if (!known.some((k) => isFolder(roots[k]))) return null;
+  // The known roots first, then any other a later Chrome adds: a folder of its name in Other bookmarks.
+  const keys = [...known.filter((k) => k in roots), ...Object.keys(roots).filter((k) => !known.includes(k))];
+
+  // Depth first, each folder's children in their order: Chrome's own order.
+  const stack: Placed[] = [];
+  const pushChildren = (folder: { children: unknown[] }, root: ChromeRoot, path: string[]) => {
+    for (let i = folder.children.length - 1; i >= 0; i--) stack.push({ node: folder.children[i], root, path });
+  };
+  for (const k of [...keys].reverse()) {
+    const node = roots[k];
+    if (!isFolder(node)) continue;
+    const root = ROOTS.get(k);
+    if (root !== undefined) pushChildren(node, root, []);
+    else pushChildren(node, "other", [nameOf(node) || k]);
+  }
 
   const marks: ChromeMark[] = [];
+  const folders = new Set<string>();
   let found = 0;
   let skipped = 0;
-  // Depth first, each folder's children in their order: Chrome's own order.
-  const stack: unknown[] = [...folders].reverse();
   while (stack.length > 0) {
-    const node = stack.pop();
+    const { node, root, path } = stack.pop()!;
     if (isFolder(node) && node.type !== "url") {
-      for (let i = node.children.length - 1; i >= 0; i--) stack.push(node.children[i]);
+      // An unnamed folder adds no level: its bookmarks join the folder around it.
+      pushChildren(node, root, nameOf(node) ? [...path, nameOf(node)] : path);
       continue;
     }
     if (!isNode(node) || node.type !== "url") continue;
     found++;
     const url = typeof node.url === "string" ? node.url.trim() : "";
-    if (!url || !opensAPage(url)) { skipped++; continue; }
-    marks.push({ title: typeof node.name === "string" ? node.name.trim() : "", url });
+    if (!url || !keepable(url)) { skipped++; continue; }
+    marks.push({ title: nameOf(node), url, root, path });
+    for (let i = 1; i <= path.length; i++) folders.add(JSON.stringify([root, ...path.slice(0, i)]));
   }
-  return { marks, found, skipped };
+  return { marks, found, skipped, folders: folders.size };
 }
 
 /** An address as it compares: the parsed URL ("https://a.com" is "https://a.com/"), else as written. */
@@ -63,17 +90,25 @@ export function urlKey(url: string): string {
   try { return new URL(u).href; } catch { return u; }
 }
 
-/** The marks not here yet, each address once. `already`: those here before
- *  the import; `repeats`: later copies of an address earlier in the file. */
-export function newMarks(marks: readonly ChromeMark[], existing: Iterable<string>): { fresh: ChromeMark[]; already: number; repeats: number } {
+/** A bookmark's place: its root, its folders and its address. */
+const placeKey = (root: string | undefined, path: readonly string[], url: string) =>
+  JSON.stringify([root ?? "", ...path.map((s) => s.trim()).filter(Boolean), urlKey(url)]);
+
+/** The marks not here yet, each place once. `already`: here before the
+ *  import, in the same folder; `repeats`: later copies in the same folder of
+ *  the file. One Chrome has in two folders comes in to both. */
+export function newMarks(
+  marks: readonly ChromeMark[],
+  existing: Iterable<{ url: string; root?: string; path?: readonly string[] }>,
+): { fresh: ChromeMark[]; already: number; repeats: number } {
   const here = new Set<string>();
-  for (const url of existing) here.add(urlKey(url));
+  for (const b of existing) here.add(placeKey(b.root, b.path ?? [], b.url));
   const seen = new Set<string>();
   const fresh: ChromeMark[] = [];
   let already = 0;
   let repeats = 0;
   for (const m of marks) {
-    const key = urlKey(m.url);
+    const key = placeKey(m.root, m.path, m.url);
     if (here.has(key)) { already++; continue; }
     if (seen.has(key)) { repeats++; continue; }
     seen.add(key);

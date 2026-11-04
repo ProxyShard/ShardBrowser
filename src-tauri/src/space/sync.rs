@@ -286,6 +286,10 @@ pub fn profile_set(ids: &[String], on: bool) -> Result<Vec<ProfileMeta>> {
         if !super::local::profile::exists(id) {
             bail!("no profile {id} in your own space");
         }
+        // A protected profile's data leaves this computer only sealed, and sync sends it readable.
+        if on && super::local::profile::load_raw(id).is_ok_and(|p| p.meta.lock.is_some()) {
+            bail!(super::local::protect::NOT_FOR_PROTECTED);
+        }
     }
     let b = book::read();
     if !on {
@@ -378,6 +382,12 @@ fn profile_sync(b: &Book, id: &str, mine: &str) -> ProfileSync {
 }
 
 // ---- starting a synced profile ----
+
+/// Picked to sync from this computer: a profile is not protected while it is (#127).
+pub fn picked(id: &str) -> bool {
+    let b = book::read();
+    !b.removed && b.syncs(id)
+}
 
 /// Whether this profile syncs from here now; its book when it does.
 fn synced(id: &str) -> Option<(crate::team::SyncPlace, Book)> {

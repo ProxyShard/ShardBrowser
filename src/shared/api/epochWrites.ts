@@ -2,7 +2,7 @@
 /// (epochWrites.test.ts checks). No imports, so node tests and the mock read it as it is.
 export const EPOCH_WRITES: ReadonlySet<string> = new Set([
   "automation_create", "automation_delete", "automation_duplicate", "automation_import", "automation_save",
-  "bookmark_delete", "bookmark_save",
+  "bookmark_delete", "bookmark_delete_many", "bookmark_save",
   "extension_delete", "extension_import", "extension_import_url",
   "extension_link_source", "extension_update", "extension_updates_check",
   "folder_add", "folder_delete", "folder_import", "folder_meta_set", "folder_rename",

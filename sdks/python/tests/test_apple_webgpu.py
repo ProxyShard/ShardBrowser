@@ -36,6 +36,16 @@ class AppleWebGpuTest(unittest.TestCase):
                          ["shader-f16", "texture-compression-etc2", "texture-compression-unaligned",
                           "texture-formats-tier1"])
 
+    def test_m2_and_later_also_gain_the_157_feature_and_m1_does_not(self):
+        m3 = mac("ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", "apple",
+                 ["shader-f16", "texture-compression-unaligned"])
+        apply_apple_webgpu_features(m3)
+        self.assertEqual(m3["webgpu"]["features"],
+                         ["atomic-vec2u-min-max", "shader-f16", "texture-compression-unaligned"])
+        m1 = mac(M1, "apple", ["shader-f16", "texture-compression-unaligned"])
+        apply_apple_webgpu_features(m1)
+        self.assertEqual(m1["webgpu"]["features"], ["shader-f16", "texture-compression-unaligned"])
+
     def test_other_gpus_and_an_empty_list_are_left_alone(self):
         for cfg in (mac("ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics)", "intel", ["shader-f16"]),
                     mac(M1, "intel", ["shader-f16"]),

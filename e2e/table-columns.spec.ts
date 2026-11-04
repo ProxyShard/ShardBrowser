@@ -174,8 +174,8 @@ test("keys pressed on a header control never act on a row (Review Focus 4)", asy
 
 test("ticking Select all keeps the list's keys: S, X, Delete and the arrows still act on the row, like a row checkbox (C6, fix round 1 item 9)", async ({ page }) => {
   await openApp(page);
-  // Select all shows in selection mode only (owner, 2026-10-01): a pick
-  // first. Sandbox, so X below still ticks the active row, Etsy.
+  // Select all shows on the list's hover or in selection mode (owner,
+  // 2026-10-01): a pick first. Sandbox, so X below still ticks the active row, Etsy.
   await row(page, "Sandbox").locator("[data-cell='checkbox'] input").check({ force: true });
   await row(page, "Etsy craft shop").locator("[data-cell='status']").click();
   const selectAll = header(page).getByRole("checkbox", { name: "Select all" });

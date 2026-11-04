@@ -5,8 +5,9 @@ import { openSearch } from "./support/search";
 // Selection mode (owner, 2026-10-01). At rest a list shows no checkboxes,
 // in its rows or its header, and its select column keeps its own slot
 // before Name (owner, 2026-10-07, item 9: a box laid over the name hid its
-// start); hovering a row fades in that row's box in its slot, and nothing
-// moves. The first pick (a box, Cmd/Ctrl+click or Shift+click on a row, X,
+// start); hovering a row fades in that row's box in its slot, hovering the
+// list fades in Select all (owner, 2026-11-04), and nothing moves. The
+// first pick (a box, Cmd/Ctrl+click or Shift+click on a row, X,
 // a long press on touch) shows every box with Select all and brings up the
 // bulk bar; Esc, the bar's X or an empty selection put it all back. Name
 // never moves. Profiles here; Proxies and the Trash (the kit DataList) below.
@@ -36,6 +37,17 @@ test("at rest no box shows, in the rows or the header, and the select column kee
   await expect(bar(page)).toHaveCount(0);
 });
 
+test("hovering the list, its header included, fades in Select all alone, and nothing moves", async ({ page }) => {
+  await openApp(page, { theme: "light" });
+  const before = await layoutOf(page);
+  await header(page).locator("[data-col='status']").hover();
+  await expect(header(page).getByRole("checkbox", { name: "Select all" })).toBeVisible();
+  await expect(boxes(grid(page))).toHaveCount(1);
+  expect(await layoutOf(page)).toEqual(before);
+  await page.mouse.move(1, 1);
+  await expect(boxes(grid(page))).toHaveCount(0);
+});
+
 test("hovering a row fades in its box alone, in its own slot before the name, and nothing moves", async ({ page }) => {
   await openApp(page, { theme: "light" });
   const before = await layoutOf(page);
@@ -43,7 +55,8 @@ test("hovering a row fades in its box alone, in its own slot before the name, an
   await r.locator("[data-cell='status']").hover();
   const box = r.getByRole("checkbox", { name: "Select Sandbox" });
   await expect(box).toBeVisible();
-  await expect(boxes(grid(page))).toHaveCount(1);
+  // Its own, and Select all on the list's hover.
+  await expect(boxes(grid(page))).toHaveCount(2);
   expect(await layoutOf(page)).toEqual(before);
   // At the cell padding, clear of the name, on top.
   expect(await left(box) - (await left(r))).toBe(12);
@@ -119,14 +132,18 @@ test("unticking the last box leaves the mode with the keyboard on its row, never
   await page.keyboard.press("Space");
   await expect(grid(page)).not.toHaveClass(/has-selection/);
   await expect(r).toBeFocused();
-  // Select all, ticked and unticked: the list's Tab stop takes the keyboard.
-  await page.keyboard.press("x");
+  // Select all, ticked and unticked from the keyboard with the pointer away:
+  // focused, it stays shown and keeps the keyboard.
   const all = header(page).getByRole("checkbox", { name: "Select all" });
-  await all.click();
+  await all.focus();
+  await page.mouse.move(1, 1);
+  await page.keyboard.press("Space");
   await expect(all).toBeChecked();
-  await all.click();
+  await expect(grid(page)).toHaveClass(/has-selection/);
+  await page.keyboard.press("Space");
   await expect(grid(page)).not.toHaveClass(/has-selection/);
-  await expect(grid(page).locator("[role='row'][data-profile-id][tabindex='0']")).toBeFocused();
+  await expect(all).toBeFocused();
+  await expect(all).toBeVisible();
 });
 
 test("Cmd/Ctrl+click and Shift+click on a row enter selection mode and open no Peek", async ({ page }) => {

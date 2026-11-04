@@ -10,7 +10,7 @@ import { PropertyButton, PropertyRow, PropertyValue as Value } from "../../../sh
 import { ProtocolPill } from "../../../shared/ui/ProtocolPill";
 import { TagChip } from "../../../shared/ui/TagChip";
 import { useT } from "../../../shared/i18n";
-import { openElsewhere, proxyHidden, proxyMissing, useFolderLook, useProfile, type ProfileForm, type ProfileMeta, type ProfileRight } from "../../../entities/profile";
+import { isProtected, openElsewhere, proxyHidden, proxyMissing, useFolderLook, useProfile, type ProfileForm, type ProfileMeta, type ProfileRight } from "../../../entities/profile";
 import { rightName } from "../../../entities/space";
 import { useExtensions } from "../../../entities/extension";
 import { useProfileTags } from "../../../entities/tag";
@@ -38,9 +38,10 @@ export function ProfileDetails({ profile }: { profile: ProfileMeta }) {
       <FolderDetail folder={profile.folder} />
       <TagsDetail profileId={profile.id} />
       <ColorDetail color={profile.color ?? ""} />
+      {isProtected(profile) && <PasswordDetail />}
       <ProxyDetail profile={profile} />
       <ExtensionsDetail profile={profile} />
-      <NotesDetail notes={profile.notes} />
+      <NotesDetail notes={profile.notes} locked={isProtected(profile)} />
       {profile.sync && <SyncDetail profile={profile} />}
       {profile.rights && <AccessDetail profile={profile} />}
       {openElsewhere(profile) && <OpenOnDetail profile={profile} />}
@@ -96,6 +97,26 @@ function ColorDetail({ color }: { color: string }) {
   );
 }
 
+/** A protected profile: its password is asked at every start (#127). */
+function PasswordDetail() {
+  const t = useT();
+  return (
+    <PropertyRow id="password" label={t("peek.password")}>
+      {() => (
+        <Value>
+          <span className="truncate">{t("peek.passwordOn")}</span>
+        </Value>
+      )}
+    </PropertyRow>
+  );
+}
+
+/** What a sealed value shows while its profile is locked. */
+function Locked() {
+  const t = useT();
+  return <span data-locked className="truncate">{t("profileRow.locked")}</span>;
+}
+
 function ProxyDetail({ profile }: { profile: ProfileMeta }) {
   const t = useT();
   const proxies = useProfile((s) => s.proxies);
@@ -106,7 +127,9 @@ function ProxyDetail({ profile }: { profile: ProfileMeta }) {
     <PropertyRow id="proxy" label={t("peek.proxy")}>
       {(labelId) => (
         <Link labelId={labelId} id={profile.id} tab="proxy" empty={!profile.proxy_id}>
-          {missing ? (
+          {isProtected(profile) ? (
+            <Locked />
+          ) : missing ? (
             <>
               <AlertIcon className="size-3.5 shrink-0 text-warning-base" />
               <span className="truncate text-warning-text">{t("profileRow.proxyMissing")}</span>
@@ -138,7 +161,8 @@ function ExtensionsDetail({ profile }: { profile: ProfileMeta }) {
   // A team's the member's list does not show (rights on its folder only) still come at start;
   // "N of M" would count them among the M they do see.
   const unseen = profile.origin === "team" && (!ready || profile.extensions.some((id) => !items.some((e) => e.id === id)));
-  const words = n === 0 ? t("peek.noExtensions")
+  const words = isProtected(profile) ? t("profileRow.locked")
+    : n === 0 ? t("peek.noExtensions")
     : unseen ? (n === 1 ? t("peek.teamExtensionsOne") : t("peek.teamExtensions", { n }))
       : t("peek.extensionsCount", { n, total: items.length });
   return (
@@ -152,8 +176,15 @@ function ExtensionsDetail({ profile }: { profile: ProfileMeta }) {
   );
 }
 
-function NotesDetail({ notes }: { notes: string }) {
+function NotesDetail({ notes, locked }: { notes: string | null; locked: boolean }) {
   const t = useT();
+  if (locked) {
+    return (
+      <PropertyRow id="notes" label={t("peek.notes")}>
+        {() => <Value empty><Locked /></Value>}
+      </PropertyRow>
+    );
+  }
   return (
     <PropertyRow id="notes" label={t("peek.notes")}>
       {() => (

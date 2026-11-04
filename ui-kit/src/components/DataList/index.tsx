@@ -71,6 +71,9 @@ type Common<T> = {
   activeId?: string | null
   onActiveChange?: (id: string | null) => void
   onOpen?: (item: T) => void
+  /** A selecting table whose rows still open on a plain click, as Profiles':
+   *  the box, Cmd/Ctrl+click and Shift+click select. */
+  openOnClick?: boolean
   onDelete?: (ids: string[]) => void
   rowActions?: (item: T) => ReactNode
   menuItems?: (item: T) => MenuItem[]
@@ -113,7 +116,7 @@ const CONTROLS = 'button, a, input, label, [role="menuitem"]'
 const EMPTY: ReadonlySet<string> = new Set()
 /** Layers that hold focus for a moment on the list's behalf: its row menu, a confirm. */
 const OVERLAYS = '[role="menu"], [role="dialog"], [role="alertdialog"]'
-const isMod = (e: React.KeyboardEvent) => (navigator.platform.startsWith('Mac') ? e.metaKey : e.ctrlKey)
+const isMod = (e: React.KeyboardEvent | React.MouseEvent) => (navigator.platform.startsWith('Mac') ? e.metaKey : e.ctrlKey)
 // A row's own buttons and fields keep their keys; the list acts on keys
 // pressed on a row or a card itself.
 const ownsKey = (e: React.KeyboardEvent) => (e.target as HTMLElement).hasAttribute('data-row-id')
@@ -147,7 +150,7 @@ function useArrivals(arrived: ReadonlySet<string> | undefined, ids: readonly str
 /// rows are what users act on) or a grid of cards. Hand-rolled (ADR 0002).
 export default function DataList<T>(props: DataListProps<T>) {
   const {
-    items, getId, getName, labels, status, selected, onSelectedChange, onOpen, onDelete, rowActions, menuItems,
+    items, getId, getName, labels, status, selected, onSelectedChange, onOpen, openOnClick = false, onDelete, rowActions, menuItems,
     menuHeadingTruncate, bottomInset = 0, className,
   } = props
   const menu = useContextMenu()
@@ -213,6 +216,8 @@ export default function DataList<T>(props: DataListProps<T>) {
     const box = scrollRef.current
     const at = document.activeElement
     if (!box || !(at instanceof HTMLElement) || !box.contains(at) || !at.closest('.list-select-box')) return
+    // Select all, focused, stays shown (`:focus-within`): it keeps the keyboard.
+    if (at.closest('[data-list-header]')) return
     ;(at.closest<HTMLElement>('[data-row-id]') ?? box.querySelector<HTMLElement>('[data-row-id][tabindex="0"]'))?.focus({ preventScroll: true })
   })
 
@@ -454,11 +459,12 @@ export default function DataList<T>(props: DataListProps<T>) {
     },
     // A click anywhere on a row that holds a checkbox toggles it, once
     // (owner, 2026-09-30); its box and its own controls keep their clicks.
-    // A row without one opens.
+    // A row without one opens, and so does one of a list that opens on a
+    // click (`openOnClick`), where Cmd/Ctrl+click toggles.
     onClick: (e: React.MouseEvent) => {
       if (holds && longPress.took(getId(item))) return
       if ((e.target as HTMLElement).closest(CONTROLS) || e.shiftKey) return
-      if (selectable) { toggle(getId(item)); return }
+      if (selectable && (!openOnClick || !onOpen || isMod(e))) { toggle(getId(item)); return }
       run.current = { anchor: getId(item), base: sel }
       onOpen?.(item)
     },

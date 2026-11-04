@@ -2,6 +2,8 @@ import { t } from "../i18n";
 import { SYNC_REFUSALS } from "../../entities/sync/model/types";
 import { refusal } from "../../entities/sync/lib/refusals";
 import { EXTENSION_TOO_BIG_RE, FORBIDDEN_RE, TEAM_REFUSALS } from "../api/teamRefusals";
+import { LOCK_REFUSALS } from "../api/lockRefusals";
+import { AUTOMATION_REFUSALS } from "../api/automationRefusals";
 import { fmtBytes } from "./format";
 
 const LEASED = refusal(SYNC_REFUSALS.leased);
@@ -69,6 +71,19 @@ const KNOWN: ReadonlyArray<readonly [RegExp, string]> = [
   [/\bstill opening or being saved here\b/i, "errors.teamBusy"],
   [phrase(TEAM_REFUSALS.folderInTrash), "errors.teamFolderInTrash"],
   [phrase(TEAM_REFUSALS.teamExtensionsNotYet), "errors.teamExtensionsNotYet"],
+  // A profile's own password (#127).
+  [phrase(LOCK_REFUSALS.needsPassword), "errors.passwordNeeded"],
+  [phrase(LOCK_REFUSALS.wrongPassword), "errors.wrongPassword"],
+  [phrase(LOCK_REFUSALS.tooShort), "errors.passwordTooShort"],
+  [phrase(LOCK_REFUSALS.closeFirst), "errors.closeProfileFirst"],
+  [phrase(LOCK_REFUSALS.syncOn), "errors.passwordSyncOn"],
+  [phrase(LOCK_REFUSALS.notAvailable), "errors.lockedNotAvailable"],
+  // The automation studio's start (lib.rs automation_launch, space::cdp_pass).
+  [phrase(AUTOMATION_REFUSALS.openWithout), "errors.openWithoutAutomation"],
+  [phrase(AUTOMATION_REFUSALS.didNotClose), "errors.didNotClose"],
+  [phrase(AUTOMATION_REFUSALS.noDebugPort), "errors.noDebugPort"],
+  [phrase(AUTOMATION_REFUSALS.drivenByRun), "errors.drivenByRun"],
+  [phrase(AUTOMATION_REFUSALS.notAutomated), "errors.notAutomated"],
   // Web Store updates and links (updates.rs, extensions.rs); before the network's words.
   [/\bthe Web Store has no extension with that id\b/i, "errors.extensionNotInStore"],
   [/\bby its files, that is a different extension\b|\bthat is a different extension: its key gives it\b/i, "errors.extensionDifferent"],

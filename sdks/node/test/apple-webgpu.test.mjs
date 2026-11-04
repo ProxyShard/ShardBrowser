@@ -14,6 +14,16 @@ test("an Apple M list gains the feature in sorted place, once", () => {
     ["shader-f16", "texture-compression-etc2", "texture-compression-unaligned", "texture-formats-tier1"]);
 });
 
+test("M2 and later also gain the Chrome 157 feature, M1 does not", () => {
+  const m3 = mac("ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)", "apple",
+    ["shader-f16", "texture-compression-unaligned"]);
+  applyAppleWebGpuFeatures(m3);
+  assert.deepEqual(m3.webgpu.features, ["atomic-vec2u-min-max", "shader-f16", "texture-compression-unaligned"]);
+  const m1 = mac(M1, "apple", ["shader-f16", "texture-compression-unaligned"]);
+  applyAppleWebGpuFeatures(m1);
+  assert.deepEqual(m1.webgpu.features, ["shader-f16", "texture-compression-unaligned"]);
+});
+
 test("other GPUs and an empty list are left alone", () => {
   for (const cfg of [
     mac("ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics)", "intel", ["shader-f16"]),

@@ -10,7 +10,7 @@ import { settingsRefusal, useProfile } from "../../../entities/profile";
 import { useRightsChange } from "../../../entities/space";
 import { walkTheForm } from "../../tour/lib/profileTour";
 import {
-  PROFILE_FORM_TABS, canSave, changedTabs, closeProfileForm, isDirty, openProfileForm, problemsOf, readOnlyWhy, reloadProfileForm,
+  PROFILE_FORM_TABS, canSave, changedTabs, closeProfileForm, isDirty, openProfileForm, passwordProblemOf, problemsOf, readOnlyWhy, reloadProfileForm,
   rightsProblem, saveProfileForm, setProfileFormTab, useProfileForm, type ProfileFormTab,
 } from "../model/useProfileForm";
 import { BasicsTab } from "./BasicsTab";
@@ -44,6 +44,8 @@ export function ProfileFormDialog() {
   const dirty = isDirty(s);
   const changed = changedTabs(s);
   const problems = problemsOf(draft);
+  // A new profile's password, while one is typed: too short, or the repeat differs.
+  const passwordProblem = passwordProblemOf(s);
   const saving = status === "saving";
   // The list's name until the form has loaded, so the title never reads "Edit ".
   const listed = useProfile((st) => st.profiles.find((p) => p.id === s.id));
@@ -93,7 +95,7 @@ export function ProfileFormDialog() {
   const items = PROFILE_FORM_TABS.map((value) => ({
     value,
     label: labels[value],
-    badge: value === "basics" && problems.name ? <TabState error text={t("profileForm.tabError")} />
+    badge: value === "basics" && (problems.name || (passwordProblem && s.tried)) ? <TabState error text={t("profileForm.tabError")} />
       : changed.has(value) ? <TabState text={t("profileForm.tabChanged")} />
       : undefined,
   }));
@@ -111,6 +113,7 @@ export function ProfileFormDialog() {
   ) : readOnly && draft ? <span data-read-only>{t("profileForm.readOnly", { why: readOnly })}</span>
     : saving || !draft ? null
     : problems.name ? t("profileForm.nameRequired")
+    : passwordProblem ? <span data-password-problem>{passwordProblem}</span>
     : refused ? <span data-rights-problem>{refused}</span>
     : s.badFields.length > 0 ? t("profileForm.numberInvalid")
     : mode === "edit" && !dirty ? t("profileForm.noChanges")

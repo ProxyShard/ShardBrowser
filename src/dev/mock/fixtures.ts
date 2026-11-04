@@ -42,6 +42,8 @@ export type StoredProfile = {
     gpu_preset_id: string;
     extensions: string[];
     android_media?: boolean;
+    /** A password seals it (#127): what unlocks it, never the password itself. */
+    lock?: MockLock;
   };
   name: string;
   notes: string;
@@ -58,6 +60,25 @@ export type StoredProfile = {
   noise: Record<string, { enabled: boolean; seed: number; intensity?: number; max_offset?: number }>;
   blocked_ports: number[];
 };
+
+/** As seal.rs keeps a protected profile's lock in the open: the KDF and the wrapped key.
+ *  Here the "key" is a plain hash of the password with the salt: a mock, not a seal. */
+export type MockLock = { v: 1; kdf: { alg: "argon2id"; m_kib: number; t: number; p: number; salt: string }; key: string };
+
+/** FNV-1a of the salt and the password, as hex. */
+function mockHash(text: string): string {
+  let h = 0x811c9dc5;
+  for (const ch of text) { h ^= ch.codePointAt(0)!; h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+}
+
+/** A lock for `password`, with a new salt or the one given. */
+export function mockLock(password: string, salt = Math.random().toString(36).slice(2, 10)): MockLock {
+  return { v: 1, kdf: { alg: "argon2id", m_kib: 65536, t: 3, p: 1, salt }, key: `mock:${mockHash(`${salt}\n${password}`)}` };
+}
+
+/** The password of the protected profile `__shardxMockLocked` seeds (e2e/profile-password.spec.ts). */
+export const MOCK_LOCKED_PASSWORD = "vault-pass-1";
 
 export type MockTags = { tags: { id: string; name: string; color: string }[]; by_profile: Record<string, string[]> };
 export type MockFolders = { registry: string[]; meta: Record<string, { color: string | null; icon: string }> };
@@ -106,8 +127,8 @@ export type MockState = {
   psBalance?: number;
   automation: Project[];
   modules: ModuleInfo[];
-  /** profile id -> pid + wall-clock start. */
-  running: Record<string, { pid: number; started: number }>;
+  /** profile id -> pid + wall-clock start; `cdp` when started with automation (a run, the studio). */
+  running: Record<string, { pid: number; started: number; cdp?: boolean }>;
   /** Team profiles closed here whose session is still being sent (open.rs resends it): listed, a start refused. */
   saving?: Record<string, true>;
   /** Team profiles whose session is kept here unsent (Outcome::Unsent): the next start sends it first. */
@@ -278,6 +299,13 @@ export const syncLink: { of: (id: string) => ProfileSync | undefined } = { of: (
 export function metaOf(p: StoredProfile): ProfileMeta {
   const sync = syncLink.of(p._meta.id);
   const ua = String((p.navigator as { user_agent?: string } | undefined)?.user_agent ?? "");
+  const row = metaOpen(p, ua, sync);
+  // Sealed: what it holds is unknown until it is unlocked (#127 contract). `protected`
+  // is left out for an open one, so every other test's rows stay as they were.
+  return p._meta.lock ? { ...row, protected: true, notes: null, proxy_id: null, mobile: false, extensions: [] } : row;
+}
+
+function metaOpen(p: StoredProfile, ua: string, sync: ProfileSync | undefined): ProfileMeta {
   return {
     id: p._meta.id,
     name: p.name,
@@ -590,6 +618,17 @@ function statusProbes(): ProfileSeed[] {
   }));
 }
 
+/** `window.__shardxMockLocked = true`, set before load: adds "Bank vault", a profile
+ *  protected by `MOCK_LOCKED_PASSWORD` (#127). Off by default, so every other test's
+ *  profile list is untouched. */
+function lockedProfiles(): ProfileSeed[] {
+  if (!(window as { __shardxMockLocked?: boolean }).__shardxMockLocked) return [];
+  return [{
+    id: "lock-vault", name: "Bank vault", notes: "Online banking only", folder: "Shops", fp: "win11-rtx4070", proxy: "px-de-1",
+    createdDaysAgo: 6, launchedDaysAgo: 1, runtimeHours: 3, launches: 4, trafficGB: 0.1, extensions: ["ublock"],
+  }];
+}
+
 /** `window.__shardxMockProxies = N`, set before load, adds N plain proxies
  *  ("Proxy 0001" …) to try the list at scale. */
 function extraProxies(): ProxyEntry[] {
@@ -629,8 +668,10 @@ export function seed(): MockState {
   const order: string[] = [];
   const running: MockState["running"] = {};
   let pid = 48210;
-  for (const s of empty ? [] : [...PROFILES, ...extraProfiles(), ...extraFolderProfiles(), ...statusProbes()]) {
+  const locked = new Set(lockedProfiles().map((s) => s.id));
+  for (const s of empty ? [] : [...PROFILES, ...lockedProfiles(), ...extraProfiles(), ...extraFolderProfiles(), ...statusProbes()]) {
     profiles[s.id] = stored(s, library);
+    if (locked.has(s.id)) profiles[s.id]._meta.lock = mockLock(MOCK_LOCKED_PASSWORD, "seeded");
     order.push(s.id);
     if (s.running) running[s.id] = { pid: pid++, started: Date.now() - (s.id === "a78a0eea" ? 2 * 3600_000 + 14 * 60_000 : 27 * 60_000) };
   }
@@ -658,6 +699,9 @@ export function seed(): MockState {
       helper_enabled: true,
       helper_triggers: [],
       camera_enabled: true,
+      show_profile_name: true,
+      // `window.__shardxMockProfilePasswords = true`, set before load: the switch is on (#127).
+      profile_passwords: !!(window as { __shardxMockProfilePasswords?: boolean }).__shardxMockProfilePasswords,
       minimize_to_tray: false,
       extra_args: "",
       ext_update_check: true,

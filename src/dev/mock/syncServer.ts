@@ -4,6 +4,7 @@ import type { MockState, StoredProfile } from "./fixtures";
 import { metaOf, syncLink } from "./fixtures";
 import type { Ctx, Handler } from "./handlers";
 import { personal } from "./spaces";
+import { LOCK_REFUSALS } from "../../shared/api/lockRefusals";
 import { DEFAULT_KINDS, SYNC_REFUSALS, type ProfileSync, type SyncConnection, type SyncKinds, type SyncState } from "../../entities/sync/model/types";
 
 /** This launcher, as the other devices see it (space_state's device name). */
@@ -316,6 +317,8 @@ export const syncHandlers: Record<string, Handler> = {
     const m = connected(ctx.state);
     const list = (ids as string[]).map(String);
     for (const id of list) if (!ctx.state.profiles[id]) throw `profile ${id} not found`;
+    // A protected one stays on this computer (#127).
+    if (on && list.some((id) => ctx.state.profiles[id]._meta.lock)) throw LOCK_REFUSALS.notAvailable;
     // Another device holds it: stopping here would let both run it.
     if (!on) for (const id of list) if (m.leases[id]) throw SYNC_REFUSALS.leasedStop(m.leases[id]);
     for (const id of list) {

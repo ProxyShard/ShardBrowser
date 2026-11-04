@@ -30,7 +30,7 @@ function ImportDialog({ open, folders }: { open: boolean; folders: string[] }) {
   const items = useBookmarks((s) => s.items);
   const busy = progress != null;
 
-  const live = useMemo(() => (file ? newMarks(file.marks, items.map((b) => b.url)) : null), [file, items]);
+  const live = useMemo(() => (file ? newMarks(file.marks, items) : null), [file, items]);
   // The counts as they were when the import began, until it ends.
   const plan = useLatched(busy ? null : live) ?? live;
   const fresh = plan?.fresh.length ?? 0;
@@ -88,7 +88,9 @@ function ImportDialog({ open, folders }: { open: boolean; folders: string[] }) {
               </p>
             )}
             <BookmarkFolderSelect label={t("importBookmarks.showsIn")} value={folder} folders={folders} onChange={setFolder} disabled={busy} />
-            <p className="m-0 text-secondary text-text-soft-400">{t("importBookmarks.flatHint")}</p>
+            <p className="m-0 text-secondary text-text-soft-400" data-import-folders>
+              {file.folders === 0 ? t("importBookmarks.foldersNone") : t("importBookmarks.foldersKept")}
+            </p>
             {progress && progress.total > 0 && (
               <div className="flex flex-col gap-1.5" data-import-progress>
                 <span className="text-secondary text-text-sub-600">{t("importBookmarks.progress", { done: progress.done, total: progress.total })}</span>

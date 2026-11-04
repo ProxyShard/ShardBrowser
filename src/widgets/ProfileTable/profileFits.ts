@@ -37,7 +37,9 @@ function proxyFit(proxyOf: (id: string) => ProxyEntry | undefined, clip: (s: str
   const direct = t("profileRow.direct");
   const missing = t("profileRow.proxyMissing");
   const hidden = t("profileRow.proxyHidden");
+  const locked = t("profileRow.locked");
   return (p, m) => {
+    if (p.protected) return m(locked, "secondary");
     if (!p.proxy_id) return m(direct, "secondary");
     const x = proxyOf(p.proxy_id);
     if (!x) return m(p.origin === "team" ? hidden : missing, "secondary");
@@ -108,7 +110,8 @@ export function profileFits({ proxyOf, tagsOf, lang, now }: {
   const desktop = t("profileTable.deviceDesktop");
   const when = runWords(lang, now);
   return {
-    name: (p, m) => m(p.name, "ui") + (p.pinned ? PIN : 0) + (p.sync?.on ? PIN : 0),
+    // The lock, the pin and the sync mark each take a pin's room.
+    name: (p, m) => m(p.name, "ui") + (p.protected ? PIN : 0) + (p.pinned ? PIN : 0) + (p.sync?.on ? PIN : 0),
     status: statusFit(lang, now),
     folder: (p, m) => (p.folder ? CHIP + m(p.folder, "secondary") : 0),
     // The width at which TagChips' own fold (F18) shows the first two chips
@@ -124,7 +127,7 @@ export function profileFits({ proxyOf, tagsOf, lang, now }: {
     runTime: (p, m) => m(p.total_runtime_ms > 0 ? fmtDuration(p.total_runtime_ms, lang) : "—", "tabular"),
     device: (p, m) => m(p.mobile ? phone : desktop, "secondary"),
     extensions: (p, m) => m(String(p.extensions.length), "tabular"),
-    notes: (p, m) => (p.notes ? m(p.notes, "secondary") : 0),
+    notes: (p, m) => (p.protected ? m(t("profileRow.locked"), "secondary") : p.notes ? m(p.notes, "secondary") : 0),
   };
 }
 

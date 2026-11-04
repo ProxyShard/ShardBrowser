@@ -159,6 +159,7 @@ pub fn meta(team: &str, row: &ProfileRow, detail: Option<&StoredProfile>, device
         open_on: row.open_on.as_ref().map(|l| open_on(l, device_id)),
         tags: Some(row.card.tags.clone()),
         sync: None,
+        protected: false,
     }
 }
 

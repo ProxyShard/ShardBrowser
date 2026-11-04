@@ -27,11 +27,18 @@ test("t.rich: tags wrap their text, variables stay text, unknown tags are plain"
 });
 
 test("a sentence with a bold word renders as one sentence", async ({ page }) => {
-  await openApp(page, { section: "bookmarks" });
-  await page.getByRole("button", { name: /New bookmark|Add bookmark/ }).first().click();
-  const dialog = page.getByRole("dialog");
-  await expect(dialog.locator("strong", { hasText: "ShardBrowser" })).toBeVisible();
-  await expect(dialog).toContainText("inside a bookmark folder called ShardBrowser, from the next time they start.");
+  // The GitHub-star ask, due at the next confirmed start (as star-ask.spec seeds it).
+  await page.addInitScript(() => {
+    localStorage.setItem("shardx-star-prompt", "counting");
+    localStorage.setItem("shardx.starAsk", JSON.stringify({ v: 1, starts: 9, days: ["2020-01-01"], state: "counting" }));
+  });
+  await openApp(page);
+  const row = page.locator("[role='row'][data-profile-id]", { hasText: "Etsy craft shop" });
+  await row.hover();
+  await row.getByRole("button", { name: "Start" }).click();
+  const dialog = page.getByRole("dialog", { name: /Enjoying ShardBrowser/ });
+  await expect(dialog.locator("strong", { hasText: "completely free" })).toBeVisible();
+  await expect(dialog).toContainText("ShardBrowser is provided and supported completely free. If it’s useful to you");
 });
 
 type Fmt = {

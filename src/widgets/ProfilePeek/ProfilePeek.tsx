@@ -7,7 +7,7 @@ import { LoadError, LoadingRows } from "../../shared/ui/ListStates";
 import { StatusPill } from "../../shared/ui/StatusPill";
 import { PeekBody, PeekHeader, PeekPanel, PeekSection, PropertySheet } from "../../shared/ui/peek";
 import { useLang, useT } from "../../shared/i18n";
-import { may, profileStatus, proxyMissing, settingsRefusal, startRefusal, useProfile, useProfileUi, useSaving, type ProfileMeta } from "../../entities/profile";
+import { isProtected, may, profileStatus, proxyMissing, settingsRefusal, startRefusal, useProfile, useProfileUi, useSaving, type ProfileMeta } from "../../entities/profile";
 import { usePeekForm } from "./usePeekForm";
 import { FingerprintDetails, ProfileDetails } from "./rows/DetailRows";
 import { ActivityLine } from "./rows/ActivityLine";
@@ -71,6 +71,9 @@ export function ProfilePeek() {
           <PeekSection id="fingerprint" title={t("peek.fingerprint")} action={edit("fingerprint")}>
             {hidden ? (
               <p data-settings-hidden className="m-0 px-1 text-help text-text-sub-600">{hidden}</p>
+            ) : isProtected(shown) ? (
+              // Sealed by its password: its editor shows it, once the password is given.
+              <p data-fingerprint-locked className="m-0 px-1 text-help text-text-sub-600">{t("peek.fingerprintLocked")}</p>
             ) : fingerprint ? (
               <FingerprintDetails form={fingerprint} />
             ) : loadError ? (

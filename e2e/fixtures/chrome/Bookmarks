@@ -24,6 +24,15 @@
                      "url": "https://github.com/"
                   },
                   {
+                     "date_added": "13372089600000000",
+                     "date_last_used": "0",
+                     "guid": "6c0f5d0e-1f3a-5b8e-9a4c-2d7e8f9a0b1c",
+                     "id": "16",
+                     "name": "GitHub (copy)",
+                     "type": "url",
+                     "url": "https://github.com/"
+                  },
+                  {
                      "children": [
                         {
                            "date_added": "13372089600000000",
@@ -69,6 +78,15 @@
                "name": "Hacker News",
                "type": "url",
                "url": "https://news.ycombinator.com/"
+            },
+            {
+               "date_added": "13372089600000000",
+               "date_last_used": "0",
+               "guid": "7d1a6e1f-2a4b-5c9f-8b5d-3e8f9a0b1c2d",
+               "id": "17",
+               "name": "pixelscan",
+               "type": "url",
+               "url": "https://pixelscan.net/"
             }
          ],
          "date_added": "13372089600000000",

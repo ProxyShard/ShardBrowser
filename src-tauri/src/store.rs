@@ -7,7 +7,7 @@
 #[cfg(not(test))]
 use anyhow::Context;
 use anyhow::Result;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 pub fn config_root() -> Result<PathBuf> {
@@ -86,9 +86,46 @@ pub fn user_data_root() -> Result<PathBuf> {
     data_sub("user-data")
 }
 
+/// Where Chromium keeps the disk cache of the browser profile at `udd`. On macOS and Linux a
+/// profile under the OS config folder gets it under the OS cache folder, at the same path.
+pub fn browser_cache_twin(udd: &Path) -> Option<PathBuf> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    if let (Some(config), Some(cache)) = (dirs::config_dir(), dirs::cache_dir()) {
+        return udd.strip_prefix(&config).ok().map(|rel| cache.join(rel));
+    }
+    let _ = udd;
+    None
+}
+
+/// Removes that cache with the profile: it is not inside the folder the profile is deleted with.
+pub fn remove_browser_cache(udd: &Path) {
+    if let Some(twin) = browser_cache_twin(udd) {
+        let _ = std::fs::remove_dir_all(twin);
+    }
+}
+
+/// Caches of profiles deleted before their cache went with them (#125). Returns how many.
+pub fn sweep_orphan_caches() -> usize {
+    let Ok(root) = user_data_root() else { return 0 };
+    let Some(twin) = browser_cache_twin(&root) else { return 0 };
+    let Ok(entries) = std::fs::read_dir(&twin) else { return 0 };
+    let mut n = 0;
+    for e in entries.flatten() {
+        if e.path().is_dir() && !root.join(e.file_name()).exists() && std::fs::remove_dir_all(e.path()).is_ok() {
+            n += 1;
+        }
+    }
+    n
+}
+
 /// Unpacked extensions, one directory per id; `--load-extension` points here.
 pub fn extensions_dir() -> Result<PathBuf> {
     data_sub("extensions")
+}
+
+/// Password-protected profiles' sealed browser data, one `<id>.data` each (#127).
+pub fn protected_dir() -> Result<PathBuf> {
+    data_sub("protected")
 }
 
 /// Deleted profiles, one `<id>.zip` + `<id>.json` manifest each.
@@ -214,5 +251,23 @@ impl Drop for TestRoot {
         TEST_CONFIG.with(|c| *c.borrow_mut() = None);
         set_data_root(None);
         let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod cache_twin_tests {
+    use super::browser_cache_twin;
+
+    /// #125: Chromium's own mapping, profile under the config folder -> same path under the cache one.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn a_profile_in_the_config_folder_has_its_cache_in_the_cache_folder() {
+        let udd = dirs::config_dir().unwrap().join("shardx-launcher/user-data/abc");
+        assert_eq!(browser_cache_twin(&udd), Some(dirs::cache_dir().unwrap().join("shardx-launcher/user-data/abc")));
+    }
+
+    #[test]
+    fn a_profile_elsewhere_keeps_its_cache_inside() {
+        assert_eq!(browser_cache_twin(std::path::Path::new("/Volumes/Data/shardx/user-data/abc")), None);
     }
 }

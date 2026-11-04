@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { Settings, ApiInfo, DataRootInfo } from "./types";
+import { useProfilePasswords } from "./profilePasswords";
 
 /** The settings file, minus the API signing key. The form must never hold
  *  it: a Save would write an old key back after Regenerate token, and a
@@ -17,7 +18,7 @@ let saving = 0;
 export const settingsSave = (value: Settings) => {
   saving += 1;
   return invoke("settings_save", { value })
-    .then((r) => { sentSave = true; return r; })
+    .then((r) => { sentSave = true; useProfilePasswords.setState({ on: value.profile_passwords === true }); return r; })
     .finally(() => { saving -= 1; });
 };
 /** Why settings.json could not be read, or null when it reads fine. */

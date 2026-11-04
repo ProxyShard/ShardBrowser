@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { cn, layoutRect, Menu, pointerToLayout } from "@proxyshard/shardx-ui-kit";
 import { toast } from "../../shared/model/toast";
+import { confirmModal } from "../../shared/model/confirm";
+import { isOpenWithoutAutomation } from "../../shared/api/automationRefusals";
 import {
   automationCall,
   automationDetach,
@@ -11,7 +13,7 @@ import {
   type Frame,
   type Picked,
 } from "../../entities/automation";
-import { confirmDirect, processKill, profileList, profileRefusal, proxyMissing, startRefusal, useProfile, useProfileUi, type ProfileMeta } from "../../entities/profile";
+import { confirmDirect, lockedRefusal, processKill, profileList, profileRefusal, proxyMissing, startRefusal, useProfile, useProfileUi, type ProfileMeta } from "../../entities/profile";
 import { proxyList } from "../../entities/proxy";
 import { describeTarget, liveActions, type MenuAction } from "./liveActions";
 import { useT } from "../../shared/i18n";
@@ -70,7 +72,8 @@ export function useLiveBrowser(profileId: string | null) {
     const p = fresh.find((x) => x.id === profileId);
     if (!p) return;
     // A team's: driving it needs Start and Cookies, and no other device holding it.
-    const refused = startRefusal(p) ?? profileRefusal(p, "cookies");
+    // A protected one is never driven (automation_launch refuses it).
+    const refused = startRefusal(p) ?? profileRefusal(p, "cookies") ?? lockedRefusal(p);
     if (refused) { toast.fail({ title: t("liveView.openFailed"), detail: refused }); return; }
     if (proxyMissing(p, proxies)) {
       toast.err(t("useProfile.proxyMissingStart", { name: p.name }), {
@@ -83,11 +86,27 @@ export function useLiveBrowser(profileId: string | null) {
     const choice = await confirmDirect(useProfile.getState, [p]);
     if (choice === "assign") { useProfileUi.getState().openAssign([p.id]); return; }
     if (choice !== "start") return;
-    setBusy(true);
-    try {
-      await automationLaunch(profileId);
+    const open = async (restart: boolean) => {
+      await automationLaunch(profileId, restart);
       await automationScreencast(profileId, true, MAX_W, MAX_H);
       setLive(true);
+    };
+    setBusy(true);
+    try {
+      try { await open(false); }
+      catch (e) {
+        // Already open without automation: that window can't get it, so it restarts only if asked.
+        if (!isOpenWithoutAutomation(e)) throw e;
+        setBusy(false);
+        const yes = await confirmModal({
+          title: t("liveView.withoutAutomationTitle", { name: p.name }),
+          message: t("liveView.withoutAutomationMessage"),
+          confirmLabel: t("liveView.restart"),
+        });
+        if (yes !== true) return;
+        setBusy(true);
+        await open(true);
+      }
     } catch (e) { toast.fail({ title: t("liveView.openFailed"), detail: e }); }
     finally { setBusy(false); }
   }, [profileId, t]);

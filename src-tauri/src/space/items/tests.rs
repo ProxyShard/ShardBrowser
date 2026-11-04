@@ -82,7 +82,7 @@ fn forbidden(right: &'static str) -> Option<CmdError> {
 }
 
 fn mark(id: &str, title: &str, url: &str, folder: &str) -> bookmarks::Bookmark {
-    bookmarks::Bookmark { id: id.into(), title: title.into(), url: url.into(), folder: folder.into() }
+    bookmarks::Bookmark { id: id.into(), title: title.into(), url: url.into(), folder: folder.into(), root: String::new(), path: Vec::new() }
 }
 
 #[tokio::test]
@@ -104,6 +104,13 @@ async fn bookmarks_and_tags_go_to_the_team_and_come_back() {
     assert!(!crate::store::bookmarks_path().unwrap().exists(), "nothing in this machine's own bookmarks");
     bookmarks::delete(Door("bookmark_delete"), &Ticket::now(), &b.id).await.unwrap();
     assert!(t.stored("bookmark", &b.id).await.is_none());
+    assert!(bookmarks::list().unwrap().is_empty());
+    // Several at once, in one call.
+    let tk = Ticket::now();
+    let x = bookmarks::save(Door("bookmark_save"), &tk, mark("", "X", "x.example", "")).await.unwrap();
+    let y = bookmarks::save(Door("bookmark_save"), &tk, mark("", "Y", "y.example", "")).await.unwrap();
+    bookmarks::delete_many(Door("bookmark_delete_many"), &Ticket::now(), &[x.id.clone(), y.id.clone()]).await.unwrap();
+    assert!(t.stored("bookmark", &x.id).await.is_none() && t.stored("bookmark", &y.id).await.is_none());
     assert!(bookmarks::list().unwrap().is_empty());
 
     // Tags: by name, one name once, a deleted one off every profile that had it.
@@ -298,6 +305,8 @@ async fn each_write_asks_its_right_on_the_whole_team() {
     let edit = bookmarks::save(Door("bookmark_save"), &tk, mark("b1", "y", "y.example", "")).await;
     assert_eq!(refusal(edit.unwrap_err()), forbidden("edit"));
     let gone = bookmarks::delete(Door("bookmark_delete"), &tk, "b1").await;
+    assert_eq!(refusal(gone.unwrap_err()), forbidden("delete"));
+    let gone = bookmarks::delete_many(Door("bookmark_delete_many"), &tk, &["b1".to_string()]).await;
     assert_eq!(refusal(gone.unwrap_err()), forbidden("delete"));
     let src = an_extension(&t.root.path);
     let ext = extensions::import(Door("extension_import"), &tk, &src).await;

@@ -99,6 +99,7 @@ const lowerRows = (page: Page) => page.locator("[data-usage-rows]").evaluate((ro
 });
 
 test("no card sits alone in a row: the lower cards share their rows evenly", async ({ page }) => {
+  test.slow(); // two loads and four window sizes: over 30 s on the dev server
   await openUsage(page);
   // Requests and Failed requests: one row of two, wide or narrow.
   expect(await lowerRows(page)).toEqual([{ n: 2, full: false }]);

@@ -128,6 +128,11 @@ const RULES: &[(&str, Need)] = &[
     // Profiles.
     ("profile_list", SEE_P),
     ("profile_get", SEE_P),
+    // A password-protected profile is this machine's own: no team profile has one (#127).
+    ("profile_protect", Off),
+    ("profile_unprotect", Off),
+    ("profile_change_password", Off),
+    ("profile_unlock", Off),
     (
         "profile_save",
         Rights(&[
@@ -236,6 +241,7 @@ const RULES: &[(&str, Need)] = &[
     ("bookmark_list", SEE_T),
     ("bookmark_save", UPSERT_T),
     ("bookmark_delete", DELETE_T),
+    ("bookmark_delete_many", DELETE_T),
     // Tags are the team's; which profile carries one is the profile's.
     ("tag_list", SEE_T),
     ("tag_save", UPSERT_T),
@@ -424,6 +430,7 @@ pub const ENFORCED: &[&str] = &[
     "tag_delete",
     "bookmark_save",
     "bookmark_delete",
+    "bookmark_delete_many",
     "extension_import",
     "extension_import_url",
     "extension_delete",

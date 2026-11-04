@@ -21,7 +21,7 @@ import type { ProfileMeta, ProfileForm } from "../model/types";
 import {
   profileList, profileGet, profileSave, profileDelete, profileClone,
   profileSetPin, profileSetFolder, profileBindProxy, profileImport,
-  processList, processKill, launch, launchCancel, syncLaunch,
+  processList, processKill, launch, launchCancel, syncLaunch, profileUnlock,
   folderAdd, folderDelete, folderRename, cookiesExportToFile, cookiesImport, enrichPicksForPreset,
 } from "../model/api";
 import { fromStored, toStored } from "../model/form";
@@ -40,7 +40,11 @@ import type { AssignPair } from "./assignment";
 import { useViews } from "./views";
 import { setTagAssignGuard, useTags } from "../../tag";
 import { adminRefusal, bindRefusal, inFolder, inTeam, teamRefusal } from "../../space";
-import { cloneRefusal, isTeamRow, letThrough, moveRefusal, profileRefusal, startRefusal } from "./rights";
+import { cloneRefusal, isTeamRow, letThrough, lockedRefusal, moveRefusal, profileRefusal, startRefusal } from "./rights";
+import { isLockedStub, isProtected, isWrongPassword } from "./lock";
+import { askPassword } from "../../../shared/model/passwordAsk";
+import { LOCK_REFUSALS } from "../../../shared/api/lockRefusals";
+import { loadProfilePasswords } from "../../settings";
 
 /** How long a start or stop may run ahead of the poll before the poll wins. */
 const PENDING_MS = 20_000;
@@ -229,14 +233,18 @@ export type ProfileStore = {
   /** Takes a deleted Folder out of the registry here: `folder_delete` did in the backend. */
   forgetFolder: (f: string) => void;
 
-  /** A profile as an editor form; Peek's cache keeps it (PERF-14). */
+  /** A profile as an editor form; Peek's cache keeps it (PERF-14). A protected
+   *  one's is refused: it opens only with its password (`unlockForm`). */
   loadForm: (id: string) => Promise<ProfileForm>;
+  /** A protected profile as an editor form, opened with its password; never cached. */
+  unlockForm: (id: string, password: string) => Promise<ProfileForm>;
   /** Loads the forms of these profiles into Peek's cache, quietly. */
   prefetchForms: (ids: string[]) => void;
   /** Saves the form of an existing profile, quietly: "conflict" when the
    *  profile changed on disk since the form's rev, "failed" for any other
-   *  error, which `opts.onFailed` gets. Nothing is shown here. */
-  saveProfile: (draft: ProfileForm, opts?: { onFailed?: (error: unknown) => void }) => Promise<SaveResult>;
+   *  error, which `opts.onFailed` gets. Nothing is shown here. A protected
+   *  profile is saved with the `password` its editor was opened with. */
+  saveProfile: (draft: ProfileForm, opts?: { onFailed?: (error: unknown) => void; password?: string }) => Promise<SaveResult>;
   /** Creates the profile the profile form describes (Create profile): the
    *  backend creates it from the form, the form's values go over what the
    *  backend rolls for a new profile, then it goes in its Folder, on its
@@ -260,14 +268,16 @@ export type ProfileStore = {
    *  proxy offered. Starting one with no proxy while proxies exist asks
    *  first (O9a), unless `directChecked` says the question already ran for
    *  this start. `quiet` reports nothing: a bulk caller reports the batch
-   *  once (IFACE-06). */
-  startStop: (p: ProfileMeta, opts?: { directChecked?: boolean; quiet?: boolean }) => Promise<string | null>;
+   *  once (IFACE-06). A protected profile's password is asked first, at
+   *  every start; one the person did not give goes into `skipped`. */
+  startStop: (p: ProfileMeta, opts?: { directChecked?: boolean; quiet?: boolean; skipped?: Set<string> }) => Promise<string | null>;
   /** Cancels a start that is still launching. The backend's `launch_cancel`
    *  (B49) ends the launch; without it (the command is missing, or fails) the
    *  launch is left to return, and whatever it started is stopped then. Either
    *  way no failure is reported, and the row says Cancelled for 3 s. A profile
-   *  that is not launching is left alone. */
-  cancelStart: (id: string) => Promise<void>;
+   *  that is not launching is left alone. `now`: no double-click guard (a
+   *  password dialog's Cancel, which is not where Start was). */
+  cancelStart: (id: string, opts?: { now?: boolean }) => Promise<void>;
   /** Moves one profile to the Trash, with an Undo toast. */
   remove: (id: string) => Promise<void>;
   /** Copies a profile: the copy shows at once, and its toast offers Open. */
@@ -554,7 +564,8 @@ export async function confirmDirect(
   targets: ProfileMeta[],
   opts?: { allowSkip?: boolean },
 ): Promise<"start" | "skip" | "assign" | "cancel"> {
-  const direct = targets.filter((p) => !p.proxy_id);
+  // A protected row's proxy is unknown while it is locked: never asked about.
+  const direct = targets.filter((p) => !p.proxy_id && !isProtected(p));
   if (direct.length === 0 || get().proxies.length === 0 || !useDirectStart.getState().ask) return "start";
   const allowSkip = opts?.allowSkip ?? true;
   const one = targets.length === 1;
@@ -662,6 +673,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   init: async () => {
     if (get().status === "loading" || get().status === "ready") return;
     set({ status: "loading" });
+    // Whether a password may be set, for the rows' menus.
+    loadProfilePasswords();
     // Listeners first, and once: a library that lands while the list loads
     // (the first engine download) must not be missed; a retried load must
     // not register them twice.
@@ -767,17 +780,23 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   },
 
   loadForm: async (id) => {
-    const form = fromStored(await profileGet(id));
+    const stored = await profileGet(id);
+    // A protected profile's stub has no fingerprint: no form is made of it.
+    if (isLockedStub(stored)) throw LOCK_REFUSALS.needsPassword;
+    const form = fromStored(stored);
     rememberForm(form);
     return form;
   },
+  unlockForm: async (id, password) => fromStored(await profileUnlock(id, password)),
 
   // A read still on its way is not asked for again (Pair 18 review, M11).
   // Peek's own read on arrival still goes: it must follow any save of that
   // profile, which a read started earlier may not.
   prefetchForms: (ids) => {
+    const locked = new Set(get().profiles.filter(isProtected).map((p) => p.id));
     for (const id of ids) {
-      if (isPlaceholder(id) || peekForm(id) || prefetching.has(id)) continue;
+      // A protected one opens only with its password: never read behind the person's back.
+      if (isPlaceholder(id) || locked.has(id) || peekForm(id) || prefetching.has(id)) continue;
       prefetching.add(id);
       void get().loadForm(id).catch(() => {}).finally(() => prefetching.delete(id));
     }
@@ -788,20 +807,24 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     const before = get().profiles.find((p) => p.id === draft.id);
     const refused = before ? profileRefusal(before, "edit") : null;
     if (refused) { opts?.onFailed?.(refused); return "failed"; }
-    // The list shows Peek's name, notes, proxy and color as the save starts (PERF-13).
+    const locked = isProtected(before);
+    if (locked && opts?.password === undefined) { opts?.onFailed?.(LOCK_REFUSALS.needsPassword); return "failed"; }
+    // The list shows Peek's name, notes, proxy and color as the save starts (PERF-13);
+    // a protected row only what it shows while locked.
     const edit = before
-      ? beginEdit(draft.id, { name: draft.name, notes: draft.notes, proxy_id: draft.proxy_id, color: draft.color || null }, before)
+      ? beginEdit(draft.id, locked ? { name: draft.name, color: draft.color || null } : { name: draft.name, notes: draft.notes, proxy_id: draft.proxy_id, color: draft.color || null }, before)
       : null;
     if (edit) showLocal(set, get);
     try {
       const fp = fingerprints.find((g) => g.id === draft.gpu_preset_id) ?? null;
       // Built on the profile as stored, so what the form doesn't show survives.
-      const prev = await profileGet(draft.id);
-      const saved = await profileSave(toStored(draft, fp, prev));
+      const prev = locked ? await profileUnlock(draft.id, opts!.password!) : await profileGet(draft.id);
+      const saved = await profileSave(toStored(draft, fp, prev), locked ? opts!.password : undefined);
       if (edit) endEdit(edit);
       // Only this profile changed: its row takes the saved one, no list read.
       putRows(set, get, [saved]);
-      for (const fn of formSaved) fn(draft);
+      // A protected one's settings stay in its editor: nothing else reads them.
+      if (!locked) for (const fn of formSaved) fn(draft);
       return "ok";
     } catch (e) {
       if (edit) { endEdit(edit); putBack(set, get, edit); }
@@ -819,11 +842,11 @@ export const useProfile = create<ProfileStore>((set, get) => ({
       (was) => t("useProfile.renameFailed", { name: was }), (p) => profileRefusal(p, "edit")),
   setNotes: (id, notes) =>
     patchRow(set, get, id, { notes }, (real) => patchStored(real, (s) => { s.notes = notes; }),
-      (was) => t("useProfile.notesFailed", { name: was }), (p) => profileRefusal(p, "edit")),
+      (was) => t("useProfile.notesFailed", { name: was }), (p) => profileRefusal(p, "edit") ?? lockedRefusal(p)),
   bindProxy: (id, proxyId) =>
     patchRow(set, get, id, { proxy_id: proxyId }, (real) => profileBindProxy(real, proxyId),
       (was) => t("useProfile.bindFailed", { name: was }),
-      (p) => profileRefusal(p, "edit") ?? (proxyId && isTeamRow(p) && proxyId !== p.proxy_id ? bindRefusal(proxyId) : null)),
+      (p) => profileRefusal(p, "edit") ?? lockedRefusal(p) ?? (proxyId && isTeamRow(p) && proxyId !== p.proxy_id ? bindRefusal(proxyId) : null)),
   applyRows: (rows) => putRows(set, get, rows),
 
   // Optimistic: the row shows the new state at once and the poll confirms it.
@@ -893,49 +916,70 @@ export const useProfile = create<ProfileStore>((set, get) => ({
       if (choice === "assign") { onAssign?.([p.id]); return null; }
       if (choice !== "start") return null;
     }
-    markStarted(set, get, p.id);
-    startedAt.set(p.id, performance.now());
-    set({ startBusy: withSet(get().startBusy, p.id, true) });
-    // What a cancel waits for: the launch has returned and this has settled it.
-    let settled!: () => void;
-    launching.set(p.id, new Promise<void>((done) => { settled = done; }));
-    try {
-      await launch(p.id);
-      // A launch longer than the poll's patience (`PENDING_MS`) was dropped
-      // from `running` meanwhile; it is running now, and a cancel stops it.
-      if (get().running[p.id] === undefined) markStarted(set, get, p.id);
-      // Cancelled while it launched: it went through anyway, and `cancelStart`
-      // stops it; not a start to announce.
-      if (!opts?.quiet && !get().cancelling.has(p.id)) announce(t("useProfile.startedAnnounce", { name: current.name }));
-      return null;
-    } catch (e) {
-      if (get().cancelling.has(p.id)) {
-        // The person cancelled it, and the launch ended (the backend's
-        // "cancelled" error, or a failure on its way): a choice, not a
-        // failure. Nothing runs, and nothing says it failed.
-        set({ pending: without(get().pending, [p.id]), running: without(get().running, [p.id]) });
+    // The launch itself, with a protected profile's password. A wrong one is
+    // thrown for the dialog to say, with nothing marked failed.
+    const go = async (password?: string): Promise<string | null> => {
+      markStarted(set, get, p.id);
+      startedAt.set(p.id, performance.now());
+      set({ startBusy: withSet(get().startBusy, p.id, true) });
+      // What a cancel waits for: the launch has returned and this has settled it.
+      let settled!: () => void;
+      launching.set(p.id, new Promise<void>((done) => { settled = done; }));
+      try {
+        await launch(p.id, password);
+        // A launch longer than the poll's patience (`PENDING_MS`) was dropped
+        // from `running` meanwhile; it is running now, and a cancel stops it.
+        if (get().running[p.id] === undefined) markStarted(set, get, p.id);
+        // Cancelled while it launched: it went through anyway, and `cancelStart`
+        // stops it; not a start to announce.
+        if (!opts?.quiet && !get().cancelling.has(p.id)) announce(t("useProfile.startedAnnounce", { name: current.name }));
         return null;
+      } catch (e) {
+        if (get().cancelling.has(p.id)) {
+          // The person cancelled it, and the launch ended (the backend's
+          // "cancelled" error, or a failure on its way): a choice, not a
+          // failure. Nothing runs, and nothing says it failed.
+          set({ pending: without(get().pending, [p.id]), running: without(get().running, [p.id]) });
+          return null;
+        }
+        if (password !== undefined && isWrongPassword(e)) {
+          set({ pending: without(get().pending, [p.id]), running: without(get().running, [p.id]) });
+          throw e;
+        }
+        // One write: a watcher never sees the start confirmed (pending gone,
+        // running still marked) on its way to failed (the star ask counts it).
+        set({ pending: without(get().pending, [p.id]), running: without(get().running, [p.id]), startFailed: { ...get().startFailed, [p.id]: Date.now() }, failReasons: { ...get().failReasons, [p.id]: reason(e) } });
+        // Names the profile and closes on its own (8 s); the row keeps Failed
+        // and its why line. The backend's words are the detail (WRITE-01, PC-037).
+        if (!opts?.quiet) toast.fail({ title: t("useProfile.startFailed", { name: current.name }), detail: e, subject: current.name });
+        return reason(e);
+      } finally {
+        set({ startBusy: withSet(get().startBusy, p.id, false) });
+        startedAt.delete(p.id);
+        launching.delete(p.id);
+        settled();
       }
-      // One write: a watcher never sees the start confirmed (pending gone,
-      // running still marked) on its way to failed (the star ask counts it).
-      set({ pending: without(get().pending, [p.id]), running: without(get().running, [p.id]), startFailed: { ...get().startFailed, [p.id]: Date.now() }, failReasons: { ...get().failReasons, [p.id]: reason(e) } });
-      // Names the profile and closes on its own (8 s); the row keeps Failed
-      // and its why line. The backend's words are the detail (WRITE-01, PC-037).
-      if (!opts?.quiet) toast.fail({ title: t("useProfile.startFailed", { name: current.name }), detail: e, subject: current.name });
-      return reason(e);
-    } finally {
-      set({ startBusy: withSet(get().startBusy, p.id, false) });
-      startedAt.delete(p.id);
-      launching.delete(p.id);
-      settled();
-    }
+    };
+    if (!isProtected(current)) return go();
+    // Asked at every start (#127); the launch runs from the dialog, which stays
+    // for another try after a wrong one. Cancel is a choice: nothing to report.
+    const answer = await askPassword({
+      kind: "ask",
+      title: t("profileLock.startTitle", { name: current.name }),
+      message: t("profileLock.startMessage"),
+      confirmLabel: t("commands.start"),
+      attempt: ({ password }) => go(password),
+      onBusyCancel: () => { void get().cancelStart(p.id, { now: true }); },
+    });
+    if (!answer) opts?.skipped?.add(p.id);
+    return answer ? answer.value : null;
   },
 
-  cancelStart: async (id) => {
+  cancelStart: async (id, opts) => {
     // Not launching (or already cancelled): nothing to cancel.
     if (!get().startBusy.has(id) || get().cancelling.has(id)) return;
     // The click that started it may be the one pressing this (a double-click).
-    if (performance.now() - (startedAt.get(id) ?? -Infinity) < CANCEL_GUARD_MS) return;
+    if (!opts?.now && performance.now() - (startedAt.get(id) ?? -Infinity) < CANCEL_GUARD_MS) return;
     const returned = launching.get(id);
     set({ cancelling: withSet(get().cancelling, id, true) });
     const name = get().profiles.find((p) => p.id === id)?.name ?? "";
@@ -967,7 +1011,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   cloneProfile: async (id) => {
     const src = get().profiles.find((p) => p.id === id);
     if (!src) return;
-    const refused = cloneRefusal(src);
+    const refused = cloneRefusal(src) ?? lockedRefusal(src);
     if (refused) { toast.fail({ title: t("useProfile.cloneFailed", { name: src.name }), detail: refused }); return; }
     // The copy shows at once where the backend lists new profiles, named as
     // the backend names it (`clone_profile`); its call runs behind it (LQ-03).
@@ -1011,7 +1055,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     const [id] = await realIds([given.id]);
     if (!id) return;
     const p = get().profiles.find((x) => x.id === id) ?? given;
-    if (isTeamRow(p)) { toast.fail({ title: t("useProfile.cookiesExportFailed", { name: p.name }), detail: t("errors.teamNotYet"), subject: p.name }); return; }
+    const refused = isTeamRow(p) ? t("errors.teamNotYet") : lockedRefusal(p);
+    if (refused) { toast.fail({ title: t("useProfile.cookiesExportFailed", { name: p.name }), detail: refused, subject: p.name }); return; }
     try {
       const path = await saveDialog({
         defaultPath: `${(p.name || p.id).replace(/[^\w.-]+/g, "_")}-cookies.json`,
@@ -1031,7 +1076,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   importCookies: async (given) => {
     const [id] = await realIds([given.id]);
     if (!id) return;
-    if (isTeamRow(given)) { toast.fail({ title: t("useProfile.cookiesImportFailed", { name: given.name }), detail: t("errors.teamNotYet"), subject: given.name }); return; }
+    const refused = isTeamRow(given) ? t("errors.teamNotYet") : lockedRefusal(given);
+    if (refused) { toast.fail({ title: t("useProfile.cookiesImportFailed", { name: given.name }), detail: refused, subject: given.name }); return; }
     if (get().running[id]) { toast.err(t("useProfile.stopBeforeCookieImport")); return; }
     try {
       const picked = await pickTextFile({ accept: ".json,application/json", maxBytes: 20 * MB });
@@ -1286,7 +1332,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     // Open on another computer: never in this fleet; nor a team's it may not start.
     const leased = sayLeased(ids.map((id) => byId.get(id)).filter((p): p is ProfileMeta => !!p && !missing.includes(p.id)));
     const left = ids.filter((id) => !missing.includes(id) && !leased.includes(id));
-    const mayStart = new Set(allowed(get, left, (p, many) => startRefusal(p, many), (name) => t("useProfile.startFailed", { name })));
+    // A protected one starts only on its own, with its password.
+    const mayStart = new Set(allowed(get, left, (p, many) => startRefusal(p, many) ?? lockedRefusal(p), (name) => t("useProfile.startFailed", { name })));
     const held = [...leased, ...left.filter((id) => !mayStart.has(id))];
     // An id the list doesn't know can't be checked, so it doesn't go either.
     const startable = ids
@@ -1300,7 +1347,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     const choice = await confirmDirect(get, startable);
     if (choice === "assign") { onAssign?.(startable.map((p) => p.id)); return false; }
     if (choice === "cancel") return false;
-    const ok = (choice === "skip" ? startable.filter((p) => p.proxy_id) : startable).map((p) => p.id);
+    const ok = (choice === "skip" ? startable.filter((p) => p.proxy_id || isProtected(p)) : startable).map((p) => p.id);
     if (ok.length < 2) return false; // nothing left to synchronise
     // Per launch, not fixed: two fleets must not share session files.
     const group = `fleet-${Date.now().toString(36)}`;
@@ -1352,7 +1399,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     if (choice === "assign") onAssign?.(startable.map((p) => p.id));
     if (choice === "cancel" || choice === "assign") return [...failed, ...startable.map((p) => p.id)];
     // "Start the others" leaves the ones with no proxy as they are.
-    const todo = startable.filter((p) => choice !== "skip" || !!p.proxy_id);
+    const todo = startable.filter((p) => choice !== "skip" || !!p.proxy_id || isProtected(p));
     for (const p of startable) if (!todo.includes(p)) failed.push(p.id);
     if (todo.length === 0) return failed;
     // One toast for the whole batch instead of one per profile (IFACE-06):
@@ -1360,16 +1407,20 @@ export const useProfile = create<ProfileStore>((set, get) => ({
     const total = todo.length;
     const prog = total > 1 ? toast.progress({ title: t("useProfile.startingMany", { done: 0, total }), total }) : null;
     const errors: { p: ProfileMeta; message: string }[] = [];
+    // Protected ones whose password the person did not give: left as they are.
+    const unasked = new Set<string>();
     let done = 0;
-    // One at a time, as before: each launch probes the network first.
+    // One at a time, as before: each launch probes the network first, and each
+    // protected one asks its password in turn.
     for (const p of todo) {
-      const message = await get().startStop(p, { directChecked: true, quiet: prog !== null });
+      const message = await get().startStop(p, { directChecked: true, quiet: prog !== null, skipped: unasked });
       if (message) { errors.push({ p, message }); failed.push(p.id); }
+      else if (unasked.has(p.id)) failed.push(p.id);
       done++;
       prog?.update(done, t("useProfile.startingMany", { done, total }));
     }
     if (!prog) return failed;
-    const started = total - errors.length;
+    const started = total - errors.length - unasked.size;
     prog.done({
       title: errors.length
         ? t("useProfile.startedManyFailed", { n: started, total, failed: errors.length })
@@ -1482,7 +1533,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
 
   // Dump selected profile FingerprintConfigs as a JSON array to clipboard.
   exportMany: async (given) => {
-    const ids = await realIds(allowed(get, given, (p, many) => profileRefusal(p, "take_out", many), () => t("useProfile.copyJsonFailed")));
+    const ids = await realIds(allowed(get, given, (p, many) => profileRefusal(p, "take_out", many) ?? lockedRefusal(p), () => t("useProfile.copyJsonFailed")));
     if (ids.length === 0) return;
     try {
       const payloads = await Promise.all(ids.map((id) => profileGet(id)));
@@ -1532,7 +1583,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   assignPairs: async (asked) => {
     const to = new Map(asked.map((p) => [p.profileId, p.proxyId]));
     const bindable = (p: ProfileMeta) => { const x = to.get(p.id); return x && isTeamRow(p) && x !== p.proxy_id ? bindRefusal(x) : null; };
-    const ok = new Set(allowed(get, asked.map((p) => p.profileId), (p, many) => profileRefusal(p, "edit", many) ?? bindable(p), (name) => t("useProfile.bindFailed", { name })));
+    // A protected one's proxy changes in its editor, with its password.
+    const ok = new Set(allowed(get, asked.map((p) => p.profileId), (p, many) => profileRefusal(p, "edit", many) ?? lockedRefusal(p) ?? bindable(p), (name) => t("useProfile.bindFailed", { name })));
     const pairs = asked.filter((p) => ok.has(p.profileId));
     if (pairs.length === 0) return false;
     const ids = pairs.map((p) => p.profileId);
@@ -1559,7 +1611,8 @@ export const useProfile = create<ProfileStore>((set, get) => ({
   },
 
   regenerateFingerprints: async (given) => {
-    const ids = allowed(get, given, (p, many) => profileRefusal(p, "edit", many), (name) => t("useProfile.regenerateFailed", { name }));
+    // A protected one's fingerprint is sealed: it is never read here.
+    const ids = allowed(get, given, (p, many) => profileRefusal(p, "edit", many) ?? lockedRefusal(p), (name) => t("useProfile.regenerateFailed", { name }));
     if (ids.length === 0) return 0;
     const one = ids.length === 1;
     const oneName = one ? (get().profiles.find((p) => p.id === ids[0])?.name ?? "") : "";

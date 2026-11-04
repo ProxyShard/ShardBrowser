@@ -69,6 +69,8 @@ pub enum ExitHook {
     /// A personal profile synced to the person's server: kept here as `Local`,
     /// and its session goes back under the lease it was opened with.
     Synced(crate::space::open::Handoff),
+    /// A password-protected profile (#127): kept here as `Local`, its browser data sealed again.
+    Sealed(crate::space::profile::Unsealed),
 }
 
 impl ExitHook {
@@ -172,6 +174,15 @@ impl Tracker {
                 ExitHook::Synced(hand) => {
                     after_exit(&profile_id, &ExitHook::Local, started_at.elapsed().as_millis() as u64);
                     hand.closed().await;
+                }
+                ExitHook::Sealed(open) => {
+                    after_exit(&profile_id, &ExitHook::Local, started_at.elapsed().as_millis() as u64);
+                    let id = profile_id.clone();
+                    match tokio::task::spawn_blocking(move || open.seal()).await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(e)) => eprintln!("[launcher] {id}: browser data left unsealed: {e:#}"),
+                        Err(e) => eprintln!("[launcher] {id}: sealing stopped: {e}"),
+                    }
                 }
                 local => {
                     after_exit(&profile_id, &local, started_at.elapsed().as_millis() as u64);
@@ -551,7 +562,7 @@ fn after_exit(profile_id: &str, exit: &ExitHook, elapsed_ms: u64) -> bool {
             Err(e) => eprintln!("[launcher] temporary profile {profile_id} cleanup failed: {e}"),
         },
         // Sent back by the tracker itself, which waits for it.
-        ExitHook::Remote(_) | ExitHook::Synced(_) => {}
+        ExitHook::Remote(_) | ExitHook::Synced(_) | ExitHook::Sealed(_) => {}
     }
     // An extension update that waited for this browser may go in now.
     crate::space::extensions::profile_closed(profile_id);

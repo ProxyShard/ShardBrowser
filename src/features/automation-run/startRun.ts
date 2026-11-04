@@ -1,7 +1,7 @@
 import { automationRun, type Project } from "../../entities/automation";
 import { profileList } from "../../entities/profile/model/api";
 import type { ProfileMeta } from "../../entities/profile/model/types";
-import { confirmDirect, proxyMissing, useProfile, useProfileUi } from "../../entities/profile";
+import { confirmDirect, isProtected, lockedRefusal, proxyMissing, useProfile, useProfileUi } from "../../entities/profile";
 import { proxyList } from "../../entities/proxy";
 import { t } from "../../shared/i18n";
 import { toast } from "../../shared/model/toast";
@@ -50,6 +50,12 @@ export async function startProjectRun(project: Project): Promise<void> {
   const targets = profilesUsed(project)
     .map((id) => fresh.find((p) => p.id === id))
     .filter((p): p is ProfileMeta => !!p);
+  // A run never opens a protected profile (the runner refuses it): said before anything starts.
+  const locked = targets.find(isProtected);
+  if (locked) {
+    toast.fail({ title: t("projectEditor.runFailed", { name: project.name }), detail: `${locked.name}: ${lockedRefusal(locked)}` });
+    return;
+  }
   const missing = targets.filter((p) => proxyMissing(p, proxies));
   if (missing.length > 0) {
     toast.err(

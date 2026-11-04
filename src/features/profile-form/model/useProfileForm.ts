@@ -10,9 +10,10 @@ import { AUTO_LANG, AUTO_TZ, matchesOs } from "../../../shared/constants";
 import { useGpuCompat, verdictsLoaded } from "../../../shared/model/gpuCompat";
 import { inFolder, teamRefusal } from "../../../entities/space";
 import {
-  cookiesImport, editsSettled, profileRefusal, enrichPicksForPreset, fromStored, resolveId, selectVisible, useProfile, useProfileUi,
-  type ProfileForm,
+  cookiesImport, editsSettled, forgetForm, isProtected, passwordProblem, profileProtect, profileRefusal, enrichPicksForPreset, fromStored, resolveId,
+  selectVisible, useProfile, useProfileUi, type ProfileForm,
 } from "../../../entities/profile";
+import { askPassword } from "../../../shared/model/passwordAsk";
 import type { FingerprintEntry } from "../../../entities/fingerprint";
 import { proxyBulkParse, proxySave } from "../../../entities/proxy";
 import { clean, useTags } from "../../../entities/tag";
@@ -67,11 +68,18 @@ type ProfileFormState = {
   host: HostScreen | null;
   /** The Screen field was set by hand in this form, "As in the fingerprint" too. */
   screenPicked: boolean;
+  /** A new profile's password and its repeat (#127): set once everything else
+   *  landed. Kept only while the form is open, never stored. */
+  password: string;
+  passwordRepeat: string;
+  /** The password a protected profile was opened with: its saves carry it. Dropped on close. */
+  unlocked: string | null;
 };
 
 export const useProfileForm = create<ProfileFormState>(() => ({
   open: false, mode: "edit", id: null, tab: "basics", draft: null, saved: null,
   status: "idle", error: null, errorDetail: null, session: 0, theirs: null, tried: false, badFields: [], host: null, screenPicked: false,
+  password: "", passwordRepeat: "", unlocked: null,
 }));
 
 const get = () => useProfileForm.getState();
@@ -94,16 +102,18 @@ const OWN = new Set<keyof ProfileForm>(["id", "rev", "cookies_file"]);
 const tabOf = (k: keyof ProfileForm): ProfileFormTab =>
   BASICS.has(k) ? "basics" : PROXY.has(k) ? "proxy" : EXTENSIONS.has(k) ? "extensions" : "fingerprint";
 
-export function isDirty(s: Pick<ProfileFormState, "draft" | "saved">): boolean {
-  return !!s.draft && !!s.saved && key(s.draft) !== key(s.saved);
+export function isDirty(s: Pick<ProfileFormState, "draft" | "saved"> & Partial<Pick<ProfileFormState, "password" | "passwordRepeat">>): boolean {
+  if (!s.draft || !s.saved) return false;
+  // A password typed is a change: it is set on Save, and Cancel drops it.
+  return key(s.draft) !== key(s.saved) || !!s.password || !!s.passwordRepeat;
 }
 
 /** The tabs holding unsaved changes. */
-export function changedTabs(s: Pick<ProfileFormState, "draft" | "saved">): Set<ProfileFormTab> {
+export function changedTabs(s: Pick<ProfileFormState, "draft" | "saved"> & Partial<Pick<ProfileFormState, "password" | "passwordRepeat">>): Set<ProfileFormTab> {
   const out = new Set<ProfileFormTab>();
   const { draft: d, saved: o } = s;
   if (!d || !o) return out;
-  if (d.folder !== o.folder || !sameTags(d, o) || (d.cookies?.name ?? null) !== (o.cookies?.name ?? null)) out.add("basics");
+  if (d.folder !== o.folder || !sameTags(d, o) || (d.cookies?.name ?? null) !== (o.cookies?.name ?? null) || s.password || s.passwordRepeat) out.add("basics");
   if (d.newProxyLine !== o.newProxyLine) out.add("proxy");
   for (const k of Object.keys(d.form) as (keyof ProfileForm)[]) {
     if (OWN.has(k) || JSON.stringify(d.form[k]) === JSON.stringify(o.form[k])) continue;
@@ -116,6 +126,12 @@ export function changedTabs(s: Pick<ProfileFormState, "draft" | "saved">): Set<P
 export function problemsOf(d: ProfileFormDraft | null): { name?: string } {
   if (!d) return {};
   return d.form.name.trim() ? {} : { name: t("profileForm.nameRequired") };
+}
+
+/** Why the new password is not taken yet, in words; null when there is none or it is fine. */
+export function passwordProblemOf(s: Pick<ProfileFormState, "password" | "passwordRepeat"> = get()): string | null {
+  const problem = passwordProblem(s.password, s.passwordRepeat);
+  return problem === "short" ? t("errors.passwordTooShort") : problem === "mismatch" ? t("profileLock.mismatch") : null;
 }
 
 /** The lowest "Profile N" nobody uses yet. */
@@ -235,18 +251,51 @@ async function loadCreate(session: number, proxyId: string | null, preset?: Part
 /// starts a new profile with these fields set; a `gpu_preset_id` in it picks
 /// that library fingerprint (all its fields come with it) instead of a random one.
 export function openProfileForm(opts: { mode: "edit"; id: string; tab?: ProfileFormTab } | { mode: "create"; tab?: ProfileFormTab; proxyId?: string | null; preset?: Partial<ProfileForm> }): void {
+  // A protected profile opens only once its password is given (#127).
+  if (opts.mode === "edit" && isProtected(useProfile.getState().profiles.find((p) => p.id === opts.id))) { void openLocked(opts); return; }
   const session = get().session + 1;
   set({
     open: true, mode: opts.mode, id: opts.mode === "edit" ? opts.id : null, tab: opts.tab ?? "basics",
     draft: null, saved: null, status: "idle", error: null, errorDetail: null, session, theirs: null, tried: false, badFields: [], screenPicked: false,
+    password: "", passwordRepeat: "", unlocked: null,
   });
   if (opts.mode === "edit") void loadEdit(session, opts.id);
   else void loadCreate(session, opts.proxyId ?? null, opts.preset);
 }
 
-/** Closes it; what was not saved is dropped (the dialog asked first). */
+/// A protected profile's form: its password first, in the password dialog, which
+/// reads the profile with it (`profile_unlock`) and stays for another try after a
+/// wrong one. Cancel opens nothing. The password stays with the form until it closes.
+async function openLocked(opts: { id: string; tab?: ProfileFormTab }): Promise<void> {
+  const name = useProfile.getState().profiles.find((p) => p.id === opts.id)?.name ?? "";
+  const real = await resolveId(opts.id);
+  if (!real) return;
+  await editsSettled(real);
+  const answer = await askPassword({
+    kind: "ask",
+    title: t("profileLock.editTitle", { name }),
+    message: t("profileLock.editMessage"),
+    confirmLabel: t("profileLock.open"),
+    attempt: async ({ password }) => ({ form: await useProfile.getState().unlockForm(real, password), password }),
+  });
+  if (!answer) return;
+  set({
+    open: true, mode: "edit", id: real, tab: opts.tab ?? "basics", draft: null, saved: null, status: "idle", error: null, errorDetail: null,
+    session: get().session + 1, theirs: null, tried: false, badFields: [], screenPicked: false,
+    password: "", passwordRepeat: "", unlocked: answer.value.password,
+  });
+  show(draftOf(answer.value.form));
+}
+
+/** Closes it; what was not saved is dropped (the dialog asked first), and any password with it. */
 export function closeProfileForm(): void {
-  set({ open: false, session: get().session + 1, status: "idle" });
+  set({ open: false, session: get().session + 1, status: "idle", password: "", passwordRepeat: "", unlocked: null });
+}
+
+/** The new profile's password or its repeat, as typed. */
+export function setFormPassword(changes: Partial<Pick<ProfileFormState, "password" | "passwordRepeat">>): void {
+  if (get().status === "saving") return;
+  set(changes);
 }
 
 // Another space: a profile of the old one is not edited, or made, in it.
@@ -329,7 +378,7 @@ export function rightsProblem(s: Pick<ProfileFormState, "mode" | "id" | "draft" 
 
 /** True when Save or Create profile can run now. */
 export function canSave(s: ProfileFormState = get()): boolean {
-  if (!s.open || !s.draft || s.status === "saving" || problemsOf(s.draft).name || s.badFields.length > 0) return false;
+  if (!s.open || !s.draft || s.status === "saving" || problemsOf(s.draft).name || s.badFields.length > 0 || passwordProblemOf(s)) return false;
   if (rightsProblem(s)) return false;
   return s.mode === "create" || isDirty(s);
 }
@@ -349,6 +398,18 @@ async function importPickedCookies(id: string, name: string, cookies: ProfileFor
   }
 }
 
+/// The last step of a new profile with a password (#127): sealed once all else
+/// landed. A failure is said; the profile is there, open, and its menu sets one later.
+async function protectNew(id: string, name: string, password: string): Promise<void> {
+  try {
+    useProfile.getState().applyRows([await profileProtect(id, password)]);
+    // Peek's copy of the fingerprint goes: a sealed profile shows none.
+    forgetForm(id);
+  } catch (e) {
+    toast.fail({ title: t("profileLock.createdOpen", { name }), detail: e, subject: name });
+  }
+}
+
 /// Saves the form (edit) or creates the profile (create), once: a second
 /// press while one runs is ignored. True when it was written; on a failure
 /// the form stays open with every value as typed and says why.
@@ -358,6 +419,7 @@ export async function saveProfileForm(): Promise<boolean> {
   if (problemsOf(s.draft).name) { set({ tried: true, tab: "basics" }); return false; }
   // A number field shows text that is not a number: it is on screen, so nothing is saved behind it.
   if (s.badFields.length > 0) return false;
+  if (passwordProblemOf(s)) { set({ tried: true, tab: "basics" }); return false; }
   if (s.mode === "edit" && !isDirty(s)) return true;
   // A team's rights refuse it: the form says why, and nothing is sent.
   if (rightsProblem(s)) return false;
@@ -366,6 +428,10 @@ export async function saveProfileForm(): Promise<boolean> {
   set({ status: "saving", error: null, tried: true });
   let draft = s.draft;
   const name = draft.form.name.trim();
+  // A protected profile is read again with the password it was opened with.
+  const reread = (id: string) => (s.unlocked !== null ? useProfile.getState().unlockForm(id, s.unlocked) : useProfile.getState().loadForm(id));
+  // Closed: the password goes with the form.
+  const close = () => { if (here()) set({ open: false, status: "idle", session: get().session + 1, password: "", passwordRepeat: "", unlocked: null }); };
   const failed = (error: string, title: string, detail?: unknown) => {
     if (here()) set({ status: "error", error, errorDetail: explainError(detail) ?? null });
     toast.fail({ title, detail, subject: name });
@@ -375,7 +441,7 @@ export async function saveProfileForm(): Promise<boolean> {
   // The profile exists but one step did not land: the form goes on as its
   // edit form, with what did not land still to save, and says what that was.
   const stayOpen = async (id: string, line: string, why: unknown) => {
-    const stored = await useProfile.getState().loadForm(id).catch(() => null);
+    const stored = await reread(id).catch(() => null);
     if (!here()) return false;
     if (!stored) { closeProfileForm(); return false; }
     const opened = draftOf(stored);
@@ -418,7 +484,8 @@ export async function saveProfileForm(): Promise<boolean> {
       return stayOpen(meta.id, line, made.failed.error);
     }
     await importPickedCookies(meta.id, meta.name, draft.cookies);
-    if (here()) set({ open: false, status: "idle", session: get().session + 1 });
+    if (s.password) await protectNew(meta.id, meta.name, s.password);
+    close();
     const ui = useProfileUi.getState();
     // The list brought it into view already (or said that it hides it).
     if (selectVisible(ui).indexById.has(meta.id)) toast.saved(t("profileForm.created", { name: meta.name }));
@@ -431,9 +498,9 @@ export async function saveProfileForm(): Promise<boolean> {
   const id = s.id!;
   const rev = s.theirs?.rev ?? draft.form.rev;
   let why: unknown;
-  const result = await useProfile.getState().saveProfile({ ...draft.form, name, rev }, { onFailed: (e) => { why = e; } });
+  const result = await useProfile.getState().saveProfile({ ...draft.form, name, rev }, { onFailed: (e) => { why = e; }, password: s.unlocked ?? undefined });
   if (result === "conflict") {
-    const theirs = await useProfile.getState().loadForm(id).catch(() => null);
+    const theirs = await reread(id).catch(() => null);
     if (here()) set({ status: "conflict", theirs });
     return false;
   }
@@ -459,9 +526,11 @@ export async function saveProfileForm(): Promise<boolean> {
 
   // 5. Cookies picked in the form, now that it is saved.
   await importPickedCookies(id, name, draft.cookies);
+  // 6. The password of a new profile whose create stopped short, as its last step.
+  if (s.password) await protectNew(id, name, s.password);
 
-  // 6.
+  // 7.
   toast.saved(t("profileForm.saved", { name }));
-  if (here()) set({ open: false, status: "idle", session: get().session + 1 });
+  close();
   return true;
 }

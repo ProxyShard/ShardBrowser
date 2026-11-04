@@ -100,8 +100,8 @@ async fn profile_list() -> Result<Vec<space::profile::ProfileMeta>, String> {
 async fn profile_get(id: String) -> Result<Value, String> {
     space::ready().await;
     let mut stored = space::profile::fetch(&id).await.map_err(|e| e.to_string())?;
-    // Backfill gpu_preset_id for legacy profiles by matching webgl.renderer.
-    if stored.meta.gpu_preset_id.is_none() {
+    // Backfill gpu_preset_id for legacy profiles by matching webgl.renderer; a locked one has none to match.
+    if stored.meta.gpu_preset_id.is_none() && stored.meta.lock.is_none() {
         if let Some(gid) = infer_gpu_preset_id(&stored.config) {
             stored.meta.gpu_preset_id = Some(gid);
             // A team's copy refuses the save: the guess stays in this answer.
@@ -427,12 +427,44 @@ async fn profile_save(
     window: tauri::WebviewWindow,
     payload: Value,
     epoch: Option<u64>,
+    password: Option<String>,
 ) -> Result<space::profile::ProfileMeta, String> {
     // UI saves enrich new profiles; the API persists verbatim.
     let t = ticket(epoch)?;
-    save_profile_core(Some(&window), payload, true, space::Door("profile_save"), &t)
-        .await
-        .map_err(|e| e.to_string())
+    let (stored, mut opts) = profile_payload(Some(&window), payload, true)?;
+    opts.password = password;
+    space::profile::save(space::Door("profile_save"), &t, stored, opts).await.map_err(|e| e.to_string())
+}
+
+/// Lock a profile under its own password (#127).
+#[tauri::command]
+async fn profile_protect(id: String, password: String) -> Result<space::profile::ProfileMeta, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || space::profile::protect(&id, &password)).await;
+    let row = out.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    notify_store_changed("profiles");
+    Ok(row)
+}
+
+#[tauri::command]
+async fn profile_unprotect(id: String, password: String) -> Result<space::profile::ProfileMeta, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || space::profile::unprotect(&id, &password)).await;
+    let row = out.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    notify_store_changed("profiles");
+    Ok(row)
+}
+
+#[tauri::command]
+async fn profile_change_password(id: String, old_password: String, new_password: String) -> Result<(), String> {
+    let out = tauri::async_runtime::spawn_blocking(move || space::profile::change_password(&id, &old_password, &new_password)).await;
+    out.map_err(|e| e.to_string())?.map_err(|e| e.to_string())
+}
+
+/// The whole of a protected profile, for its editor; nothing of it is written.
+#[tauri::command]
+async fn profile_unlock(id: String, password: String) -> Result<Value, String> {
+    let out = tauri::async_runtime::spawn_blocking(move || space::profile::unlock(&id, &password)).await;
+    let stored = out.map_err(|e| e.to_string())?.map_err(|e| e.to_string())?;
+    serde_json::to_value(stored).map_err(|e| e.to_string())
 }
 
 /// Enrich a new profile in place: platform_version, hardware, screen clamp.
@@ -541,37 +573,95 @@ async fn automation_duplicate(id: String, epoch: Option<u64>) -> Result<space::a
     space::automation::duplicate(space::Door("automation_duplicate"), &t, &id).await.map_err(|e| e.to_string())
 }
 
-/// Starts a profile WITH automation on, and attaches. The ordinary UI launch
-/// deliberately leaves CDP off, so the studio needs its own door.
+/// The studio's start refusals; the UI reads them back (src/shared/api/automationRefusals.ts).
+pub const OPEN_WITHOUT_AUTOMATION: &str = "this profile is open without automation: it has to start again to be driven";
+pub const DID_NOT_CLOSE: &str = "the profile's browser did not close: close its window, then start it here again";
+pub const NO_DEBUG_PORT: &str = "the browser started, but it did not report its debugging port in time";
+pub const DRIVEN_BY_RUN: &str = "a project run is driving this profile: wait for it to finish, or stop it";
+
+/// Starts a profile WITH automation on, and attaches; one running with it already is attached to.
+/// `restart` closes one open without it first; without it, that one is refused.
 #[tauri::command]
-async fn automation_launch(app: tauri::AppHandle, profile_id: String) -> Result<u32, String> {
+async fn automation_launch(app: tauri::AppHandle, profile_id: String, restart: Option<bool>) -> Result<u32, String> {
+    if space::profile::is_protected(&profile_id) {
+        return Err(space::profile::NOT_FOR_PROTECTED.into());
+    }
     #[cfg(feature = "automation")]
     {
         if migrate::in_progress() {
             return Err("profiles are being moved — try again when that finishes".into());
         }
+        let running = process::Tracker::shared().running().into_iter().find(|r| r.profile_id == profile_id);
+        if let Some(r) = running.as_ref().filter(|r| r.cdp.is_some()) {
+            // A run's session has no live view, and input from here would fight the run.
+            if cdp::run_drives(&profile_id) {
+                return Err(DRIVEN_BY_RUN.into());
+            }
+            automation_attach(app, profile_id).await?;
+            return Ok(r.pid);
+        }
         // CDP cannot be turned on for a live process, so attaching to one opened
         // without it would give a focused window with no frames and no control.
-        if is_profile_running(&profile_id)
-            && process::Tracker::shared().cdp(&profile_id).is_none()
-        {
-            return Err(
-                "This profile is already open without debugging. Close it, then open it here."
-                    .into(),
-            );
+        let without = running.is_some();
+        if without {
+            if restart != Some(true) {
+                return Err(OPEN_WITHOUT_AUTOMATION.into());
+            }
+            close_for_restart(&profile_id).await?;
         }
         let b = bus().await?;
-        // (enable_cdp, headless) — the studio needs a visible window with CDP on.
-        let out = launch::launch_profile_synced(&profile_id, true, false, None, b.port, &b.token)
-            .await
-            .map_err(|e| e.to_string())?;
+        let out = start_with_cdp(&profile_id, without, b.port, &b.token).await?;
+        // No port: nothing to attach to, and cdp_pass would only say "not running".
+        if out.cdp.is_none() {
+            return Err(NO_DEBUG_PORT.into());
+        }
         automation_attach(app, profile_id).await?;
         return Ok(out.pid);
     }
     #[cfg(not(feature = "automation"))]
     {
-        let _ = (app, profile_id);
+        let _ = (app, profile_id, restart);
         Err("automation is not compiled into this build".into())
+    }
+}
+
+/// Closes a profile open without automation, once its passes allow the start after it.
+#[cfg(feature = "automation")]
+async fn close_for_restart(profile_id: &str) -> Result<(), String> {
+    match team::active_team() {
+        Some(team) => space::open::passes(&team, profile_id, true).await.map(|_| ()),
+        None => space::perm::start(profile_id).and_then(|_| space::perm::cookies(profile_id)).map(|_| ()),
+    }
+    .map_err(|e| e.to_string())?;
+    let tracker = process::Tracker::shared();
+    let asked = tracker.kill(profile_id).await.map_err(|e| e.to_string())?;
+    // Stop answers once the browser is asked to quit; its entry goes once it has.
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while tracker.is_running(profile_id) {
+        if !asked || std::time::Instant::now() >= until {
+            return Err(DID_NOT_CLOSE.into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    Ok(())
+}
+
+/// The start with CDP on; after a restart, a team or synced session still being saved is waited out.
+#[cfg(feature = "automation")]
+async fn start_with_cdp(profile_id: &str, restarted: bool, port: u16, token: &str) -> Result<launch::LaunchOutcome, String> {
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    loop {
+        // (enable_cdp, headless) — the studio needs a visible window with CDP on.
+        match launch::launch_profile_synced(profile_id, true, false, None, port, token).await {
+            Err(e)
+                if restarted
+                    && std::time::Instant::now() < until
+                    && e.chain().any(|c| c.to_string() == space::open::BUSY) =>
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            done => return done.map_err(|e| e.to_string()),
+        }
     }
 }
 
@@ -1080,6 +1170,13 @@ async fn bookmark_save(entry: space::bookmarks::Bookmark, epoch: Option<u64>) ->
 async fn bookmark_delete(id: String, epoch: Option<u64>) -> Result<(), String> {
     let t = ticket(epoch)?;
     space::bookmarks::delete(space::Door("bookmark_delete"), &t, &id).await.map_err(|e| e.to_string())
+}
+
+/// The page's selection in one call: a few hundred one-by-one calls rewrote the store each time.
+#[tauri::command]
+async fn bookmark_delete_many(ids: Vec<String>, epoch: Option<u64>) -> Result<(), String> {
+    let t = ticket(epoch)?;
+    space::bookmarks::delete_many(space::Door("bookmark_delete_many"), &t, &ids).await.map_err(|e| e.to_string())
 }
 
 // ---- Tags ----
@@ -1604,14 +1701,14 @@ fn launch_cancel(profile_id: String) {
 }
 
 #[tauri::command]
-async fn launch(profile_id: String) -> Result<u32, String> {
+async fn launch(profile_id: String, password: Option<String>) -> Result<u32, String> {
     // UI launches: no CDP, headed. The bus goes along even with no group so the
     // page helper has somewhere to report.
     if migrate::in_progress() {
         return Err("profiles are being moved — try again when that finishes".into());
     }
     let b = bus().await?;
-    launch::launch_profile_synced(&profile_id, false, false, None, b.port, &b.token)
+    launch::launch_profile_unlocked(&profile_id, false, false, b.port, &b.token, password.as_deref())
         .await
         .map(|o| o.pid)
         .map_err(|e| e.to_string())
@@ -1679,6 +1776,9 @@ async fn sync_launch(
     // does not, so refuse a mixed group before anything is launched.
     let mut mobile: Vec<String> = Vec::new();
     let mut desktop: Vec<String> = Vec::new();
+    if profile_ids.iter().any(|id| space::profile::is_protected(id)) {
+        return Err(space::profile::NOT_FOR_PROTECTED.into());
+    }
     for id in &profile_ids {
         let stored = space::profile::load_raw(id).map_err(|e| format!("{id}: {e}"))?;
         let name = stored
@@ -2626,6 +2726,10 @@ pub fn run() {
             helper_dismiss,
             profile_list,
             profile_get,
+            profile_protect,
+            profile_unprotect,
+            profile_change_password,
+            profile_unlock,
             profile_save,
             profile_delete,
             automation_available,
@@ -2673,6 +2777,7 @@ pub fn run() {
             bookmark_list,
             bookmark_save,
             bookmark_delete,
+            bookmark_delete_many,
             tag_list,
             tag_save,
             tag_delete,
@@ -2895,11 +3000,19 @@ pub fn run() {
             }
 
             // Clean up temporary profiles from crashed runs.
+            for id in space::profile::left_open() {
+                eprintln!("[launcher] protected profile {id}: its data was left open by a crash; sealed at its next start");
+            }
             match space::profile::purge_temporary() {
                 Ok(n) if n > 0 => eprintln!("[launcher] purged {n} stale temporary profile(s)"),
                 Ok(_) => {}
                 Err(e) => eprintln!("[launcher] temporary purge failed: {e}"),
             }
+            // Browser caches deleted profiles left in the OS cache folder.
+            tauri::async_runtime::spawn_blocking(|| match store::sweep_orphan_caches() {
+                0 => {}
+                n => eprintln!("[launcher] removed {n} cache folder(s) of deleted profiles"),
+            });
 
             // API task on the shared tokio runtime.
             match settings::ensure_secret() {
@@ -2922,7 +3035,7 @@ pub fn run() {
                 if reset::active() && code != Some(tauri::RESTART_EXIT_CODE) {
                     api.prevent_exit();
                     notify_warning(reset::WAIT);
-                } else if space::open::any_open() && code != Some(tauri::RESTART_EXIT_CODE) {
+                } else if (space::open::any_open() || space::profile::any_unsealed()) && code != Some(tauri::RESTART_EXIT_CODE) {
                     api.prevent_exit();
                     exit_app(app, code.unwrap_or(0));
                 }
@@ -2934,17 +3047,18 @@ pub fn run() {
 fn exit_app(app: &tauri::AppHandle, code: i32) {
     use std::sync::atomic::Ordering::SeqCst;
     static CLOSING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !space::open::any_open() {
+    if !space::open::any_open() && !space::profile::any_unsealed() {
         app.exit(code);
         return;
     }
     if CLOSING.swap(true, SeqCst) {
         return;
     }
-    notify_warning("Saving the team and synced profiles open here before quitting…");
+    notify_warning("Saving the team, synced and protected profiles open here before quitting…");
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         space::open::close_all(space::open::QUIT_WAIT).await;
+        space::profile::close_unsealed(space::open::QUIT_WAIT).await;
         CLOSING.store(false, SeqCst);
         app.exit(code);
     });

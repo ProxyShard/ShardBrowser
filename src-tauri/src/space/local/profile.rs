@@ -93,6 +93,9 @@ pub struct ProfileMeta {
     /// A personal row's sync, only while sync is connected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync: Option<crate::space::sync::ProfileSync>,
+    /// Locked by a password (#127): only its name, folder and tags are readable.
+    #[serde(default)]
+    pub protected: bool,
 }
 
 /// Where a profile row comes from.
@@ -174,6 +177,9 @@ pub struct StoredMeta {
     /// save landing on top of someone else's is refused instead of silent.
     #[serde(default)]
     pub rev: u64,
+    /// Present on a password-protected profile (#127): what unlocks its sealed part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock: Option<super::seal::Lock>,
 }
 
 /// Does the profile name a window of its own? A block with no usable size is
@@ -225,6 +231,12 @@ pub fn claims_mobile(config: &serde_json::Map<String, serde_json::Value>) -> boo
 
 fn is_false(b: &bool) -> bool {
     !*b
+}
+
+/// Write `stored` as it is: no rev, no seeds, no guard. The protection module owns those itself.
+pub(in crate::space) fn write_raw(stored: &StoredProfile) -> Result<()> {
+    let path = path_for(&stored.meta.id)?;
+    write_atomic(&path, serde_json::to_string_pretty(stored)?.as_bytes())
 }
 
 fn path_for(id: &str) -> Result<PathBuf> {
@@ -298,6 +310,7 @@ pub(in crate::space) fn list_all() -> Result<Vec<ProfileMeta>> {
             open_on: None,
             tags: None,
             sync: None,
+            protected: stored.meta.lock.is_some(),
         });
     }
     // Pinned first, then newest-first by created_at; name fallback for same-second ties.
@@ -470,6 +483,16 @@ fn save_raw_locked(stored: &mut StoredProfile) -> Result<()> {
     // pinned and folder are owned by set_pin/set_folder respectively.
     if !is_new {
         if let Ok(existing) = load_raw(&stored.meta.id) {
+            // A protected profile takes only its readable part this way; the rest needs the password.
+            if existing.meta.lock.is_some() {
+                if super::protect::shows_secrets(stored) {
+                    anyhow::bail!(super::protect::PASSWORD_REQUIRED);
+                }
+                stored.meta.lock = existing.meta.lock.clone();
+                if let Some(sealed) = existing.config.get("sealed") {
+                    stored.config.insert("sealed".into(), sealed.clone());
+                }
+            }
             if stored.meta.created_at.is_none() {
                 stored.meta.created_at = existing.meta.created_at;
             }
@@ -506,7 +529,9 @@ fn save_raw_locked(stored: &mut StoredProfile) -> Result<()> {
     // The id is now final (freshly minted for new profiles, carried through for
     // edits) — derive per-profile noise seeds from it so each profile gets a
     // unique-but-stable fingerprint instead of sharing the UI's placeholder.
-    fill_noise_seeds(&mut stored.config, &stored.meta.id);
+    if stored.meta.lock.is_none() {
+        fill_noise_seeds(&mut stored.config, &stored.meta.id);
+    }
     let path = path_for(&stored.meta.id)?;
     let body = serde_json::to_string_pretty(stored)?;
     write_atomic(&path, body.as_bytes())?;
@@ -521,8 +546,10 @@ pub(in crate::space) fn delete(id: &str) -> Result<()> {
     // Also wipe per-profile user-data-dir.
     let udd = store::user_data_root()?.join(id);
     if udd.exists() {
-        let _ = fs::remove_dir_all(udd);
+        let _ = fs::remove_dir_all(&udd);
     }
+    store::remove_browser_cache(&udd);
+    super::protect::forget(id);
     Ok(())
 }
 
@@ -587,6 +614,9 @@ pub(in crate::space) fn prepare_new(stored: &mut StoredProfile) {
 pub(in crate::space) fn clone_profile(id: &str) -> Result<ProfileMeta> {
     let _guard = file_lock();
     let mut src = load_raw(id)?;
+    if src.meta.lock.is_some() {
+        anyhow::bail!(super::protect::NOT_FOR_PROTECTED);
+    }
     let name = make_copy(&mut src);
     // A copy is new: save_raw takes an empty id for that, and mints one.
     let new_id = std::mem::take(&mut src.meta.id);
@@ -615,6 +645,7 @@ pub(in crate::space) fn clone_profile(id: &str) -> Result<ProfileMeta> {
         open_on: None,
         tags: None,
         sync: None,
+        protected: false,
     })
 }
 
@@ -705,6 +736,10 @@ pub(in crate::space) fn delete_folder(name: &str, delete_profiles: bool) -> Resu
 pub(in crate::space) fn user_data_dir(id: &str) -> Result<PathBuf> {
     if id.contains(['/', '\\', '.']) {
         anyhow::bail!("invalid profile id");
+    }
+    // Its data is sealed: a folder made here would be an empty profile beside it.
+    if load_raw(id).is_ok_and(|p| p.meta.lock.is_some()) {
+        anyhow::bail!(super::protect::NOT_FOR_PROTECTED);
     }
     let p = store::user_data_root()?.join(id);
     std::fs::create_dir_all(&p)?;

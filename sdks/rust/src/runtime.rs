@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 pub const PUB_BASE: &str = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
-pub const CHROMIUM_VERSION: &str = "156.0.8078.48";
+pub const CHROMIUM_VERSION: &str = "157.0.8103.39";
 /// This SDK's own version, compared against the manifest's `min_sdk_version`.
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Version manifest (GitHub raw) — one tiny GET yields every archive's current

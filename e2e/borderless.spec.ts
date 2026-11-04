@@ -299,10 +299,10 @@ for (const theme of ["light", "dark"] as Theme[]) {
     // (Profiles since vf-f, merge point 12), so the first label sits 16 px in.
     // Profiles selects, and its select box has its own slot before Name (owner,
     // 2026-10-07): its first label sits 38 px further in, the lists that select
-    // nothing keep the 16.
-    expect(facts.Bookmarks.offset).toBe(16);
-    expect(facts.Profiles.offset).toBe(facts.Bookmarks.offset + 38);
-    expect(facts.Orders.offset).toBe(facts.Bookmarks.offset);
+    // nothing keep the 16. Bookmarks selects too since bulk delete (2.1.3).
+    expect(facts.Orders.offset).toBe(16);
+    expect(facts.Profiles.offset).toBe(facts.Orders.offset + 38);
+    expect(facts.Bookmarks.offset).toBe(facts.Profiles.offset);
   });
 
   test(`the header reads as the rows' own fill; one divider, a row divider's twin, parts it from the first row; no border round the table (${theme})`, async ({ page }) => {

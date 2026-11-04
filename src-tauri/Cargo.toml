@@ -1,6 +1,6 @@
 [package]
 name = "shardbrowser-launcher"
-version = "2.1.2"
+version = "2.1.3"
 description = "ShardBrowser Launcher: profiles, proxies, fingerprints and automation for the ShardBrowser engine."
 authors = ["ProxyShard"]
 edition = "2021"
@@ -97,6 +97,9 @@ sha2 = "0.10"
 # Extension updates: CRX3 signatures as Chrome checks them, and the Web Store's
 # update2 answers. Both already in the tree (rustls, plist).
 ring = "0.17"
+# Password-protected profiles (#127): the password's key, and wiping keys from memory.
+argon2 = "0.5"
+zeroize = "1"
 quick-xml = "0.39"
 # Self-bootstrapping runtime: zip extraction of the chrome bundle
 # downloaded from Cloudflare R2 on first launch (src/runtime.rs).

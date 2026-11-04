@@ -9,6 +9,7 @@ import json
 import os
 import platform
 import random
+import re
 import secrets
 import shutil
 import socket
@@ -25,9 +26,9 @@ from typing import Callable, Optional
 import httpx
 
 PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev"
-CHROMIUM_VERSION = "156.0.8078.48"
+CHROMIUM_VERSION = "157.0.8103.39"
 # This SDK's own version, compared against the manifest's `min_sdk_version`.
-SDK_VERSION = "2.1.2"
+SDK_VERSION = "2.1.3"
 # Version manifest (GitHub raw) — one tiny GET tells us every archive's current
 # etag, so we never poll R2/S3 (no per-archive HEAD). Updated archives are then
 # pulled from PUB_BASE only when their etag changed.
@@ -179,8 +180,43 @@ def apply_chrome_brand(config: dict) -> None:
     ch["brand"] = _CHROME_BRAND
 
 
+def adopt_library_fields(config: dict, fingerprints_dir: Path) -> None:
+    """Copy into a saved profile what its library template gained after it was
+    frozen: fonts, fonts_local and webgpu.features where the profile has none,
+    and the adapter's subgroup sizes for the same claimed GPU (the template's win). The template is
+    found by `_meta.gpu_preset_id`, else by `name`; a profile with no template
+    is left as it is. Mutates `config` in place. SDK equivalent of the
+    launcher's `adopt_value`."""
+    meta = config.get("_meta") if isinstance(config.get("_meta"), dict) else {}
+    key = next((k for k in (meta.get("gpu_preset_id"), config.get("name")) if isinstance(k, str) and k), None)
+    if not key or not re.fullmatch(r"[A-Za-z0-9._-]+", key):
+        return
+    path = Path(fingerprints_dir) / f"{key}.json"
+    try:
+        src = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    for k in ("fonts", "fonts_local"):
+        if k not in config and k in src:
+            config[k] = src[k]
+    w, sw = config.get("webgpu"), src.get("webgpu")
+    if not isinstance(w, dict) or not isinstance(sw, dict):
+        return
+    if "features" not in w and "features" in sw:
+        w["features"] = sw["features"]
+    # The template's subgroup sizes win for the same claimed GPU, over a stored None or a
+    # pre-157 capture (D3D12 max was 128 then); a None in the template changes nothing.
+    same_gpu = all(k in w and w[k] == sw.get(k) for k in ("vendor", "architecture"))
+    for k in ("subgroupMinSize", "subgroupMaxSize"):
+        v = sw.get(k)
+        if same_gpu and isinstance(v, int) and not isinstance(v, bool):
+            w[k] = v
+
+
 # WebGPU features Chrome 156 reports on Apple M-series that older templates lack.
 _APPLE_WEBGPU_ADDED = ("texture-compression-unaligned",)
+# Chrome 157 adds these from M2 on (Dawn: Apple8 with Mac2, or Apple9); M1 has none.
+_APPLE_M2_WEBGPU_ADDED = ("atomic-vec2u-min-max",)
 
 
 def apply_apple_webgpu_features(config: dict) -> None:
@@ -193,13 +229,14 @@ def apply_apple_webgpu_features(config: dict) -> None:
     renderer = webgl.get("renderer") if isinstance(webgl, dict) else None
     if not isinstance(renderer, str) or not isinstance(webgpu, dict) or webgpu.get("vendor") != "apple":
         return
-    at = renderer.find("Apple M")
-    if at < 0 or not renderer[at + 7:at + 8].isdigit():
+    gen = re.search(r"Apple M(\d+)", renderer)
+    if not gen:
         return
     features = webgpu.get("features")
     if not isinstance(features, list) or not features:
         return
-    for feat in _APPLE_WEBGPU_ADDED:
+    m2 = _APPLE_M2_WEBGPU_ADDED if int(gen.group(1)) >= 2 else ()
+    for feat in _APPLE_WEBGPU_ADDED + m2:
         if feat in features:
             continue
         i = next((k for k, v in enumerate(features) if isinstance(v, str) and v > feat), len(features))

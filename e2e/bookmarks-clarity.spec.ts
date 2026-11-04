@@ -182,10 +182,12 @@ test("isFullUrl turns away only what was never finished", async ({ page }) => {
     "http://nas:5000", "http://nas:80", "http://router/", "http://router/admin", "https://nas.local", "example.com.",
     // IPv6, bracketed.
     "http://[::1]:3000", "[::1]:3000", "https://[2001:db8::1]/",
+    // A bookmarklet, with its script.
+    "javascript:alert(1)", "JavaScript: void(0)",
   ];
   const refused = [
     "", "   ", "goog", "https://goog", "http://nas", "goog:80", "goog/path",
-    "chrome://", "file://", "https://", "javascript:alert(1)", "http://goog:",
+    "chrome://", "file://", "https://", "javascript:", "javascript:   ", "http://goog:",
     // One number or a name with nothing after its dot is not a finished host.
     "12345", "https://12345", "goog.", "https://goog.",
   ];
@@ -234,4 +236,17 @@ test("a new bookmark takes an intranet address and still refuses a bare word", a
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   expect(await count()).toBe(before + 1);
+});
+
+test("a new bookmark takes a bookmarklet and keeps it as written", async ({ page }) => {
+  await openApp(page, { section: "bookmarks" });
+  await page.getByRole("button", { name: "New bookmark" }).first().click();
+  const dialog = page.getByRole("dialog", { name: "New bookmark" });
+  await expect(dialog).toHaveAttribute("data-state", "open");
+  await dialog.getByRole("textbox", { name: "URL" }).fill("javascript:alert(document.title)");
+  await dialog.getByRole("textbox", { name: "Title" }).fill("Show title");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const saved = await page.evaluate(() => (window as unknown as Mock).__shardxMock.state.bookmarks.find((b) => b.title === "Show title"));
+  expect(saved?.url).toBe("javascript:alert(document.title)");
 });

@@ -325,30 +325,82 @@ pub(crate) fn apply_chrome_brand(config: &mut Value) {
     ch.insert("brand".into(), Value::String(CHROME_BRAND.into()));
 }
 
+/// Copies into a saved profile what its library template gained after it was frozen:
+/// fonts, fonts_local and webgpu.features where the profile has none, and the adapter's
+/// subgroup sizes for the same claimed GPU (the template's win). The template is found by
+/// `_meta.gpu_preset_id`, else by `name`; a profile with no template is left as it is.
+/// SDK equivalent of the launcher's `adopt_value`.
+pub(crate) fn adopt_library_fields(config: &mut Value, fingerprints_dir: &Path) {
+    let key = [config.pointer("/_meta/gpu_preset_id"), config.get("name")]
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .find(|k| !k.is_empty())
+        .map(str::to_owned);
+    let Some(key) = key.filter(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))) else {
+        return;
+    };
+    let Some(src) = fs::read_to_string(fingerprints_dir.join(format!("{key}.json")))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+    else {
+        return;
+    };
+    for k in ["fonts", "fonts_local"] {
+        if config.get(k).is_none() {
+            if let Some(v) = src.get(k) {
+                config[k] = v.clone();
+            }
+        }
+    }
+    let same_gpu = ["/webgpu/vendor", "/webgpu/architecture"]
+        .iter()
+        .all(|k| config.pointer(k).is_some() && config.pointer(k) == src.pointer(k));
+    let Some(w) = config.get_mut("webgpu").and_then(|v| v.as_object_mut()) else {
+        return;
+    };
+    if !w.contains_key("features") {
+        if let Some(f) = src.pointer("/webgpu/features") {
+            w.insert("features".into(), f.clone());
+        }
+    }
+    // The template's subgroup sizes win for the same claimed GPU, over a stored null or a
+    // pre-157 capture (D3D12 max was 128 then); a null in the template changes nothing.
+    for k in ["subgroupMinSize", "subgroupMaxSize"] {
+        let v = src.pointer(&format!("/webgpu/{k}")).filter(|v| v.is_u64());
+        if let (true, Some(v)) = (same_gpu, v) {
+            w.insert(k.into(), v.clone());
+        }
+    }
+}
+
 /// WebGPU features Chrome 156 reports on Apple M-series that older templates lack.
 const APPLE_WEBGPU_ADDED: &[&str] = &["texture-compression-unaligned"];
+/// Chrome 157 adds these from M2 on (Dawn: Apple8 with Mac2, or Apple9); M1 has none.
+const APPLE_M2_WEBGPU_ADDED: &[&str] = &["atomic-vec2u-min-max"];
 
 /// Adds `APPLE_WEBGPU_ADDED` to an Apple M-series profile's `webgpu.features`, in
 /// sorted place; touches nothing else. An absent or empty list means "the host's
 /// own" and stays as it is. SDK equivalent of the launcher's profile migration of
 /// the same name.
 pub(crate) fn apply_apple_webgpu_features(config: &mut Value) {
-    let apple_m = config
+    let generation: Option<u32> = config
         .pointer("/webgl/renderer")
         .and_then(|v| v.as_str())
         .and_then(|r| r.find("Apple M").map(|i| &r[i + 7..]))
-        .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()));
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next()?.parse().ok());
     let apple_adapter = config.pointer("/webgpu/vendor").and_then(|v| v.as_str()) == Some("apple");
-    if !apple_m || !apple_adapter {
+    let Some(generation) = generation.filter(|_| apple_adapter) else {
         return;
-    }
+    };
     let Some(list) = config.pointer_mut("/webgpu/features").and_then(|v| v.as_array_mut()) else {
         return;
     };
     if list.is_empty() {
         return;
     }
-    for &feat in APPLE_WEBGPU_ADDED {
+    let m2: &[&str] = if generation >= 2 { APPLE_M2_WEBGPU_ADDED } else { &[] };
+    for &feat in APPLE_WEBGPU_ADDED.iter().chain(m2) {
         if list.iter().any(|v| v.as_str() == Some(feat)) {
             continue;
         }
@@ -392,6 +444,17 @@ mod apple_webgpu_tests {
     }
 
     #[test]
+    fn m2_and_later_also_gain_the_157_feature_and_m1_does_not() {
+        let m3 = "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Max, Unspecified Version)";
+        let mut cfg = mac(m3, "apple", json!(["shader-f16", "texture-compression-unaligned"]));
+        apply_apple_webgpu_features(&mut cfg);
+        assert_eq!(cfg["webgpu"]["features"], json!(["atomic-vec2u-min-max", "shader-f16", "texture-compression-unaligned"]));
+        let mut m1 = mac(M1, "apple", json!(["shader-f16", "texture-compression-unaligned"]));
+        apply_apple_webgpu_features(&mut m1);
+        assert_eq!(m1["webgpu"]["features"], json!(["shader-f16", "texture-compression-unaligned"]));
+    }
+
+    #[test]
     fn other_gpus_and_an_empty_list_are_left_alone() {
         for mut cfg in [
             mac("ANGLE (Intel, Intel(R) Iris(TM) Plus Graphics)", "intel", json!(["shader-f16"])),
@@ -402,6 +465,59 @@ mod apple_webgpu_tests {
             apply_apple_webgpu_features(&mut cfg);
             assert_eq!(cfg, before);
         }
+    }
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::adopt_library_fields;
+    use serde_json::json;
+
+    fn lib() -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("shardx-lib-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("win-rtx3060.json"), json!({ "name": "win-rtx3060", "fonts_local": ["Arial"], "webgpu": {
+            "vendor": "nvidia", "architecture": "ampere", "features": ["shader-f16"], "subgroupMinSize": 32, "subgroupMaxSize": 32 } }).to_string()).unwrap();
+        std::fs::write(d.join("android-x.json"), json!({ "name": "android-x", "webgpu": {
+            "vendor": "arm", "architecture": "valhall", "features": ["shader-f16"], "subgroupMinSize": null, "subgroupMaxSize": null } }).to_string()).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_same_gpu_gains_the_sizes_and_missing_fields_once() {
+        let d = lib();
+        let mut cfg = json!({ "name": "win-rtx3060", "webgpu": { "vendor": "nvidia", "architecture": "ampere" } });
+        adopt_library_fields(&mut cfg, &d);
+        adopt_library_fields(&mut cfg, &d);
+        assert_eq!(cfg["webgpu"], json!({ "vendor": "nvidia", "architecture": "ampere", "features": ["shader-f16"], "subgroupMinSize": 32, "subgroupMaxSize": 32 }));
+        assert_eq!(cfg["fonts_local"], json!(["Arial"]));
+    }
+
+    #[test]
+    fn a_pre_157_capture_and_a_stored_null_give_way_to_the_template() {
+        let d = lib();
+        let mut stale = json!({ "name": "win-rtx3060", "webgpu": { "vendor": "nvidia", "architecture": "ampere", "features": [],
+            "subgroupMinSize": 32, "subgroupMaxSize": 128 } });
+        adopt_library_fields(&mut stale, &d);
+        assert_eq!(stale["webgpu"]["subgroupMaxSize"], json!(32));
+        let mut stored = json!({ "name": "win-rtx3060", "webgpu": { "vendor": "nvidia", "architecture": "ampere", "features": [],
+            "subgroupMinSize": null, "subgroupMaxSize": null } });
+        adopt_library_fields(&mut stored, &d);
+        assert_eq!((stored["webgpu"]["subgroupMinSize"].clone(), stored["webgpu"]["subgroupMaxSize"].clone()), (json!(32), json!(32)));
+    }
+
+    #[test]
+    fn another_gpu_a_null_or_no_template_change_no_sizes() {
+        let d = lib();
+        let mut other = json!({ "name": "win-rtx3060", "webgpu": { "vendor": "amd", "architecture": "rdna-2", "features": [] } });
+        adopt_library_fields(&mut other, &d);
+        assert!(other["webgpu"].get("subgroupMinSize").is_none());
+        let mut nulls = json!({ "name": "android-x", "webgpu": { "vendor": "arm", "architecture": "valhall", "features": [] } });
+        adopt_library_fields(&mut nulls, &d);
+        assert!(nulls["webgpu"].get("subgroupMinSize").is_none());
+        let mut own = json!({ "name": "my capture", "webgpu": { "vendor": "nvidia", "architecture": "ampere" } });
+        adopt_library_fields(&mut own, &d);
+        assert_eq!(own["webgpu"], json!({ "vendor": "nvidia", "architecture": "ampere" }));
     }
 }
 

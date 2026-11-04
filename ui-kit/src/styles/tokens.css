@@ -1405,8 +1405,9 @@
    row's box shows on its hover only, in its own slot, so nothing moves and
    nothing is covered. Once a row is selected the list is in selection mode:
    one class on the list (`has-selection`, beside `list-select`), never per
-   row; every box shows and so does the header's Select all. Name never
-   moves, on hover or as the mode comes and goes.
+   row; every box shows. The header's Select all also shows while the
+   pointer is over the list (owner, 2026-11-04). Name never moves, on
+   hover or as the mode comes and goes.
 
    Geometry: a selecting row's leading padding is the cell padding less the
    10 px gap between tracks (`list-select-row`), and its select track is
@@ -1438,6 +1439,7 @@
   -webkit-touch-callout: none;
 }
 .list-select.has-selection .list-select-box,
+.list-select:hover [data-list-header] .list-select-box,
 .list-select [role="row"][aria-selected]:not([data-editing]):hover .list-select-box,
 .list-select-box:focus-within {
   visibility: visible;

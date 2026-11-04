@@ -13,7 +13,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
@@ -44,6 +44,8 @@ struct Session {
     page_session: Mutex<Option<String>>,
     /// Every event, by method name, for callers that need to wait for one.
     events: broadcast::Sender<String>,
+    /// A run drives this browser: the studio does not attach to it as well.
+    by_run: AtomicBool,
 }
 
 fn sessions() -> &'static Mutex<HashMap<String, Arc<Session>>> {
@@ -57,6 +59,18 @@ fn get(profile_id: &str) -> Option<Arc<Session>> {
 
 pub fn is_attached(profile_id: &str) -> bool {
     get(profile_id).is_some()
+}
+
+/// Marks the session as a run's, until it is detached or its browser closes.
+pub fn mark_run(profile_id: &str) {
+    if let Some(s) = get(profile_id) {
+        s.by_run.store(true, Ordering::Relaxed);
+    }
+}
+
+/// A run drives this profile's browser now.
+pub fn run_drives(profile_id: &str) -> bool {
+    get(profile_id).is_some_and(|s| s.by_run.load(Ordering::Relaxed))
 }
 
 impl Session {
@@ -91,13 +105,15 @@ impl Session {
     }
 }
 
-/// Opens a session against an already-running profile and attaches to its
-/// first page. `ws_url` comes from the launcher's own DevToolsActivePort read.
+/// A run's attach to an already-running profile's first page; the session is marked as the run's.
+/// `ws_url` comes from the launcher's own DevToolsActivePort read.
 pub async fn attach<F>(profile_id: String, ws_url: String, on_frame: F) -> Result<()>
 where
     F: Fn(Frame) + Send + Sync + 'static,
 {
-    attach_with(profile_id, ws_url, on_frame, |_, _| {}, |_, _| {}).await
+    attach_with(profile_id.clone(), ws_url, on_frame, |_, _| {}, |_, _| {}).await?;
+    mark_run(&profile_id);
+    Ok(())
 }
 
 pub async fn attach_with<F, N, E>(
@@ -133,6 +149,7 @@ where
         next_id: AtomicU64::new(1),
         page_session: Mutex::new(None),
         events,
+        by_run: AtomicBool::new(false),
     });
 
     tokio::spawn(async move {

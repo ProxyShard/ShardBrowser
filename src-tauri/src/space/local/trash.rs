@@ -14,6 +14,9 @@ const RETENTION_SECS: u64 = RETENTION_DAYS * 24 * 60 * 60;
 
 /// Files and directories under the profile's user-data dir worth keeping: the
 /// session, the logins and the site storage. Everything else is cache.
+/// Where a protected profile's sealed data sits in the archive.
+const SEALED_DATA: &str = "sealed.data";
+
 const KEEP: &[&str] = &[
     "Local State",
     "Default/Cookies",
@@ -80,6 +83,11 @@ pub(in crate::space) fn move_to_trash(id: &str) -> Result<TrashEntry> {
     zip.start_file("profile.json", opts)?;
     zip.write_all(serde_json::to_string_pretty(&stored)?.as_bytes())?;
 
+    // A protected profile's data is its sealed archive; it goes in as it is, still sealed.
+    let sealed = super::protect::data_path(id)?;
+    if sealed.is_file() {
+        add_file(&mut zip, &sealed, SEALED_DATA, opts)?;
+    }
     let udd = store::user_data_root()?.join(id);
     if udd.exists() {
         for rel in KEEP {
@@ -190,6 +198,10 @@ pub(in crate::space) fn restore(id: &str) -> Result<profile::ProfileMeta> {
             stored = Some(serde_json::from_slice(&buf)?);
             continue;
         }
+        if rel_str == SEALED_DATA {
+            fs::write(super::protect::data_path(id)?, buf)?;
+            continue;
+        }
         let Some(sub) = rel_str.strip_prefix("user-data/") else { continue };
         let out = udd.join(sub);
         if let Some(parent) = out.parent() {
@@ -233,6 +245,7 @@ pub(in crate::space) fn restore(id: &str) -> Result<profile::ProfileMeta> {
         open_on: None,
         tags: None,
         sync: None,
+        protected: stored.meta.lock.is_some(),
     })
 }
 

@@ -64,7 +64,7 @@ const CONFIG_MARKERS: &[&str] = &["settings.json.bad", "settings.json"];
 
 /// The data folders (`store::data_root`; the config folder until moved, and
 /// swept there too after a move). `profiles`, the data marker, last.
-const DATA_ENTRIES: &[&str] = &["user-data", "extensions", "trash", "profiles"];
+const DATA_ENTRIES: &[&str] = &["user-data", "extensions", "trash", "profiles", "protected"];
 
 /// In the engine's folder (`runtime::runtime_dir`): window icons drawn from
 /// profile names. The engine beside them stays.
@@ -1100,9 +1100,10 @@ fn app_named(folder: &str, name: &OsStr, is_dir: bool) -> bool {
     let uuid_with = |suffix: &str| name.strip_suffix(suffix).is_some_and(is_uuid);
     match folder {
         "profiles" => !is_dir && (uuid_with(".json") || uuid_with(".json.tmp")),
-        "user-data" => is_dir && is_uuid(name),
+        "user-data" => is_dir && (is_uuid(name) || uuid_with(".opening")),
         "extensions" => is_dir && name.len() == 32 && name.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'p').contains(&b)),
         "trash" => !is_dir && (uuid_with(".zip") || uuid_with(".json")),
+        "protected" => !is_dir && (uuid_with(".data") || uuid_with(".sealing")),
         _ => false,
     }
 }

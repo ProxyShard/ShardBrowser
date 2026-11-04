@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  editsSettled, isPlaceholder, onFormSaved, peekForm, resolveId, selectVisible, useProfile,
+  editsSettled, isPlaceholder, isProtected, onFormSaved, peekForm, resolveId, selectVisible, useProfile,
   type ProfileForm,
 } from "../../entities/profile";
 import { whenIdle } from "../../shared/lib/idle";
@@ -10,8 +10,11 @@ import { whenIdle } from "../../shared/lib/idle";
 /// profile Peek has seen shows at once from the form cache, and the
 /// backend's copy follows (PERF-14). A save made anywhere (the profile
 /// form, a card's fix) reads it again, so Peek never keeps the old values.
-export function usePeekForm(id: string | null) {
+/// A protected profile's is never read: it opens only with its password (#127).
+export function usePeekForm(given: string | null) {
   const loadForm = useProfile((s) => s.loadForm);
+  const locked = useProfile((s) => !!given && isProtected(s.profiles.find((p) => p.id === given)));
+  const id = locked ? null : given;
   // Keyed by the profile asked for: a read that lands after Peek moved on
   // never shows on the next one.
   const [read, setRead] = useState<{ id: string; form: ProfileForm } | null>(null);

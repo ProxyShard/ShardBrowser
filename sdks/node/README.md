@@ -1,10 +1,10 @@
 # @proxyshard/shardx (Node)
 
-Self-contained Node/TypeScript SDK for the **ShardX anti-detect
-browser** by the [ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team.
+Self-contained Node/TypeScript SDK for the **ShardBrowser anti-detect
+browser** by the [ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
 
 Does **not** depend on the desktop launcher. On first use it downloads
-the patched Chromium 152 engine, Widevine CDM, and the 220-profile
+the patched Chromium 157 engine, Widevine CDM, and the 220-profile
 fingerprint library from our CDN into a local cache, then launches
 isolated browser sessions on demand.
 
@@ -47,7 +47,7 @@ import { ShardX } from "@proxyshard/shardx";
 
 const sdk = new ShardX();
 // Engine + Widevine + fingerprint library auto-download from CDN on
-// the first session/launch/listProfiles call (~170 MB once, etag-cached
+// the first session/launch/listProfiles call (~200 MB once, etag-cached
 // afterward).  No separate install step.
 
 // Create a persistent profile from a library template (or createProfile() for
@@ -352,6 +352,18 @@ Override:
 
 ```ts
 const sdk = new ShardX({ cacheDir: "/data/shardx" });
+```
+
+## Install the engine ahead of time
+
+The first launch downloads the engine, the protected-video module and the
+fingerprint library. To do it beforehand, for example while building a Docker
+image:
+
+```bash
+npx shardx install             # once the package is installed
+npx shardx install --force     # download again even when up to date
+npx shardx install --cache-dir /opt/shardx
 ```
 
 ## Update the runtime

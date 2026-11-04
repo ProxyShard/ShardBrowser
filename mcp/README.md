@@ -1,7 +1,7 @@
-# ShardX MCP server
+# ShardBrowser MCP server
 
 An [MCP](https://modelcontextprotocol.io) server that lets an AI client
-(Claude Desktop, Cursor, …) drive the **ShardX Launcher**:
+(Claude Desktop, Cursor, …) drive the **ShardBrowser Launcher**:
 
 - the local automation **HTTP API** — create/edit/launch/close profiles,
   manage proxies, fingerprints, folders and cookies;
@@ -16,7 +16,7 @@ MCP client.
 
 ### 1. Install deps
 
-`connectOverCDP` only *connects* to the already-running ShardX browser, so
+`connectOverCDP` only *connects* to the already-running ShardBrowser profile, so
 patchright's own Chromium is never needed — install with the browser
 download skipped to keep `node_modules` small:
 

@@ -1,8 +1,8 @@
 # `shardx` — Rust SDK
 
-Self-contained Rust SDK for the **ShardX anti-detect browser** by the
-[ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-team. Same surface as the [Python](../python) and [Node](../node) SDKs: on
+Self-contained Rust SDK for the **ShardBrowser anti-detect browser** by the
+[ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+team (formerly ProxyShard). Same surface as the [Python](../python) and [Node](../node) SDKs: on
 first use it downloads the engine, Widevine CDM, and the bundled fingerprint
 library from the ProxyShard CDN into a per-user cache dir, then launches
 isolated profiles with the exact spoofing flags the desktop launcher uses.

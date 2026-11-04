@@ -25,10 +25,9 @@
 #     there never holds the launcher's release back. Whatever of it built is
 #     attached and named in the notes; :latest moves only on a pushed vX.Y.Z tag.
 #
-# No Apple Developer ID / Authenticode cert in this repo, so the bundles are
-# unsigned / not notarized.  macOS users clear the quarantine flag
-# (`xattr -dr com.apple.quarantine`) on first launch; README + the release
-# notes document the Gatekeeper / SmartScreen steps.
+# macOS is signed with the Developer ID from the repository secrets and the .dmg
+# notarized (see "Build Tauri bundle (signed)"). Windows has no Authenticode
+# cert; README + the release notes document the SmartScreen step.
 
 name: Release
 
@@ -245,8 +244,8 @@ jobs:
         if: runner.os != 'macOS' || steps.signing.outputs.apple != 'yes'
         # The Tauri bundler skips codesign / signtool only when the signing env
         # vars are UNSET — an empty string makes it import a cert and crash — so
-        # this step sets no signing vars at all. Users clear the quarantine flag by
-        # hand (`xattr -dr com.apple.quarantine`, see the release notes).
+        # this step sets no signing vars at all. On macOS it runs only when the
+        # signing secrets are missing, and the release notes assume a signed app.
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Collect bundles
@@ -332,11 +331,11 @@ jobs:
           body: |
             ## Install
 
-            * **macOS** (Apple Silicon — M1/M2/M3/M4) — download the `.dmg` and drag *ShardBrowser Launcher.app* to Applications.  The build isn't notarized (no Apple Developer ID), so macOS blocks it on first launch — clear the quarantine flag in Terminal, then open it normally: `xattr -dr com.apple.quarantine "/Applications/ShardBrowser Launcher.app"`  (alternative: *System Settings → Privacy & Security → Open Anyway*).
+            * **macOS** (Apple Silicon — M1/M2/M3/M4) — download the `.dmg` and drag *ShardBrowser Launcher.app* to Applications.  The app is signed with an Apple Developer ID and notarized, so it opens like any other app.
             * **Windows** — `.msi` installer, or the installer-free **portable** `ShardBrowser-Launcher-portable-win-x64.exe` (just run it — needs the Evergreen WebView2 runtime, preinstalled on Windows 10/11).  SmartScreen will warn: *More info* → *Run anyway* (the build isn't signed with Authenticode).
             * **Linux** — `.AppImage` (`chmod +x` and run) or `.deb` (`sudo apt install ./...deb`).
 
-            On first launch the launcher downloads the patched browser engine, Widevine CDM and a starter library of 170 device profiles from our CDN.  After that it boots straight to the workspace.
+            On first launch the launcher downloads the patched browser engine, Widevine CDM and a starter library of 220 device profiles from our CDN.  After that it boots straight to the workspace.
           files: dist/*
 
   # ---- the team server ----

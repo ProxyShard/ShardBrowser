@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 import { flushSync } from "react-dom";
 import { focusCellButton, focusProfileRow } from "../../shared/lib/focusRow";
 import { Checkbox, clientScale, cn, pageZoom, rectToLayout, swallowFollowUpClick, Tooltip, useLongPress, type ContextMenuApi } from "@proxyshard/shardx-ui-kit";
-import { PinIconApp, SyncConflictIcon, SyncedIcon } from "../../shared/icons";
+import { PasswordIcon, PinIconApp, SyncConflictIcon, SyncedIcon } from "../../shared/icons";
 import { ProxyFlag } from "../../shared/ui/ProxyFlag";
 import { StatusPill } from "../../shared/ui/StatusPill";
 import { CellEditButton } from "../../shared/ui/CellEditButton";
@@ -14,7 +14,7 @@ import { slideDelayOf } from "../../shared/lib/arrival";
 import { useReducedMotion } from "../../shared/hooks/useReducedMotion";
 import {
   formatExactRun, formatRelativeRun,
-  may, profileFocusWindow,
+  isProtected, may, profileFocusWindow,
   profileStatus, useFolderLook, useProfile, useProfileUi, useSaving, PROFILE_EDITABLE, type ProfileColumnId, type ProfileMeta,
 } from "../../entities/profile";
 import type { ProxyEntry } from "../../entities/proxy";
@@ -194,6 +194,8 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
 
   // A team profile without Edit is read-only here: no cell edits it.
   const canEdit = may(p, "edit");
+  // Protected by a password (#127): its proxy and notes are sealed, and change only in its editor.
+  const locked = isProtected(p);
   // Each editable cell's edit button (owner feature 2026-09-26): it opens
   // that field's own editor at the cell. "Add" when the cell is empty.
   const editOf = (id: ProfileColumnId, lead = false): ReactNode => {
@@ -223,8 +225,10 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
           />
         );
       case "proxy":
+        if (locked) return null;
         return <CellEditButton lead={lead} tone={tone} decorated={built} tabIndex={tabIndex} label={t("cellEdit.editProxy", { name: p.name })} onEdit={() => ui().startEdit(p.id, "proxy")} />;
       case "notes":
+        if (locked) return null;
         return (
           <CellEditButton
             lead={lead}
@@ -251,7 +255,7 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
       case "name": return () => openProfileForm({ mode: "edit", id: p.id });
       case "folder": return () => { ui().setActive(p.id); setFolderMenu(true); };
       case "tags": return () => ui().setTagPicker({ profileIds: [p.id], from: "list" });
-      case "proxy": case "notes": return () => ui().startEdit(p.id, id);
+      case "proxy": case "notes": return locked ? () => {} : () => ui().startEdit(p.id, id);
       // Any other cell: its click opened Peek, and the second press does
       // nothing more (it never lands on what slid under the pointer).
       default: return () => {};
@@ -317,6 +321,15 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
                 <Tooltip content={p.name} whenTruncated warm={false} delay={700}>
                   <span data-name className="truncate">{p.name}</span>
                 </Tooltip>
+                {locked && (
+                  // Muted after the name, as the pin: said by word too, for a screen reader.
+                  <Tooltip content={t("profileRow.protected")} warm={false} delay={700}>
+                    <span data-protected className="inline-flex shrink-0 text-icon-soft-400">
+                      <PasswordIcon aria-hidden="true" className="size-3.5" />
+                      <span className="sr-only">{t("profileRow.protected")}</span>
+                    </span>
+                  </Tooltip>
+                )}
                 {p.pinned && (
                   // After the name, muted: every name starts at the same x,
                   // pinned or not, and a rename never moves it (CRAFT-15).
@@ -411,7 +424,7 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
       case "proxy":
         // "Change proxy" moved into the edit button's own name.
         return (
-          <Tooltip key="proxy" content={missing ? t("profileRow.proxyMissingHint") : hidden ? t("profileRow.proxyHiddenHint") : undefined}>
+          <Tooltip key="proxy" content={locked ? t("profileRow.lockedHint") : missing ? t("profileRow.proxyMissingHint") : hidden ? t("profileRow.proxyHiddenHint") : undefined}>
             <div
               ref={proxyCell}
               role="gridcell"
@@ -457,6 +470,8 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
                   <span className="text-secondary text-text-strong-950">{t("profileRow.proxyMissing")}</span>
                 ) : hidden ? (
                   <span data-proxy-hidden className="truncate text-secondary text-text-sub-600">{t("profileRow.proxyHidden")}</span>
+                ) : locked ? (
+                  <span data-proxy-locked className="truncate text-secondary text-text-soft-400">{t("profileRow.locked")}</span>
                 ) : (
                   <span className="text-secondary text-text-soft-400">{t("profileRow.direct")}</span>
                 )}
@@ -501,7 +516,7 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
       case "device":
         return (
           <div key="device" role="gridcell" data-cell="device" className="min-w-0 truncate text-secondary text-text-sub-600">
-            {p.mobile ? t("profileTable.devicePhone") : t("profileTable.deviceDesktop")}
+            {locked ? <span className="text-text-soft-400">—</span> : p.mobile ? t("profileTable.devicePhone") : t("profileTable.deviceDesktop")}
           </div>
         );
       case "extensions":
@@ -512,14 +527,14 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
             data-cell="extensions"
             className={cn("text-secondary tabular-nums", p.extensions.length > 0 ? "text-text-sub-600" : "text-text-soft-400")}
           >
-            {p.extensions.length}
+            {locked ? "—" : p.extensions.length}
           </div>
         );
       case "notes":
         return editing === "notes" ? (
           <div key="notes" ref={notesCell} role="gridcell" data-cell="notes" className="relative min-w-0">
             <InlineText
-              value={p.notes}
+              value={p.notes ?? ""}
               label={t("profileRow.notesLabel")}
               subject={p.name}
               onCommit={async (notes) => {
@@ -542,9 +557,16 @@ export const ProfileRow = memo(function ProfileRow({ profile, proxy, top, column
             <span className="relative flex min-w-0 items-center">
               {/* A cut note shows whole on hover, only when it is cut, and
                   only the note (EMIL-14): the edit button names the edit. */}
-              <Tooltip content={p.notes || undefined} whenTruncated warm={false} delay={700}>
-                <span className="min-w-0 truncate">{p.notes || <span className="text-text-soft-400">—</span>}</span>
-              </Tooltip>
+              {locked ? (
+                // Sealed with the profile: said, not edited here (its editor changes it).
+                <Tooltip content={t("profileRow.lockedHint")} warm={false} delay={700}>
+                  <span data-notes-locked className="min-w-0 truncate text-text-soft-400">{t("profileRow.locked")}</span>
+                </Tooltip>
+              ) : (
+                <Tooltip content={p.notes || undefined} whenTruncated warm={false} delay={700}>
+                  <span className="min-w-0 truncate">{p.notes || <span className="text-text-soft-400">—</span>}</span>
+                </Tooltip>
+              )}
               {own("notes")}
             </span>
           </div>

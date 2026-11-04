@@ -194,6 +194,7 @@ const saveButton = (page: Page) => page.locator("[data-editor-save] button");
 const saveProject = (page: Page) => saveButton(page).click();
 
 test("SEC-06: typed text is recorded as one secret step with a plain label; a URL's query stays out of its label", async ({ page }) => {
+  test.slow(); // a restart, then keys typed 300 ms apart: past 30 s on a busy dev server
   await openApp(page, { section: "automation" });
   await page.getByRole("button", { name: "New project", exact: true }).click();
   await expect(page.getByRole("textbox", { name: "Project name" })).toBeFocused();
@@ -204,6 +205,9 @@ test("SEC-06: typed text is recorded as one secret step with a plain label; a UR
   await page.getByRole("combobox", { name: "Choose a profile…" }).click();
   await page.getByRole("option", { name: "Amazon US seller" }).click();
   await page.getByRole("button", { name: "Start", exact: true }).click();
+  // The mock has it open without automation, so the launcher offers a restart.
+  await page.getByRole("dialog", { name: "“Amazon US seller” is open without automation" })
+    .getByRole("button", { name: "Restart" }).click();
   await page.getByRole("button", { name: "Record", exact: true }).click();
   await page.evaluate(() => (window as unknown as { __shardxMock: { emit: (e: string, p: unknown) => void } }).__shardxMock.emit(
     "automation:navigated", { profile_id: "a78a0eea", url: "https://shop.example/login?token=abc123#step2" },
@@ -307,6 +311,9 @@ test("finding 3: Alt-only and Control+Alt characters merge into typed text, not 
   await page.getByRole("combobox", { name: "Choose a profile…" }).click();
   await page.getByRole("option", { name: "Amazon US seller" }).click();
   await page.getByRole("button", { name: "Start", exact: true }).click();
+  // The mock has it open without automation, so the launcher offers a restart.
+  await page.getByRole("dialog", { name: "“Amazon US seller” is open without automation" })
+    .getByRole("button", { name: "Restart" }).click();
   await page.getByRole("button", { name: "Record", exact: true }).click();
   const canvas = page.locator("canvas[tabindex='0']");
   await canvas.focus();

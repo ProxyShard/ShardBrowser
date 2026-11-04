@@ -58,6 +58,23 @@ export function ProfileDefaultsSection({ s, setS, p, setP }: SettingsProps) {
           <Switch aria-labelledby={labelId} aria-describedby={helpId} checked={s.camera_enabled ?? true} onChange={(on) => setS({ ...s, camera_enabled: on })} />
         )}
       />
+      <SettingRow
+        id="profile-name"
+        title={t("settings.profileNameLabel")}
+        help={t("settings.profileNameHelp")}
+        control={({ labelId, helpId }) => (
+          <Switch aria-labelledby={labelId} aria-describedby={helpId} checked={s.show_profile_name ?? true} onChange={(on) => setS({ ...s, show_profile_name: on })} />
+        )}
+      />
+      {/* Off, no password can be set; profiles that have one keep it. */}
+      <SettingRow
+        id="profile-passwords"
+        title={t("settings.profilePasswordsLabel")}
+        help={t("settings.profilePasswordsHelp")}
+        control={({ labelId, helpId }) => (
+          <Switch aria-labelledby={labelId} aria-describedby={helpId} checked={s.profile_passwords ?? false} onChange={(on) => setS({ ...s, profile_passwords: on })} />
+        )}
+      />
       {/* Lives in this window's storage, not in settings.json; changed on Save. */}
       <SettingRow
         id="direct-start"

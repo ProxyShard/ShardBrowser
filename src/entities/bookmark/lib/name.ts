@@ -9,3 +9,6 @@ export function bookmarkName(b: Pick<Bookmark, "title" | "url">): string {
   const title = b.title.trim();
   return title && title !== b.url.trim() ? title : readableUrl(b.url);
 }
+
+/** The bookmark folders it sits in, outermost first, as one line; "" when none. */
+export const bookmarkPath = (b: Pick<Bookmark, "path">): string => (b.path ?? []).join(" / ");

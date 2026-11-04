@@ -1,10 +1,10 @@
 # shardx (Python)
 
-Self-contained Python SDK for the **ShardX anti-detect browser** by the
-[ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team.
+Self-contained Python SDK for the **ShardBrowser anti-detect browser** by the
+[ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
 
 This package does **not** depend on the desktop launcher. On first use
-it downloads the patched Chromium 152 engine, Widevine CDM, and the
+it downloads the patched Chromium 157 engine, Widevine CDM, and the
 220-profile fingerprint library from our CDN into a local cache, then
 launches isolated browser sessions on demand.
 
@@ -49,7 +49,7 @@ from shardx import ShardX
 async def main():
     sdk = ShardX()
     # Engine + Widevine + fingerprint library auto-download from CDN on
-    # the first `session`/`launch`/`list_profiles` call (~170 MB once,
+    # the first `session`/`launch`/`list_profiles` call (~200 MB once,
     # etag-cached afterward).  No separate install step.
 
     # Create a persistent profile from a library template (or create_profile()
@@ -337,6 +337,18 @@ Override the cache root:
 
 ```python
 sdk = ShardX(cache_dir="/data/shardx")
+```
+
+## Install the engine ahead of time
+
+The first launch downloads the engine, the protected-video module and the
+fingerprint library. To do it beforehand, for example while building a Docker
+image:
+
+```bash
+shardx install                 # or: python -m shardx install
+shardx install --force         # download again even when up to date
+shardx install --cache-dir /opt/shardx
 ```
 
 ## Update the runtime

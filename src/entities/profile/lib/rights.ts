@@ -2,6 +2,7 @@ import { t } from "../../../shared/i18n";
 import { bindRefusal, inFolder, onProxy, rightName, teamRefusal } from "../../space";
 import type { OpenOn, ProfileMeta, ProfileRight } from "../model/types";
 import { isSaving } from "./saving";
+import { isProtected } from "./lock";
 
 /// What a team profile's own rights let this person do, and why not. A personal
 /// row carries none: everything is given. Shown, not trusted: the backend judges
@@ -74,3 +75,8 @@ export function letThrough(rows: readonly ProfileMeta[], ids: readonly string[],
   }
   return { ok, refused, reason };
 }
+
+/** Why a protected profile does not take it (clone, cookies, a synced or automation start,
+ *  sync, a proxy outside its editor), in the words errors.ts gives the backend's refusal. */
+export const lockedRefusal = (p: Pick<ProfileMeta, "protected">): string | null =>
+  isProtected(p) ? t("errors.lockedNotAvailable") : null;

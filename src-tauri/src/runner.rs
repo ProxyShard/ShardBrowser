@@ -613,6 +613,8 @@ fn tidy(n: f64) -> String {
 /// has run.
 async fn ensure_browser(bound: &Bound, run: &Run) -> Result<()> {
     if cdp::is_attached(&bound.id) {
+        // Shared with the studio's live view: the run's now, so the studio does not attach anew.
+        cdp::mark_run(&bound.id);
         return Ok(());
     }
     if process::Tracker::shared().cdp(&bound.id).is_none() {

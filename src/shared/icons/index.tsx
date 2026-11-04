@@ -50,6 +50,9 @@ import {
   SparklesIcon,
   StarIcon,
   LockIcon,
+  SquareLock02Icon,
+  SquareUnlock02Icon,
+  ResetPasswordIcon,
   PuzzleIcon,
   Bookmark02Icon,
   Delete03Icon,
@@ -182,6 +185,10 @@ export const FolderIcon = make(Folder01Icon);
 export const InfoIcon = make(InformationCircleIcon);
 export const StarOutlineIcon = make(StarIcon);
 export const LockedIcon = make(LockIcon);
+/** A profile's own password (#127): the row's lock, Set password; Change and Remove beside it. */
+export const PasswordIcon = make(SquareLock02Icon);
+export const ChangePasswordIcon = make(ResetPasswordIcon);
+export const RemovePasswordIcon = make(SquareUnlock02Icon);
 export const ChevronDownIcon = make(ArrowDown01Icon);
 export const BackIcon = make(ArrowLeft01Icon);
 export const DeleteIcon = make(Delete02Icon);

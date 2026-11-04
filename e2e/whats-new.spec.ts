@@ -1,5 +1,9 @@
+import { readFileSync } from "node:fs";
 import { expect, test } from "@playwright/test";
 import { openApp } from "./support/app";
+
+// The newest release in the log, so the check doesn't go stale with each one.
+const latest = (JSON.parse(readFileSync(new URL("../src/widgets/WhatsNewDialog/patchlog.json", import.meta.url), "utf8")) as { releases: { version: string }[] }).releases[0].version;
 
 for (const theme of ["dark", "light"] as const) {
   test(`What's new opens by itself on the first run after an update (${theme})`, async ({ page }) => {
@@ -7,7 +11,7 @@ for (const theme of ["dark", "light"] as const) {
     await openApp(page, { theme });
     const dialog = page.getByRole("dialog", { name: /What’s new/ });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText(/v2\.1\.0/).first()).toBeVisible();
+    await expect(dialog.getByText(`v${latest}`).first()).toBeVisible();
   });
 
   test(`What's new, ${theme}`, { tag: "@visual" }, async ({ page }) => {

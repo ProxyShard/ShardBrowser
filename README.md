@@ -10,7 +10,7 @@
 
 <p align="center">
   <strong>A free, open-source anti-detect browser launcher for web scraping and multi-accounting.</strong><br>
-  Patched Chromium 156 with engine-level fingerprint spoofing, a local API, an MCP server and SDKs.
+  Patched Chromium 157 with engine-level fingerprint spoofing, a local API, an MCP server and SDKs.
 </p>
 
 <p align="center">
@@ -40,13 +40,13 @@
   <a href="#usage">Usage</a>
 </p>
 
-ShardX is built by the **[ProxyShard](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)** team.
+ShardBrowser is built by the **[ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)** team (formerly ProxyShard).
 ProxyShard provides full **SOCKS5 UDP relay** support (RFC 1928 §7) and
 active **p0f TCP fingerprint spoofing** at the proxy exit. This keeps the
 operating system presented by the proxy consistent with the SYN/ACK shape
-seen by websites. ShardX is the anti-detect browser stack built to use
+seen by websites. ShardBrowser is the anti-detect browser stack built to use
 those capabilities. The launcher manages profiles, binds proxies and
-ships a patched **Chromium 156** build that applies fingerprint changes
+ships a patched **Chromium 157** build that applies fingerprint changes
 inside the browser engine.
 
 <p align="center">
@@ -65,14 +65,14 @@ inside the browser engine.
   </tr>
 </table>
 
-ShardX provides four ways to control the same profiles. They all use the
+ShardBrowser provides four ways to control the same profiles. They all use the
 same local state, so no additional synchronization is required:
 
 * **Desktop UI:** workspace for daily work with profiles, proxies,
   cookies and the fingerprint editor.
 * **Local HTTP API:** Bearer JWT authentication on `127.0.0.1:40325`.
   Create, start and stop profiles from any language, then obtain a CDP endpoint.
-* **MCP server:** connects ShardX to Claude Desktop, Cursor and other
+* **MCP server:** connects ShardBrowser to Claude Desktop, Cursor and other
   MCP clients for natural-language profile orchestration through the
   HTTP API and CDP.
 * **Standalone SDKs:** Python, Node and Rust libraries that ship the
@@ -95,7 +95,7 @@ Configuration details are available in [Usage](#usage).
 
 ## What it is
 
-ShardX can run hundreds of isolated browser identities side by side.
+ShardBrowser can run hundreds of isolated browser identities side by side.
 Each profile defines a complete device identity, including GPU, screen
 and its refresh rate, fonts, audio settings, timezone, locale, WebGL and
 WebGPU capabilities, TLS ClientHello, UA-CH, WebRTC policy, geolocation
@@ -103,7 +103,7 @@ and cookies. The signals within a profile are kept consistent with one
 another.
 
 Fingerprint changes are applied inside Chromium's C++ engine, including
-Blink, V8 and the network stack. ShardX does not rely on JavaScript
+Blink, V8 and the network stack. ShardBrowser does not rely on JavaScript
 injection, so the same values are visible in frames, workers, developer
 tools and headless sessions.
 
@@ -117,7 +117,7 @@ profile, persistent cookies, Widevine pre-warming and QUIC over the
 proxy UDP relay. WebRTC traffic follows the configured proxy policy and
 does not expose the host IP.
 
-ShardX is free to use. ProxyShard proxies support end-to-end QUIC and
+ShardBrowser is free to use. ProxyShard proxies support end-to-end QUIC and
 WebRTC over SOCKS5 UDP relay. Other proxy providers can also be used,
 but full QUIC and WebRTC operation requires SOCKS5 UDP relay support.
 
@@ -215,7 +215,7 @@ iframes, web workers, developer tools and headless mode.
   per-proxy live test (TCP + UDP_ASSOCIATE probe + geo lookup), bind a
   proxy to a profile by id or inline-on-launch. Auto-resolves timezone
   / locale / geolocation from the proxy's exit country.
-* **Auto-runtime:** first launch downloads the patched ShardX Chromium
+* **Auto-runtime:** first launch downloads the patched ShardBrowser Chromium
   build and the fingerprint library from CDN; an ETag is stored so later
   launches do not repeat them. The Widevine CDM is not shipped: the
   engine's own component updater fetches it for the first profile that
@@ -270,7 +270,7 @@ iframes, web workers, developer tools and headless mode.
   [docs.proxyshard.com/eng/shardx-launcher-api](https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true&utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher),
   raw schema in [openapi.yaml](openapi.yaml). Create / start / stop
   profiles and get a CDP WebSocket URL programmatically.
-* **MCP server bundled:** connect ShardX to Claude Desktop, Cursor and
+* **MCP server bundled:** connect ShardBrowser to Claude Desktop, Cursor and
   other MCP clients for natural-language profile orchestration. Automation
   projects are reachable the same way — list them, read one, replace it,
   run it, watch a run, stop it, export and import — over the local API and
@@ -283,8 +283,8 @@ iframes, web workers, developer tools and headless mode.
   the name, version, description and icon from `manifest.json`, including
   localized `__MSG_*__` values from the default locale.
 * **Folder bookmarks:** a site linked to a folder appears in the bookmarks
-  bar of every profile in it. ShardX rewrites its own `ShardX` folder on each
-  launch without changing the user's bookmarks.
+  bar of every profile in it, in the same place as in Chrome. Each launch
+  updates only the bookmarks the launcher added; the user's own stay as they are.
 * **Per-profile window icon:** each profile gets a platform-specific badge
   with its name. macOS uses a squircle and shadow, Windows uses a full-bleed
   design and Linux uses an Adwaita-style icon with an outline. The badge uses
@@ -305,7 +305,7 @@ iframes, web workers, developer tools and headless mode.
   hardware-secured playback and this browser refuses it — one
   `requestMediaKeySystemAccess` call with a robustness string reads the
   difference. Turned on, the profile answers like the device it claims to be.
-  The trade is real and is why it is off by default: ShardX reaches Widevine
+  The trade is real and is why it is off by default: ShardBrowser reaches Widevine
   through a software module, so a site that believes the answer and asks for a
   hardware-secured licence gets one it cannot play. Leave it off where paid
   video has to work, turn it on where matching the device matters more.
@@ -360,7 +360,7 @@ All three products use patched Chromium builds. The table compares
 fingerprint coverage, network behavior and the tools provided around
 the browser engine.
 
-| Feature                                                       | ShardX (this project)        | CloakBrowser                 | Multilogin / AdsPower / Dolphin                |
+| Feature                                                       | ShardBrowser (this project)  | CloakBrowser                 | Multilogin / AdsPower / Dolphin                |
 |---------------------------------------------------------------|------------------------------|------------------------------|------------------------------------------------|
 | WebGPU spoofing (`navigator.gpu` adapter + every limit)       | ✅ full                       | ❌ untouched, host GPU leaks | ✅ full                                         |
 | Client Hints (Sec-CH-UA-* full stack with GREASE)             | ✅ full                       | ❌ partial / inconsistent     | ✅ full on Multilogin / AdsPower, ❌ Dolphin     |
@@ -393,26 +393,26 @@ sessions even when the initial public checks passed:
 
 * `navigator.gpu.requestAdapter()` returns the **host** GPU on
   CloakBrowser, so a profile claiming an RTX 4060 on Windows leaks the
-  Mac M-series adapter underneath. ShardX (and the paid anti-detects)
+  Mac M-series adapter underneath. ShardBrowser (and the paid anti-detects)
   return the claimed GPU with full WebGPU limits.
 * CDP wrappers, V8 inspector preview-getters and `Object.toString`
   side-channels remain exposed on CloakBrowser and are only partially
-  handled by some paid anti-detects. ShardX patches the documented side
+  handled by some paid anti-detects. ShardBrowser patches the documented side
   channels so they do not expose automation.
 * Font lists scraped via canvas font rendering or
   `document.fonts.check()` return the **host** font list on
-  CloakBrowser no matter what the profile claims. ShardX pins the font
+  CloakBrowser no matter what the profile claims. ShardBrowser pins the font
   enumeration at the system level so the result matches the device.
 * CloakBrowser's profile generator routinely emits incoherent
   fingerprints (Win32 platform with macOS user-agent, mobile UA with
-  1920×1080 screen, RTX GPU with `hardwareConcurrency=2`). ShardX's
+  1920×1080 screen, RTX GPU with `hardwareConcurrency=2`). ShardBrowser's
   library is derived from real-device samples so every signal agrees
   with the others.
 * QUIC and HTTP/3 over SOCKS5 are increasingly important because major
   Google properties do not always fall back to HTTP/2 cleanly. The paid
   products listed in the table disable QUIC when a proxy is configured.
   CloakBrowser provides UDP relay support, but the connection can drop
-  during a session. ShardX routes QUIC through the proxy UDP relay so
+  during a session. ShardBrowser routes QUIC through the proxy UDP relay so
   HTTP/3 remains available for the full session.
 
 ---
@@ -425,23 +425,14 @@ Download the build for your OS from [GitHub Releases](../../releases),
 then run it. Use `.dmg` for macOS, `.msi` or the portable `.exe` for
 Windows, and `.AppImage` or `.deb` for Linux.
 
-The release is not code-signed with Apple Developer ID or Authenticode,
-so the operating system may show a warning on first launch:
-
-* **macOS:** Gatekeeper may report that Apple cannot verify the app.
-  On macOS 14 and later, it may instead report that the app is damaged
-  and should be moved to the Trash. Both messages can be resolved by
-  removing the quarantine attribute once in Terminal:
-  ```bash
-  xattr -dr com.apple.quarantine "/Applications/ShardBrowser Launcher.app"
-  ```
-  The app should then open normally. For the developer verification
-  warning, right-click the app, select *Open* and confirm once.
-* **Windows:** SmartScreen may show *"Windows protected your PC"*.
-  Select **More info**, then **Run anyway**. Later launches do not show
-  the same prompt.
-* **Linux:** for `.AppImage`, run `chmod +x ShardX-Launcher.AppImage && ./ShardX-Launcher.AppImage`.
-  For `.deb`, run `sudo apt install ./ShardX-Launcher.deb`.
+* **macOS:** the app is signed with an Apple Developer ID and notarized,
+  so it opens like any other app.
+* **Windows:** the build is not signed with Authenticode, so SmartScreen
+  may show *"Windows protected your PC"* on first launch. Select
+  **More info**, then **Run anyway**. Later launches do not show the
+  same prompt.
+* **Linux:** for `.AppImage`, run `chmod +x ShardBrowser-Launcher.AppImage && ./ShardBrowser-Launcher.AppImage`.
+  For `.deb`, run `sudo apt install ./ShardBrowser-Launcher.deb`.
 
 ### Linux system dependencies
 
@@ -469,7 +460,7 @@ npm run tauri build    # release .app / .msi / .AppImage in src-tauri/target/rel
 
 ### First launch
 
-The app downloads the patched browser (~150 MB) and the fingerprint
+The app downloads the patched browser (~200 MB) and the fingerprint
 library (~780 KB) from our CDN, places everything under
 
 * `~/Library/Application Support/shardx-launcher/` (mac)
@@ -482,7 +473,7 @@ and you're ready to bind a proxy and launch your first profile.
 
 ## Usage
 
-ShardX provides four interfaces for different workflows. They all read
+ShardBrowser provides four interfaces for different workflows. They all read
 the same local state. A profile created in the UI is immediately
 available through the API, MCP server and SDKs.
 
@@ -788,7 +779,7 @@ language model to:
 
 * manage profiles / proxies / fingerprints / folders / cookies through
   the launcher.
-* navigate / click / type / wait / screenshot in a live ShardX
+* navigate / click / type / wait / screenshot in a live ShardBrowser
   profile, with the profile auto-starting when needed.
 
 The app does not run the server itself. Open *Settings > MCP server >
@@ -826,7 +817,7 @@ same pre-launch pipeline as the desktop app, including a UDP probe,
 conditional QUIC, automatic resolution of timezone, locale and geolocation,
 the same screen strategy and host-aware hardware randomization.
 
-Use an SDK when you want ShardX as a library inside a scraper, CI job or
+Use an SDK when you want ShardBrowser as a library inside a scraper, CI job or
 server-side worker without installing the GUI.
 
 * **Python:** [sdks/python/README.md](sdks/python/README.md), `pip install shardx`
@@ -931,7 +922,7 @@ React UI and Rust source, is available under the **MIT License**. See
 [LICENSE](LICENSE). You may use, fork, modify and distribute the launcher,
 including for commercial projects.
 
-The **browser engine** (the patched Chromium 156 binary that the
+The **browser engine** (the patched Chromium 157 binary that the
 launcher downloads from our CDN on first run) is distributed as a
 **closed-source binary**. Its source is not published in this
 repository or elsewhere, and the following are explicitly **not

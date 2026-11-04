@@ -11,6 +11,10 @@ export type Settings = {
   helper_triggers?: string[];
   /** Profile's camera is ShardBrowser's rather than the machine's. */
   camera_enabled?: boolean;
+  /** The profile's name in the address bar and the window title. */
+  show_profile_name?: boolean;
+  /** A password can be set on a profile (#127); off by default. Protected ones stay so when it goes off. */
+  profile_passwords?: boolean;
   /** Hide to the tray on close instead of quitting. */
   minimize_to_tray?: boolean;
   /** Appended to every launch, one per line. Applied last, so a repeat wins. */

@@ -294,13 +294,27 @@ pub struct LaunchInput {
 }
 
 /// Gathers what starting this profile needs from the space it lives in.
-pub fn launch_input(start: &Granted<Start>, cdp: Option<&Granted<Cookies>>) -> Result<LaunchInput> {
+pub fn launch_input(start: &Granted<Start>, cdp: Option<&Granted<Cookies>>, password: Option<&str>) -> Result<LaunchInput> {
     let profile_id = start.profile_id();
     if cdp.is_some_and(|c| c.profile_id() != profile_id) {
         anyhow::bail!("the debugging pass was given for another profile");
     }
-    let stored = profile::load_raw(profile_id)?;
-    let udd = profile::user_data_dir(profile_id)?;
+    // A protected profile is opened for this start only, and sealed again when its browser closes.
+    let (stored, udd, sealed) = if profile::is_protected(profile_id) {
+        let pw = password.ok_or_else(|| anyhow::anyhow!(crate::space::profile::PASSWORD_REQUIRED))?;
+        let (mut full, udd, open) = profile::open_protected(profile_id, pw)?;
+        // Its file was skipped while the engine moved on: migrated now, and sealed again.
+        let mut value = serde_json::to_value(&full)?;
+        if crate::runtime::migrate_unlocked(&mut value) {
+            full = serde_json::from_value(value)?;
+            if let Err(e) = open.save(&full) {
+                eprintln!("[launcher] {profile_id}: migration kept for this start only: {e:#}");
+            }
+        }
+        (full, udd, Some(open))
+    } else {
+        (profile::load_raw(profile_id)?, profile::user_data_dir(profile_id)?, None)
+    };
 
     // A browser left over from an earlier run of the launcher holds the
     // profile's lock but is in nobody's tracker. Starting another one does
@@ -323,7 +337,11 @@ pub fn launch_input(start: &Granted<Start>, cdp: Option<&Granted<Cookies>>) -> R
         .iter()
         .filter_map(|id| extensions::load_path(id).map(|p| (id.clone(), p)))
         .unzip();
-    let exit = if stored.meta.temporary { ExitHook::Temporary } else { ExitHook::Local };
+    let exit = match sealed {
+        Some(open) => ExitHook::Sealed(open),
+        None if stored.meta.temporary => ExitHook::Temporary,
+        None => ExitHook::Local,
+    };
     let bookmarks = bookmarks::mine().unwrap_or_else(|e| {
         eprintln!("[launcher] bookmarks skipped: {e}");
         Vec::new()
@@ -396,14 +414,6 @@ fn opens_a_shut_door(arg: &str) -> bool {
         )
 }
 
-pub async fn launch_profile(
-    profile_id: &str,
-    enable_cdp: bool,
-    headless: bool,
-) -> Result<LaunchOutcome> {
-    launch_profile_synced(profile_id, enable_cdp, headless, None, 0, "").await
-}
-
 /// How the browser is started, beyond what its profile says.
 struct LaunchOpts<'a> {
     enable_cdp: bool,
@@ -413,6 +423,8 @@ struct LaunchOpts<'a> {
     bus_token: &'a str,
     /// The space a run started in: the start goes there or nowhere.
     space: Option<&'a crate::space::Ticket>,
+    /// A protected profile's password (#127).
+    password: Option<&'a str>,
 }
 
 /// A run's start: with debugging, in the space the run started in. In a team
@@ -424,7 +436,26 @@ pub async fn launch_for_run(
     bus_port: u16,
     bus_token: &str,
 ) -> Result<LaunchOutcome> {
-    let opts = LaunchOpts { enable_cdp: true, headless: false, sync_group: None, bus_port, bus_token, space: Some(space) };
+    let opts = LaunchOpts { enable_cdp: true, headless: false, sync_group: None, bus_port, bus_token, space: Some(space), password: None };
+    launch_using(resolve_binary, profile_id, &opts).await
+}
+
+/// Tests' own start: no bus, no password.
+#[cfg(test)]
+pub async fn launch_profile(profile_id: &str, enable_cdp: bool, headless: bool) -> Result<LaunchOutcome> {
+    launch_profile_synced(profile_id, enable_cdp, headless, None, 0, "").await
+}
+
+/// A start from the interface or the local API, with the password of a protected profile (#127).
+pub async fn launch_profile_unlocked(
+    profile_id: &str,
+    enable_cdp: bool,
+    headless: bool,
+    bus_port: u16,
+    bus_token: &str,
+    password: Option<&str>,
+) -> Result<LaunchOutcome> {
+    let opts = LaunchOpts { enable_cdp, headless, sync_group: None, bus_port, bus_token, space: None, password };
     launch_using(resolve_binary, profile_id, &opts).await
 }
 
@@ -438,7 +469,7 @@ pub async fn launch_profile_synced(
     bus_port: u16,
     bus_token: &str,
 ) -> Result<LaunchOutcome> {
-    let opts = LaunchOpts { enable_cdp, headless, sync_group, bus_port, bus_token, space: None };
+    let opts = LaunchOpts { enable_cdp, headless, sync_group, bus_port, bus_token, space: None, password: None };
     launch_using(resolve_binary, profile_id, &opts).await
 }
 
@@ -494,11 +525,14 @@ async fn launch_using(
             let bin = binary()?;
             // An extension swap is waited out; none starts until the browser is tracked.
             _held = Some(extensions::begin_launch(profile_id).await?);
-            let mut input = launch_input(&start, cookies.as_ref())?;
+            let mut input = launch_input(&start, cookies.as_ref(), opts.password)?;
             // Synced: under the lease of the person's space, its session brought up to date.
-            if let Some(hand) = crate::space::sync::open_for_start(profile_id, &input.udd, opts.enable_cdp).await? {
-                input.exit = ExitHook::Synced(hand);
-                may_spawn(profile_id)?;
+            // A protected profile is never synced: its data leaves this machine only sealed.
+            if !matches!(input.exit, ExitHook::Sealed(_)) {
+                if let Some(hand) = crate::space::sync::open_for_start(profile_id, &input.udd, opts.enable_cdp).await? {
+                    input.exit = ExitHook::Synced(hand);
+                    may_spawn(profile_id)?;
+                }
             }
             (bin, input)
         }
@@ -536,7 +570,7 @@ async fn team_input(team: &str, start: &Granted<Start>, cdp: Option<&Granted<Coo
 /// A launch with an engine of the test's own.
 #[cfg(test)]
 pub(crate) async fn launch_with(engine: PathBuf, profile_id: &str, enable_cdp: bool) -> Result<LaunchOutcome> {
-    let opts = LaunchOpts { enable_cdp, headless: false, sync_group: None, bus_port: 0, bus_token: "", space: None };
+    let opts = LaunchOpts { enable_cdp, headless: false, sync_group: None, bus_port: 0, bus_token: "", space: None, password: None };
     launch_using(|| Ok(engine), profile_id, &opts).await
 }
 
@@ -824,11 +858,12 @@ fn command_line(
     if let Some(icon) = ready.icon {
         args.push(format!("--shardx-profile-icon={}", icon.display()));
     }
-    // Same accent behind the profile-name pill in the omnibox, so the icon and
-    // the window never disagree about a profile's colour. Left off for "auto":
-    // the pill then keeps the toolbar colour, which is the browser's own
-    // default and follows the theme.
-    if let Some(c) = input.stored.meta.color.as_deref().filter(|c| !c.trim().is_empty()) {
+    // Turned off in Settings, no name in the omnibox or the window title (#126). Otherwise
+    // the same accent behind the omnibox pill, so the icon and the window never disagree
+    // about a profile's colour; left off for "auto", which keeps the toolbar colour.
+    if !s.show_profile_name {
+        args.push("--shardx-hide-profile-name".into());
+    } else if let Some(c) = input.stored.meta.color.as_deref().filter(|c| !c.trim().is_empty()) {
         args.push(format!("--shardx-profile-pill-color={c}"));
     }
     args.push("--no-first-run".into());
@@ -895,7 +930,7 @@ fn command_line(
             if let Some(ip) = ready.proxy_public_ip {
                 args.push(format!("--shardx-webrtc-public-ip={ip}"));
             }
-            eprintln!("[launcher] WebRTC: TCP-only (servers stripped, mDNS host only, UDP off)");
+            eprintln!("[launcher] WebRTC: TCP-only (UDP off, TURN over TCP through the proxy)");
         }
         _ => {
             if input.proxy.is_none() {
@@ -1617,7 +1652,7 @@ mod tests {
     }
 
     fn settings() -> crate::settings::Settings {
-        crate::settings::Settings { helper_enabled: true, camera_enabled: true, ..Default::default() }
+        crate::settings::Settings { helper_enabled: true, camera_enabled: true, show_profile_name: true, ..Default::default() }
     }
 
     /// As launched on an engine from before patch 0092's second part.
@@ -1644,7 +1679,7 @@ mod tests {
         command_line(input, &ready, opts, s)
     }
 
-    const UI: LaunchOpts = LaunchOpts { enable_cdp: false, headless: false, sync_group: None, bus_port: 4242, bus_token: "tok", space: None };
+    const UI: LaunchOpts = LaunchOpts { enable_cdp: false, headless: false, sync_group: None, bus_port: 4242, bus_token: "tok", space: None, password: None };
 
     /// What the engine was started with before the launch was split up, for
     /// an ordinary profile started from the list. It must not move.
@@ -1674,6 +1709,16 @@ mod tests {
         );
     }
 
+    /// #126: off in Settings, the engine is told to show no name, and the pill colour goes too.
+    #[test]
+    fn the_profile_name_can_be_hidden() {
+        let p = input(json!({ "_meta": { "id": "p3", "rev": 1, "color": "#3366ff" }, "name": "Hidden" }), None);
+        let s = crate::settings::Settings { show_profile_name: false, ..settings() };
+        let args = argv(&p, &UI, &s);
+        assert!(args.iter().any(|a| a == "--shardx-hide-profile-name"));
+        assert!(!args.iter().any(|a| a.starts_with("--shardx-profile-pill-color")));
+    }
+
     /// The same for an automated start behind a proxy, with everything else on.
     #[test]
     fn an_automated_start_keeps_its_command_line() {
@@ -1685,7 +1730,7 @@ mod tests {
                          "username": "u s", "password": "p@ss" })),
         );
         p.cdp = true;
-        let opts = LaunchOpts { enable_cdp: true, headless: true, sync_group: Some("grp"), bus_port: 4243, bus_token: "tok2", space: None };
+        let opts = LaunchOpts { enable_cdp: true, headless: true, sync_group: Some("grp"), bus_port: 4243, bus_token: "tok2", space: None, password: None };
         let s = crate::settings::Settings { extra_args: "--lang=de".into(), ..settings() };
         assert_eq!(
             argv(&p, &opts, &s),
@@ -1945,18 +1990,51 @@ mod tests {
         let perm = crate::space::perm::start;
         let cookies = crate::space::perm::cookies;
 
-        let plain = super::launch_input(&perm("li-kept").unwrap(), None).unwrap();
+        let plain = super::launch_input(&perm("li-kept").unwrap(), None, None).unwrap();
         assert!(!plain.cdp && !plain.team && plain.proxy.is_none());
         assert!(matches!(plain.exit, ExitHook::Local));
         assert_eq!(plain.udd, crate::store::user_data_root().unwrap().join("li-kept"));
 
-        let automated = super::launch_input(&perm("li-temp").unwrap(), Some(&cookies("li-temp").unwrap())).unwrap();
+        let automated = super::launch_input(&perm("li-temp").unwrap(), Some(&cookies("li-temp").unwrap()), None).unwrap();
         assert!(automated.cdp);
         assert!(matches!(automated.exit, ExitHook::Temporary));
 
         // A pass for one profile opens nothing on another.
-        let crossed = super::launch_input(&perm("li-kept").unwrap(), Some(&cookies("li-temp").unwrap()));
+        let crossed = super::launch_input(&perm("li-kept").unwrap(), Some(&cookies("li-temp").unwrap()), None);
         assert!(crossed.is_err());
+    }
+
+    /// #127: a protected profile starts only with its password, on its unsealed data, and an
+    /// aborted start seals that data again.
+    #[test]
+    fn a_protected_profile_opens_for_its_start_and_seals_again() {
+        let _root = crate::store::test_root("launch-protected");
+        let dir = crate::store::profiles_dir().unwrap();
+        let body = json!({ "_meta": { "id": "lp-1" }, "name": "Locked", "notes": "notes-marker-9" });
+        std::fs::write(dir.join("lp-1.json"), body.to_string()).unwrap();
+        let udd = crate::store::user_data_root().unwrap().join("lp-1");
+        std::fs::create_dir_all(udd.join("Default")).unwrap();
+        std::fs::write(udd.join("Default/Cookies"), b"jar").unwrap();
+        crate::space::profile::protect("lp-1", "eight chars").unwrap();
+        assert!(!udd.exists());
+        let start = || crate::space::perm::start("lp-1").unwrap();
+
+        let refused = super::launch_input(&start(), None, None).err().unwrap().to_string();
+        assert_eq!(refused, crate::space::profile::PASSWORD_REQUIRED);
+        assert!(super::launch_input(&start(), None, Some("not it at all")).is_err());
+        assert!(!udd.exists(), "a refused start opens nothing");
+
+        let input = super::launch_input(&start(), None, Some("eight chars")).unwrap();
+        assert!(matches!(input.exit, ExitHook::Sealed(_)));
+        assert_eq!(input.udd, udd);
+        assert_eq!(std::fs::read(udd.join("Default/Cookies")).unwrap(), b"jar");
+        assert_eq!(input.stored.config.get("notes").unwrap(), "notes-marker-9");
+        assert!(crate::space::profile::any_unsealed());
+        drop(input);
+        assert!(!udd.exists(), "dropped before the browser ran: sealed again");
+        assert!(!crate::space::profile::any_unsealed());
+        let file = std::fs::read_to_string(dir.join("lp-1.json")).unwrap();
+        assert!(!file.contains("notes-marker-9"));
     }
 
     /// From the profile file to the engine's JSON: the browser's menus follow the
@@ -1973,7 +2051,7 @@ mod tests {
             std::fs::write(dir.join(format!("{id}.json")), p.to_string()).unwrap();
         }
         let engine = |id: &str| {
-            let input = super::launch_input(&crate::space::perm::start(id).unwrap(), None).unwrap();
+            let input = super::launch_input(&crate::space::perm::start(id).unwrap(), None, None).unwrap();
             serde_json::to_value(super::engine_config(&input.stored)).unwrap()
         };
 

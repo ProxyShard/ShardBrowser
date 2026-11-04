@@ -214,6 +214,7 @@ async fn list_profiles() -> ApiResult {
                 "folder": m.folder,
                 "color": m.color,
                 "extensions": m.extensions,
+                "protected": m.protected,
                 "running": r.is_some(),
                 "pid": r.map(|x| x.pid),
                 "cdp": r.and_then(|x| x.cdp.clone()),
@@ -499,6 +500,9 @@ struct EditReq {
     refresh_rate: Option<i64>,
     /// Replace stored fingerprint verbatim.
     fingerprint: Option<Value>,
+    /// A protected profile's password: anything but its name and colour needs it (#127).
+    #[serde(default)]
+    password: Option<String>,
     /// The `_meta.rev` read: refused as stale (409) once the profile moved past it.
     rev: Option<u64>,
 }
@@ -528,7 +532,13 @@ fn validate_extension_ids(ids: &[String]) -> Result<(), ApiError> {
 /// Edit profile; only provided fields change. Returns the updated profile.
 async fn edit_profile(Extension(t): Extension<Ticket>, Path(id): Path<String>, Json(body): Json<EditReq>) -> ApiResult {
     let door = Door("PATCH /profiles/:id");
-    let mut stored = space::profile::fetch_for_edit(&t, &id).await.map_err(fail(StatusCode::NOT_FOUND))?;
+    let mut stored = match body.password.as_deref() {
+        // Edited whole and sealed again: the file's readable part has nothing to edit.
+        Some(pw) if space::profile::is_protected(&id) => {
+            space::profile::unlock(&id, pw).map_err(fail_locked(StatusCode::INTERNAL_SERVER_ERROR))?
+        }
+        _ => space::profile::fetch_for_edit(&t, &id).await.map_err(fail(StatusCode::NOT_FOUND))?,
+    };
     let mut inline_proxy = false;
 
     if let Some(fp) = body.fingerprint {
@@ -583,6 +593,7 @@ async fn edit_profile(Extension(t): Extension<Ticket>, Path(id): Path<String>, J
         sent_rev: Some(body.rev.unwrap_or(stored.meta.rev)),
         move_to: body.folder.clone(),
         inline_proxy,
+        password: body.password.clone(),
     };
     space::profile::save(door, &t, stored, opts).await.map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
 
@@ -631,18 +642,33 @@ async fn delete_folder_ep(
     })))
 }
 
+/// A protected profile asked for without its password, or with a wrong one, is a 401; the rest as `fail`.
+fn fail_locked(fallback: StatusCode) -> impl Fn(anyhow::Error) -> ApiError {
+    move |e| {
+        let m = e.to_string();
+        if m == space::profile::PASSWORD_REQUIRED || m == "wrong password" {
+            return err(StatusCode::UNAUTHORIZED, m);
+        }
+        fail(fallback)(e)
+    }
+}
+
 #[derive(Deserialize, Default)]
 struct StartReq {
     #[serde(default)]
     headless: bool,
+    /// A protected profile's password (#127).
+    #[serde(default)]
+    password: Option<String>,
 }
 
-/// Launch with CDP; body `{ "headless": true }` opt-in.
+/// Launch with CDP; body `{ "headless": true, "password": "…" }`, both optional.
 async fn start_profile(Path(id): Path<String>, body: Option<Json<StartReq>>) -> ApiResult {
-    let headless = body.map(|Json(b)| b.headless).unwrap_or(false);
-    let outcome = crate::launch::launch_profile(&id, true, headless)
+    let Json(body) = body.unwrap_or_default();
+    let outcome = crate::launch::launch_profile_unlocked(&id, true, body.headless, 0, "", body.password.as_deref())
         .await
-        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+        .map_err(fail_locked(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let headless = body.headless;
     Ok(Json(json!({
         "profile_id": id,
         "pid": outcome.pid,
@@ -885,16 +911,28 @@ struct BookmarkReq {
     title: Option<String>,
     /// Launcher folder; "" (or absent) means every profile.
     folder: Option<String>,
+    /// Chrome's root: "bookmark_bar" (or absent on a new one), "other" or "synced".
+    root: Option<String>,
+    /// Bookmark folders inside that root, outermost first. Absent, an updated one keeps its place.
+    path: Option<Vec<String>>,
 }
 
 /// Upsert. Profiles pick the change up on their next launch, not immediately —
 /// the bookmarks file is written just before the browser reads it.
 async fn save_bookmark(Extension(t): Extension<Ticket>, Json(body): Json<BookmarkReq>) -> ApiResult {
+    let id = body.id.unwrap_or_default();
+    let was = if id.is_empty() || (body.root.is_some() && body.path.is_some()) {
+        None
+    } else {
+        crate::space::bookmarks::list().ok().and_then(|l| l.into_iter().find(|b| b.id == id))
+    };
     let mark = crate::space::bookmarks::Bookmark {
-        id: body.id.unwrap_or_default(),
         title: body.title.unwrap_or_default(),
         url: body.url,
         folder: body.folder.unwrap_or_default(),
+        root: body.root.or_else(|| was.as_ref().map(|b| b.root.clone())).unwrap_or_default(),
+        path: body.path.or_else(|| was.map(|b| b.path)).unwrap_or_default(),
+        id,
     };
     let saved = crate::space::bookmarks::save(Door("POST /bookmarks"), &t, mark)
         .await

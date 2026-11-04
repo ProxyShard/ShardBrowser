@@ -32,6 +32,8 @@ pub struct SaveOpts {
     pub move_to: Option<String>,
     /// A proxy line came with it and was stored for it.
     pub inline_proxy: bool,
+    /// A protected profile's password (#127): an edit of its sealed part needs it.
+    pub password: Option<String>,
 }
 
 fn need(right: &'static str, on: &'static str) -> Need {

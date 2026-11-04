@@ -1,7 +1,8 @@
 import { t } from "../../shared/i18n";
 import {
-  AddIcon, ChevronDownIcon, ChevronRightIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FolderIcon, FolderMinusIconApp, IdCardIcon, PeekIcon, PinIconApp,
-  PlayIcon, RegenerateIcon, RenameIcon, RouteIcon, StopIcon, SyncIcon, SyncedIcon, SyncOffIcon, TagIcon, UnpinIconApp, UploadIcon,
+  AddIcon, ChangePasswordIcon, ChevronDownIcon, ChevronRightIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FolderIcon, FolderMinusIconApp, IdCardIcon,
+  PasswordIcon, PeekIcon, PinIconApp, PlayIcon, RegenerateIcon, RemovePasswordIcon, RenameIcon, RouteIcon, StopIcon, SyncIcon, SyncedIcon, SyncOffIcon, TagIcon,
+  UnpinIconApp, UploadIcon,
 } from "../../shared/icons";
 import { syncConnected, useSync } from "../../entities/sync";
 import { openHereInstead, setProfilesSync } from "../profile-sync";
@@ -11,12 +12,14 @@ import { toast } from "../../shared/model/toast";
 import { useNav } from "../../shared/model/navigation";
 import { defineCommands, type Command, type RunFrom, type Subject } from "../../shared/commands";
 import {
-  cloneRefusal, findView, folderNamesOf, isTeamRow, moveRefusal, profileRefusal, resolveId, selectVisible, setContinueByHand, startRefusal, syncBlockReason,
+  cloneRefusal, findView, folderNamesOf, isProtected, isTeamRow, lockedRefusal, moveRefusal, profileRefusal, resolveId, selectVisible, setContinueByHand, startRefusal, syncBlockReason,
   useOverviewFolds, useProfile, useProfileUi, viewFolds, type ProfileMeta, type ProfileRight,
 } from "../../entities/profile";
 import { createAnywhereRefusal, inTeam } from "../../entities/space";
 import { rowActionIcons } from "../../shared/ui/rowActionIcons";
 import { openProfileForm } from "../profile-form/model/useProfileForm";
+import { changePassword, removePassword, setPassword } from "../profile-lock";
+import { passwordsOn } from "../../entities/settings";
 
 const data = () => useProfile.getState();
 const ui = () => useProfileUi.getState();
@@ -74,6 +77,12 @@ const lacks = (right: ProfileRight) => (s: Subject) => noneMay(metas(s), (p, man
 const createRefusal = () => createAnywhereRefusal(folderNamesOf(data().profiles, data().folderRegistry));
 /** Only rows of the personal space: a team's cookies and pins are not offered yet (perm.rs, space/mod.rs). */
 const personalRows = (s: Subject) => metas(s).every((p) => !isTeamRow(p));
+/** Why none of them may: each is protected by a password (#127). */
+const allLocked = (s: Subject) => noneMay(metas(s), lockedRefusal);
+/** One row, protected; a password's own commands. */
+const oneLocked = (s: Subject) => s.ids.length === 1 && metas(s).some(isProtected);
+/** A password's commands wait for the browser to close (the backend's "close the profile first"). */
+const stopFirst = (s: Subject) => (s.ids.some(isRunning) ? t("profileRow.stopFirst") : null);
 
 /// Every run follows the registry's contract (`Command.run`): the ids a run
 /// answers with are the ones that failed, which its own toast already names,
@@ -240,8 +249,8 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     ...LIST, id: "profile.clone", scope: "active", group: "open", icon: CopyIcon,
     label: () => t("commands.clone"),
     surfaces: ["rowMenu", "hover", "paletteActions", "peekMenu"],
-    // The copy is a new profile in the same folder.
-    disabled: (s) => noneMay(metas(s), (p) => cloneRefusal(p)),
+    // The copy is a new profile in the same folder; a protected one is not copied.
+    disabled: (s) => noneMay(metas(s), (p) => cloneRefusal(p) ?? lockedRefusal(p)),
     run: (s) => data().cloneProfile(s.ids[0]),
   },
   {
@@ -310,7 +319,8 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     focusAfter: true,
     label: (n) => (n > 1 ? t("commands.assignProxies") : t("commands.changeProxy")), keys: ["P"],
     surfaces: ["rowMenu", "bulkBar", "palette", "paletteActions", "peekMenu", "sheet"],
-    disabled: lacks("edit"),
+    // A protected one's proxy changes in its editor, with its password.
+    disabled: (s) => lacks("edit")(s) ?? allLocked(s),
     run: (s, { from }) => {
       // One row the list shows (its menu, its keys, or the palette after it
       // brings the row into view): that row's proxy cell picker. Otherwise,
@@ -326,7 +336,7 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     focusAfter: true,
     label: () => t("commands.regenerate"),
     surfaces: ["bulkMore", "palette", "paletteActions"],
-    disabled: lacks("edit"),
+    disabled: (s) => lacks("edit")(s) ?? allLocked(s),
     // It asks first; a cancel is not a failure, and the store's own toast
     // names what it skipped or could not change (Pair 37 review, M2).
     run: async (s) => { await data().regenerateFingerprints(s.ids); },
@@ -338,7 +348,9 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     label: (n) => (n > 1 ? t("commands.syncProfiles") : t("commands.syncProfile")),
     surfaces: ["rowMenu", "bulkMore", "palette", "paletteActions", "peekMenu"],
     when: (s) => syncConnected() && metas(s).some((p) => p.sync && !p.sync.on),
-    run: (s) => setProfilesSync(metas(s).filter((p) => p.sync && !p.sync.on).map((p) => p.id), true),
+    // A protected one stays on this computer (the backend refuses it).
+    disabled: (s) => noneMay(metas(s).filter((p) => p.sync && !p.sync.on), lockedRefusal),
+    run: (s) => setProfilesSync(metas(s).filter((p) => p.sync && !p.sync.on && !isProtected(p)).map((p) => p.id), true),
   },
   {
     ...LIST, id: "profile.stopSync", scope: "selection", group: "organize", icon: SyncOffIcon,
@@ -357,11 +369,40 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     run: (s) => setProfilesSync(metas(s).filter((p) => p.sync?.on).map((p) => p.id), false),
   },
   {
+    // A profile's own password (#127): offered while Settings allows it, on this computer's own profiles.
+    ...LIST, id: "profile.setPassword", scope: "active", group: "organize", icon: PasswordIcon,
+    label: () => t("commands.setPassword"),
+    surfaces: ["rowMenu", "paletteActions", "peekMenu"],
+    when: (s) => passwordsOn() && s.ids.length === 1 && personalRows(s) && metas(s).some((p) => !isProtected(p)),
+    // Sync carries a profile open between computers: the backend asks for it off first.
+    disabled: (s) => stopFirst(s) ?? (metas(s).some((p) => p.sync?.on) ? t("errors.passwordSyncOn") : null),
+    run: async (s) => { const p = metas(s)[0]; if (p) await setPassword(p); },
+  },
+  {
+    // Whatever Settings says: a profile that has one keeps these.
+    ...LIST, id: "profile.changePassword", scope: "active", group: "organize", icon: ChangePasswordIcon,
+    label: () => t("commands.changePassword"),
+    surfaces: ["rowMenu", "paletteActions", "peekMenu"],
+    when: oneLocked,
+    disabled: stopFirst,
+    run: async (s) => { const p = metas(s)[0]; if (p) await changePassword(p); },
+  },
+  {
+    ...LIST, id: "profile.removePassword", scope: "active", group: "organize", icon: RemovePasswordIcon,
+    label: () => t("commands.removePassword"),
+    surfaces: ["rowMenu", "paletteActions", "peekMenu"],
+    when: oneLocked,
+    disabled: stopFirst,
+    run: async (s) => { const p = metas(s)[0]; if (p) await removePassword(p); },
+  },
+  {
     ...LIST, id: "profile.launchSynced", scope: "selection", group: "run", icon: SyncIcon,
     label: () => t("commands.launchSynced"),
     surfaces: ["bulkMore", "palette"],
     when: (s) => s.ids.length >= 2,
-    disabled: (s) => syncBlockReason(s.ids) || metas(s).map((p) => startRefusal(p, true)).find((r) => r !== null) || null,
+    disabled: (s) => syncBlockReason(s.ids) || metas(s).map((p) => startRefusal(p, true)).find((r) => r !== null)
+      // A protected one starts only on its own: fewer than two left is no group.
+      || (metas(s).filter((p) => !isProtected(p)).length < 2 ? allLocked({ ids: metas(s).filter(isProtected).map((p) => p.id) }) : null),
     // A cancel is not a failure; the store's own toast names one (M2).
     run: async (s) => { await data().launchSynced(s.ids); },
   },
@@ -369,8 +410,8 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     ...LIST, id: "profile.export", scope: "selection", group: "copy", icon: CopyIcon,
     label: () => t("commands.exportJson"),
     surfaces: ["bulkMore", "palette"],
-    // A copy of its settings leaves the team: Take out.
-    disabled: lacks("take_out"),
+    // A copy of its settings leaves the team: Take out. A protected one's are sealed.
+    disabled: (s) => lacks("take_out")(s) ?? allLocked(s),
     run: (s) => data().exportMany(s.ids),
   },
   {
@@ -387,6 +428,7 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     label: () => t("commands.exportCookies"),
     surfaces: ["rowMenu", "paletteActions", "peekMenu"],
     when: personalRows,
+    disabled: allLocked,
     run: async (s) => { const p = metas(s)[0]; if (p) await data().exportCookies(p); },
   },
   {
@@ -396,7 +438,7 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     when: personalRows,
     // A running browser holds its cookie store: the item says so before the
     // click (Pair 18 review, M6), rather than a toast after it.
-    disabled: (s) => (s.ids.some(isRunning) ? t("profileRow.stopFirst") : null),
+    disabled: (s) => allLocked(s) ?? stopFirst(s),
     run: async (s) => { const p = metas(s)[0]; if (p) await data().importCookies(p); },
   },
   {

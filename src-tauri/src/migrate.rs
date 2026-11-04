@@ -62,7 +62,7 @@ pub struct Progress {
 /// Directories that move; everything else in the config dir stays where the
 /// launcher can always find it. A team copy kept for a new invite moves too,
 /// or no sweep would find it again.
-const MOVED: &[&str] = &["profiles", "user-data", "extensions", "trash", "team-open"];
+const MOVED: &[&str] = &["profiles", "user-data", "extensions", "trash", "team-open", "protected"];
 
 fn emit(app: &tauri::AppHandle, p: Progress) {
     let _ = app.emit("data-migration", p);
@@ -94,6 +94,10 @@ pub(crate) fn run_with(dst: &Path, emit: &dyn Fn(Progress)) -> Result<u64> {
 fn refuse_while_busy() -> Result<()> {
     if crate::launch::in_flight() > 0 {
         anyhow::bail!("a profile is starting: try again once it has started");
+    }
+    // Its data is open under the data folder until the browser closes and it is sealed.
+    if crate::space::profile::any_unsealed() {
+        anyhow::bail!("a protected profile is running: close it, then try again");
     }
     crate::space::open::refuse_while_open().map_err(anyhow::Error::msg)
 }

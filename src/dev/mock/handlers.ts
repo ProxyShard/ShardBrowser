@@ -14,6 +14,9 @@ import { alreadyInLibrary, extProfileClosed, extUpdateHandlers, importSame } fro
 import { teamNew, teamSave } from "./teamProjects";
 import { openSessions, resendUnsent, sessionEnded } from "./teamSessions";
 import { intoTeamTrash, teamTrashHandlers } from "./teamTrash";
+import { launchCheck, lockHandlers, refuseLocked, saveStub, stubOf } from "./locks";
+import { LOCK_REFUSALS } from "../../shared/api/lockRefusals";
+import { AUTOMATION_REFUSALS } from "../../shared/api/automationRefusals";
 import { NOT_IN_TEAM, profileFromFingerprint, settle, spaceStateOf, teamInUse, teamUnreachable, told } from "./spaces";
 import { SYNC_REFUSALS } from "../../entities/sync/model/types";
 import { TEAM_REFUSALS } from "../../shared/api/teamRefusals";
@@ -109,11 +112,11 @@ function proxyGone(state: MockState, id: string): string | null {
 /** Profiles with a start under way (launch.rs STARTING): a second start is refused BUSY. */
 const starting = new Set<string>();
 
-function startProcess(state: MockState, id: string): number {
+function startProcess(state: MockState, id: string, cdp = false): number {
   const p = profile(state, id);
   if (state.running[id]) return state.running[id].pid;
   const pid = state.nextPid++;
-  state.running[id] = { pid, started: Date.now() };
+  state.running[id] = { pid, started: Date.now(), ...(cdp ? { cdp } : {}) };
   p._meta.last_launched_at = nowStamp();
   if (p._meta.launches !== undefined) p._meta.launches += 1;
   return pid;
@@ -203,7 +206,8 @@ const WRITES_PROFILE = new Set(["profile.keep", "proxy.set", "proxy.generate", "
 function startRun(state: MockState, project: Project, ctx: Ctx): RunState {
   const ids = state.order.slice(0, Math.max(1, project.run.threads));
   // A team's profile starts for a run only with Start and Cookies on it (doors.rs RUN).
-  const refused = new Map(ids.map((id) => [id, teamStartRefusal(state, id, true)] as const));
+  // A protected one never runs in automation (#127).
+  const refused = new Map(ids.map((id) => [id, teamStartRefusal(state, id, true) ?? (state.profiles[id]?._meta.lock ? LOCK_REFUSALS.notAvailable : null)] as const));
   const at = () => new Date().toLocaleTimeString();
   const run: RunState = {
     project_id: project.id,
@@ -218,7 +222,7 @@ function startRun(state: MockState, project: Project, ctx: Ctx): RunState {
     log: [`${at()} run started, ${ids.length} worker(s)`, ...ids.filter((id) => refused.get(id)).map((id) => `${at()} ${state.profiles[id]?.name ?? id}: ${refused.get(id)}`)],
   };
   runs[project.id] = run;
-  for (const id of ids) if (!refused.get(id)) startProcess(state, id);
+  for (const id of ids) if (!refused.get(id)) startProcess(state, id, true);
   runTimers[project.id] = setInterval(() => {
     let live = false;
     for (const w of run.workers) {
@@ -245,6 +249,10 @@ function startRun(state: MockState, project: Project, ctx: Ctx): RunState {
   }, 2500);
   return run;
 }
+
+/** A run's worker drives this profile now (cdp.rs `run_drives`). */
+const runDrives = (id: string) =>
+  Object.values(runs).some((r) => r.running && r.workers.some((w) => w.profile_id === id && (w.status === "starting" || w.status === "running")));
 
 function stopRun(state: MockState, id: string): void {
   const run = runs[id];
@@ -520,8 +528,9 @@ export const handlers: Record<string, Handler> = {
 
   // ---- profiles ---------------------------------------------------------------
   profile_list: (_a, { state }) => state.order.map((id) => metaOf(state.profiles[id])),
-  profile_get: ({ id }, { state }) => profile(state, id),
-  profile_save: ({ payload }, ctx) => {
+  // A protected profile's answer is a stub: its name and the open part of `_meta` (#127).
+  profile_get: ({ id }, { state }) => { const p = profile(state, id); return p._meta.lock ? stubOf(p) : p; },
+  profile_save: ({ payload, password }, ctx) => {
     // `window.__shardxMockSaveFails = true` makes saves fail as a full disk would.
     if ((window as { __shardxMockSaveFails?: boolean }).__shardxMockSaveFails) throw "No space left on device (os error 28)";
     const { state } = ctx;
@@ -541,6 +550,11 @@ export const handlers: Record<string, Handler> = {
     const onDisk = prev?._meta.rev ?? 0;
     if (typeof sent === "number" && sent !== onDisk) {
       throw `This profile changed after you opened it (rev ${onDisk}, you have ${sent}) — probably through the API or another window. Reopen it and apply your changes to the current version.`;
+    }
+    // A protected one: a rename or recolor by stub, or the whole of it with its password.
+    if (prev) {
+      const row = saveStub(prev, incoming as Record<string, any>, password);
+      if (row) { ctx.save(); return row; }
     }
     const meta = {
       ...(prev?._meta ?? { pinned: false, folder: "", total_runtime_ms: 0, created_at: nowStamp(), last_launched_at: null }),
@@ -586,6 +600,7 @@ export const handlers: Record<string, Handler> = {
     return null;
   },
   profile_clone: ({ id }, ctx) => {
+    refuseLocked(ctx.state, id);
     const src = profile(ctx.state, id);
     const copy = cloneProfile(src, `${src.name} (copy)`);
     ctx.state.profiles[copy._meta.id] = copy;
@@ -596,10 +611,12 @@ export const handlers: Record<string, Handler> = {
   },
   profile_set_pin: ({ id, pinned }, ctx) => { profile(ctx.state, id)._meta.pinned = !!pinned; ctx.save(); return null; },
   profile_set_folder: ({ id, folder }, ctx) => { profile(ctx.state, id)._meta.folder = folder ?? ""; ctx.save(); return null; },
-  profile_bind_proxy: ({ profileId, proxyId }, ctx) => { profile(ctx.state, profileId)._meta.proxy_id = proxyId ?? null; ctx.save(); return null; },
+  profile_bind_proxy: ({ profileId, proxyId }, ctx) => { refuseLocked(ctx.state, profileId); profile(ctx.state, profileId)._meta.proxy_id = proxyId ?? null; ctx.save(); return null; },
   profile_import: ({ payloads }, ctx) => {
     let n = 0;
     for (const p of payloads as StoredProfile[]) {
+      // A sealed file is not taken in (#127).
+      if (p?._meta?.lock) { ctx.save(); throw LOCK_REFUSALS.notAvailable; }
       // As lib.rs in a team: each is written in turn, and the first refused stops the rest.
       const refused = teamCreateRefusal(ctx.state, String(p?._meta?.folder ?? ""));
       if (refused) { ctx.save(); throw refused; }
@@ -643,7 +660,7 @@ export const handlers: Record<string, Handler> = {
   },
   // The quit dialog's list: team and synced profiles open here (lib.rs team_sessions).
   team_sessions: (_a, { state }) => openSessions(state),
-  launch: async ({ profileId }, ctx) => {
+  launch: async ({ profileId, password }, ctx) => {
     // A team's start takes its lease from the server first (open.rs open_team).
     const offline = teamUnreachable(ctx.state);
     if (offline) throw offline;
@@ -651,6 +668,8 @@ export const handlers: Record<string, Handler> = {
     if (starting.has(String(profileId)) || ctx.state.saving?.[String(profileId)]) throw TEAM_REFUSALS.busy;
     const resendMs = (window as { __shardxMockSessionSaveMs?: number }).__shardxMockSessionSaveMs ?? 1500;
     if (resendUnsent(ctx.state, String(profileId), ctx.emit, ctx.save, resendMs)) { ctx.save(); throw TEAM_REFUSALS.busy; }
+    // A protected one opens with its password first (#127).
+    await launchCheck(ctx.state, profileId, password);
     const gone = proxyGone(ctx.state, String(profileId));
     if (gone) throw gone;
     // As the backend: another device holds a synced profile's lease.
@@ -707,7 +726,8 @@ export const handlers: Record<string, Handler> = {
       const gone = proxyGone(ctx.state, String(id));
       const lease = syncLease(ctx.state, String(id));
       // A team's profile starts only with Start on it (launch_profile_synced, open.rs passes).
-      const right = teamUnreachable(ctx.state) ?? teamStartRefusal(ctx.state, String(id), false);
+      const right = teamUnreachable(ctx.state) ?? teamStartRefusal(ctx.state, String(id), false)
+        ?? (ctx.state.profiles[String(id)]?._meta.lock ? LOCK_REFUSALS.notAvailable : null);
       if (right) failed.push(`${id}: ${right}`);
       else if (gone) failed.push(`${id}: ${gone}`);
       else if (lease) failed.push(`${id}: ${SYNC_REFUSALS.leased(lease)}`);
@@ -841,8 +861,8 @@ export const handlers: Record<string, Handler> = {
     ctx.save();
     return true;
   },
-  cookies_export_to_file: () => 42,
-  cookies_import: ({ cookies }) => (Array.isArray(cookies) ? cookies.length : 0),
+  cookies_export_to_file: ({ profileId }, { state }) => { refuseLocked(state, profileId); return 42; },
+  cookies_import: ({ profileId, cookies }, { state }) => { refuseLocked(state, profileId); return Array.isArray(cookies) ? cookies.length : 0; },
   enrich_picks_for_preset: ({ presetId }, { state }) => {
     const nav = state.fingerprints.find((f) => f.id === presetId)?.payload?.navigator ?? {};
     return { hardware_concurrency: nav.hardware_concurrency, device_memory: nav.device_memory, platform_version: nav.platform_version };
@@ -954,9 +974,10 @@ export const handlers: Record<string, Handler> = {
   extension_delete: ({ id }, ctx) => { const gone = ctx.state.extensions.find((e) => e.id === id); if (gone && teamInUse(ctx.state)) intoTeamTrash(ctx, "extension", gone.id, gone.name, gone); ctx.state.extensions = ctx.state.extensions.filter((e) => e.id !== id); delete ctx.state.extUpdates?.[id]; for (const p of Object.values(ctx.state.profiles)) p._meta.extensions = p._meta.extensions.filter((x) => x !== id); changed(ctx, "extensions"); return null; },
   ...extUpdateHandlers,
   bookmark_list: (_a, { state }) => state.bookmarks,
-  // As bookmarks.rs cleaned(): trimmed, the address made whole, an untitled one named by its address.
-  bookmark_save: ({ entry }, ctx) => { const b = { ...entry, title: String(entry.title ?? "").trim(), url: String(entry.url ?? "").trim(), folder: String(entry.folder ?? "").trim() }; if (!b.url) throw "a bookmark needs a URL"; if (!b.url.includes("://")) b.url = `https://${b.url}`; if (!b.title) b.title = b.url; if (!b.id) { b.id = `bm-${newId().slice(0, 6)}`; ctx.state.bookmarks.push(b); } else { const i = ctx.state.bookmarks.findIndex((x) => x.id === b.id); if (i >= 0) ctx.state.bookmarks[i] = b; else ctx.state.bookmarks.push(b); } ctx.save(); return b; },
+  // As bookmarks.rs cleaned(): trimmed, the address made whole (a bookmarklet as written), an untitled one named by its address.
+  bookmark_save: ({ entry }, ctx) => { const b = { ...entry, title: String(entry.title ?? "").trim(), url: String(entry.url ?? "").trim(), folder: String(entry.folder ?? "").trim() }; if (!b.url) throw "a bookmark needs a URL"; if (!b.url.includes("://") && !/^javascript:/i.test(b.url)) b.url = `https://${b.url}`; if (!b.root || b.root === "bookmark_bar") delete b.root; if (!b.title) b.title = b.url; if (!b.id) { b.id = `bm-${newId().slice(0, 6)}`; ctx.state.bookmarks.push(b); } else { const i = ctx.state.bookmarks.findIndex((x) => x.id === b.id); if (i >= 0) ctx.state.bookmarks[i] = b; else ctx.state.bookmarks.push(b); } ctx.save(); return b; },
   bookmark_delete: ({ id }, ctx) => { const gone = ctx.state.bookmarks.find((b) => b.id === id); if (gone && teamInUse(ctx.state)) intoTeamTrash(ctx, "bookmark", gone.id, gone.title || gone.url, gone); ctx.state.bookmarks = ctx.state.bookmarks.filter((b) => b.id !== id); ctx.save(); return null; },
+  bookmark_delete_many: ({ ids }, ctx) => { const gone = new Set((ids as string[]) ?? []); if (teamInUse(ctx.state)) for (const b of ctx.state.bookmarks) if (gone.has(b.id)) intoTeamTrash(ctx, "bookmark", b.id, b.title || b.url, b); ctx.state.bookmarks = ctx.state.bookmarks.filter((b) => !gone.has(b.id)); ctx.save(); return null; },
   // A team keeps no trash here (space/mod.rs trash::list).
   trash_list: (_a, { state }) => (teamInUse(state) ? [] : state.trash),
   trash_restore: ({ id }, ctx) => {
@@ -1057,6 +1078,9 @@ export const handlers: Record<string, Handler> = {
   // ---- Personal sync (syncServer.ts) -------------------------------------------
   ...syncHandlers,
 
+  // ---- A profile's own password (locks.ts) ------------------------------------
+  ...lockHandlers,
+
   // ---- ProxyShard account -----------------------------------------------------
   ps_get_key: (_a, { state }) => state.psKey,
   // No trial in the mock: the offer is the server's call, and inventing one
@@ -1126,14 +1150,21 @@ export const handlers: Record<string, Handler> = {
   automation_attached: () => false,
   automation_screencast: () => null,
   automation_call: ({ method }) => { if (method === "Traffic.list") return { rulesJson: "[]" }; if (method === "Traffic.mount") return { ruleSetId: `rs-${newId().slice(0, 4)}` }; if (method === "Script.run") return { result: "null" }; return {}; },
-  automation_launch: async ({ profileId }, ctx) => {
+  automation_launch: async ({ profileId, restart }, ctx) => {
     const offline = teamUnreachable(ctx.state);
     if (offline) throw offline;
-    const gone = proxyGone(ctx.state, String(profileId));
+    refuseLocked(ctx.state, profileId);
+    // As lib.rs: running with automation is attached to, unless a run drives it; without it, restarted only when asked.
+    const id = String(profileId);
+    const on = ctx.state.running[id];
+    if (on?.cdp) { if (runDrives(id)) throw AUTOMATION_REFUSALS.drivenByRun; return on.pid; }
+    if (on && !restart) throw AUTOMATION_REFUSALS.openWithout;
+    const gone = proxyGone(ctx.state, id);
     if (gone) throw gone;
-    const lease = syncLease(ctx.state, String(profileId));
+    const lease = syncLease(ctx.state, id);
     if (lease) throw SYNC_REFUSALS.leased(lease);
-    await sleep(700); const pid = startProcess(ctx.state, profileId); ctx.save(); return pid;
+    if (on) stopProcess(ctx.state, id);
+    await sleep(700); const pid = startProcess(ctx.state, id, true); ctx.save(); return pid;
   },
   automation_pick: ({ x, y }) => ({ selector: "button.primary", tag: "button", label: "Continue", x, y, tried: ["#submit (not found)", "text=Continue (2 matches)"] }),
   automation_run: ({ projectId }, ctx) => { const p = ctx.state.automation.find((x) => x.id === projectId); if (!p) throw `project ${projectId} not found`; if (p.blocks.length === 0) throw "the project has no steps"; startRun(ctx.state, p, ctx); ctx.save(); return null; },

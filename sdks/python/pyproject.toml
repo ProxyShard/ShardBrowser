@@ -1,7 +1,7 @@
 [project]
 name = "shardx"
-version = "2.1.2"
-description = "Self-contained Python SDK for the ShardX anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
+version = "2.1.3"
+description = "Self-contained Python SDK for the ShardBrowser anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
 authors = [{ name = "ProxyShard", email = "support@proxyshard.com" }]
 license = { text = "MIT" }
 readme = "README.md"
@@ -24,6 +24,9 @@ dependencies = [
     # returns a patchright Browser ready to drive (no manual CDP wiring).
     "patchright>=1.49",
 ]
+
+[project.scripts]
+shardx = "shardx.cli:main"
 
 [project.urls]
 Homepage      = "https://github.com/ProxyShard/ShardBrowser"

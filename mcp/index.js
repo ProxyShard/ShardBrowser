@@ -365,10 +365,10 @@ server.tool(
 
 server.tool(
   "start_profile",
-  "Launch a profile with CDP. Returns { pid, cdp:{ web_socket_debugger_url, http_url } }. The call waits up to 30s for the endpoint; if it still has none, cdp is null and cdp_error says why. Set headless to run without a window.",
-  { id: z.string(), headless: z.boolean().optional() },
-  async ({ id, headless }) =>
-    text(await api(`/profiles/${id}/start`, { method: "POST", body: { headless: !!headless } })),
+  "Launch a profile with CDP. Returns { pid, cdp:{ web_socket_debugger_url, http_url } }. The call waits up to 30s for the endpoint; if it still has none, cdp is null and cdp_error says why. Set headless to run without a window. A password-protected profile needs its password.",
+  { id: z.string(), headless: z.boolean().optional(), password: z.string().optional() },
+  async ({ id, headless, password }) =>
+    text(await api(`/profiles/${id}/start`, { method: "POST", body: { headless: !!headless, password } })),
 );
 
 server.tool(

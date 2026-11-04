@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { onFormSaved } from "../profile/lib/useProfile";
+import { onFormSaved, useProfile } from "../profile/lib/useProfile";
 import { isPlaceholder } from "../profile/lib/optimistic";
 import { profileGet } from "../profile/model/api";
 import { fromStored } from "../profile/model/form";
@@ -37,7 +37,9 @@ function listen() {
  *  tried again on the next call). The answers land in one write. */
 export async function readLocales(ids: string[]): Promise<void> {
   listen();
-  const todo = ids.filter((id) => !asked.has(id) && !isPlaceholder(id));
+  // A protected one opens only with its password: never read here.
+  const locked = new Set(useProfile.getState().profiles.filter((p) => p.protected).map((p) => p.id));
+  const todo = ids.filter((id) => !asked.has(id) && !isPlaceholder(id) && !locked.has(id));
   if (todo.length === 0) return;
   for (const id of todo) asked.add(id);
   const got: Record<string, ProfileLocale> = {};

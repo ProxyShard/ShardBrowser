@@ -257,8 +257,7 @@ export function ListHeader<Id extends string>({ api, layout, listRef, wrapRef, l
         style={{ height, gridTemplateColumns: layout.template }}
       >
         {/* Pinned at the card's left while the list scrolls sideways. Its
-            box shows only in selection mode (`list-select-box`): at rest
-            the cell keeps the column's slot, empty. */}
+            box shows on the list's hover and in selection mode (`list-select-box`). */}
         {lead !== undefined && (
           <div role="columnheader" className="list-pin-check flex items-center self-stretch">
             <span className="list-select-box">{lead}</span>

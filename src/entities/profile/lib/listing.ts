@@ -242,7 +242,7 @@ export function searchTextOf(
   proxy?: { name: string; host: string; port: number } | null,
   ip?: string,
 ): string {
-  return [p.name, p.notes, ...tagNames, proxy?.name ?? "", proxy ? `${proxy.host}:${proxy.port}` : "", ip ?? ""].join("\n").toLowerCase();
+  return [p.name, p.notes ?? "", ...tagNames, proxy?.name ?? "", proxy ? `${proxy.host}:${proxy.port}` : "", ip ?? ""].join("\n").toLowerCase();
 }
 
 /// Whether a profile passes the folder tab, the search and the filter bar
@@ -278,7 +278,7 @@ export function makeProfileFilter(
       const bound = p.proxy_id ? byId.get(p.proxy_id) : undefined;
       const found = text !== undefined
         ? text.includes(q)
-        : p.name.toLowerCase().includes(q) || p.notes.toLowerCase().includes(q)
+        : p.name.toLowerCase().includes(q) || (p.notes ?? "").toLowerCase().includes(q)
           || tagsOf(p.id).some((t) => t.name.toLowerCase().includes(q))
           || (!!bound && `${bound.name}\n${bound.host}:${bound.port}`.toLowerCase().includes(q));
       // An ID from an API log: its start, from 4 characters (shorter would match noise).
@@ -291,7 +291,8 @@ export function makeProfileFilter(
     // profiles that would run on this computer's own IP (IFACE-01).
     const bound = !!p.proxy_id && byId.has(p.proxy_id);
     if (filters.proxy === "bound" && !bound) return false;
-    if (filters.proxy === "direct" && bound) return false;
+    // A protected row's proxy is unknown while it is locked: not one with none.
+    if (filters.proxy === "direct" && (bound || p.protected)) return false;
     if (onId !== null && !(bound && p.proxy_id === onId)) return false;
     if (shared && !(bound && shared.has(p.proxy_id!))) return false;
     if (filters.country) {

@@ -1059,7 +1059,7 @@ async fn a_team_extension_is_unpacked_into_the_open_copy_and_goes_with_it() {
     let src = super::super::items::tests::an_extension(&src_dir);
     let e = extensions::import(Door("extension_import"), &Ticket::now(), &src).await.unwrap();
     // The team's bookmark for the folder goes in; this machine's own does not.
-    let mark = bookmarks::Bookmark { id: String::new(), title: "Team mail".into(), url: "https://team-mail.example".into(), folder: "Ads".into() };
+    let mark = bookmarks::Bookmark { id: String::new(), title: "Team mail".into(), url: "https://team-mail.example".into(), folder: "Ads".into(), root: String::new(), path: Vec::new() };
     bookmarks::save(Door("bookmark_save"), &Ticket::now(), mark).await.unwrap();
     let mine = json!({ "bookmarks": [{ "id": "m1", "title": "Mine", "url": "https://mine.example", "folder": "" }] });
     fs::write(crate::store::bookmarks_path().unwrap(), mine.to_string()).unwrap();
@@ -1098,7 +1098,7 @@ async fn a_folder_member_starts_a_profile_with_its_extensions_and_bookmarks() {
     let src = super::super::items::tests::an_extension(&src_dir);
     let e = extensions::import(Door("extension_import"), &Ticket::now(), &src).await.unwrap();
     for (title, folder) in [("ads.example", "Ads"), ("other.example", "Other"), ("all.example", "")] {
-        let mark = bookmarks::Bookmark { id: String::new(), title: title.into(), url: format!("https://{title}"), folder: folder.into() };
+        let mark = bookmarks::Bookmark { id: String::new(), title: title.into(), url: format!("https://{title}"), folder: folder.into(), root: String::new(), path: Vec::new() };
         bookmarks::save(Door("bookmark_save"), &Ticket::now(), mark).await.unwrap();
     }
     let id = profile_with_extensions(&t, "Ads", &[&e.id]).await;

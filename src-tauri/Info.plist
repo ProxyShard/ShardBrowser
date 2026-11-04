@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Merged into the bundle's Info.plist. macOS asks for the camera and microphone on behalf of
+     the launcher, since the browsers it starts are its children; without these it never asks. -->
+<plist version="1.0">
+<dict>
+	<key>NSCameraUsageDescription</key>
+	<string>Browser profiles you start can use the camera when a website asks and you allow it.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Browser profiles you start can use the microphone when a website asks and you allow it.</string>
+</dict>
+</plist>

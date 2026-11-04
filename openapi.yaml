@@ -384,6 +384,12 @@ paths:
                   type: boolean
                   default: false
                   description: Launch headless (--headless=new).
+                password:
+                  type: string
+                  description: |
+                    The password of a password-protected profile. Without it, or
+                    with a wrong one, the start is refused with 401. Its data is
+                    unsealed for this start and sealed again when the browser closes.
       responses:
         "200":
           description: Launched.
@@ -798,10 +804,11 @@ paths:
       description: |
         With `id` it updates that bookmark; without, it creates one.
 
-        A bookmark bound to a folder appears in the bookmarks bar of every
-        profile in that folder, inside a folder called **ShardBrowser**; `folder: ""`
-        means every profile. Only that folder is managed, so bookmarks the
-        operator saved inside a profile are untouched.
+        A bookmark bound to a folder appears in every profile in that folder;
+        `folder: ""` means every profile. It goes in Chrome's `root` (the
+        bookmarks bar unless it says `other` or `synced`), inside the folders
+        its `path` names. Every node the launcher writes is marked as its own,
+        so bookmarks the operator saved inside a profile are untouched.
 
         Applied when a profile next launches — the file is written just before
         the browser reads it, so a running profile does not see the change.
@@ -1678,6 +1685,14 @@ components:
         folder:
           type: string
           description: Launcher folder; empty means every profile.
+        root:
+          type: string
+          enum: [other, synced]
+          description: Chrome's root it goes in; left out for the bookmarks bar.
+        path:
+          type: array
+          items: { type: string }
+          description: Bookmark folders it sits in inside its root, outermost first. Left out when none.
 
     BookmarkRequest:
       type: object
@@ -1688,7 +1703,7 @@ components:
           description: Present updates that bookmark; absent creates one.
         url:
           type: string
-          description: A bare host is fine — `https://` is added.
+          description: A bare host is fine — `https://` is added. A `javascript:` bookmarklet is kept as written.
           example: facebook.com/ads/manager
         title:
           type: string
@@ -1696,6 +1711,15 @@ components:
         folder:
           type: string
           description: Empty (or absent) means every profile.
+        root:
+          type: string
+          enum: [bookmark_bar, other, synced]
+          description: Chrome's root. Absent on a new bookmark is the bookmarks bar; on an update, its own.
+        path:
+          type: array
+          items: { type: string }
+          description: Bookmark folders inside its root, outermost first. Absent keeps an updated bookmark's own.
+          example: [Work, Docs]
 
     TrashEntry:
       type: object

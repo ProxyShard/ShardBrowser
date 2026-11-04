@@ -3,6 +3,223 @@
   "repoUrl": "https://github.com/ProxyShard/ShardBrowser",
   "releases": [
     {
+      "version": "2.1.3",
+      "date": "2026-11-04",
+      "entries": [
+        {
+          "id": "chromium-157",
+          "title": "Chromium 157",
+          "lead": "Profiles now present themselves as Chrome 157, down to the network handshake.",
+          "tag": "new",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The engine under every profile is now Chromium 157, and the version a profile reports moves with it: in the user agent, the client hints and navigator.userAgentData. The connection matches Chrome 157 as well, from the TLS handshake to the HTTP/2 settings, checked against a live Chrome 157."
+            },
+            {
+              "type": "note",
+              "text": "The new engine downloads by itself the first time the launcher starts after this update. Profiles keep their data, and the version they report is updated at their next start."
+            }
+          ]
+        },
+        {
+          "id": "webrtc-without-udp",
+          "title": "WebRTC on a proxy without UDP",
+          "lead": "On an HTTP proxy, or a SOCKS5 proxy without UDP, a page could learn this computer's real address through WebRTC.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "A page could hand the browser back its own local network name, or make it send to an address of the page's choosing. Now WebRTC sends no UDP past such a proxy at all, and local names are not answered behind any proxy. This holds for starts from the launcher, the API and the SDKs."
+            },
+            {
+              "type": "p",
+              "text": "TURN servers over TCP or TLS now work through the proxy, so a page that asks for a relay gets a real one, reached from the proxy's address."
+            }
+          ]
+        },
+        {
+          "id": "removed-frame-languages",
+          "title": "Languages in a removed frame",
+          "lead": "A frame already removed from the page reported the profile's whole language list, where Chrome reports one language.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Some bot protection checks exactly this and turned the browser away, for example on qrator.net. A removed frame now answers the way Chrome does. Frames on the page and workers still report the full list."
+            }
+          ]
+        },
+        {
+          "id": "webgpu-reads",
+          "title": "WebGPU reads",
+          "lead": "Pixels copied out of WebGPU and read back carried no canvas noise, so they came out the same in every profile on one computer.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now get the same marks as WebGL, from the profile's seed. Reading the same image twice gives the same result, and reading part of it matches the whole."
+            }
+          ]
+        },
+        {
+          "id": "synced-fullscreen",
+          "title": "Fullscreen in synced windows",
+          "lead": "Chrome 157 keeps a window that isn't in focus from going fullscreen, which would have held back the synchronizer's other windows.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Synced windows still follow the leading one into fullscreen. Everywhere else the new rule applies, as in Chrome."
+            }
+          ]
+        },
+        {
+          "id": "profile-name-hidden",
+          "title": "Profile name in the browser",
+          "lead": "The profile's name next to the address and in the window title can now be hidden.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Turn off “Show the profile name in the browser” in Settings. The home button with your page stays. From the SDKs, pass hideProfileName in Node or hide_profile_name in Python and Rust."
+            }
+          ]
+        },
+        {
+          "id": "profile-password",
+          "title": "Profile password",
+          "lead": "A profile can now be protected with a password of its own.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Turn on “Protect profiles with a password” in Settings, then set a password when you create a profile or from its menu. It is asked at every start. While the profile is closed, its browser data, fingerprint and proxy are kept encrypted; only its name, folder and tags stay readable."
+            },
+            {
+              "type": "note",
+              "text": "A forgotten password can't be recovered, and without it the profile can't be opened."
+            }
+          ]
+        },
+        {
+          "id": "mac-camera-microphone",
+          "title": "Camera and microphone on Mac",
+          "lead": "On a Mac, sites saw the camera and microphone but got no picture and no sound.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "macOS asks for access on behalf of the launcher, and the launcher never asked, so the system refused without a word. Now macOS shows its usual request the first time a site uses the camera or microphone. Allow it once and both work in every profile."
+            }
+          ]
+        },
+        {
+          "id": "deleted-profile-cache",
+          "title": "Cache of deleted profiles",
+          "lead": "Deleting a profile left its browser cache on disk.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The cache now goes with the profile, including profiles removed from the trash, temporary profiles and team copies. Cache left behind by profiles deleted earlier is cleared once, at the first start after this update."
+            }
+          ]
+        },
+        {
+          "id": "bookmark-folders",
+          "title": "Bookmark folders",
+          "lead": "Bookmarks imported from Chrome all landed in one flat list.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Folders now come over as they are in Chrome, and the profile gets the same layout: the bookmarks bar on its bar, other bookmarks in Other bookmarks. A site kept in several folders stays in each, and bookmarklets are imported too. The Bookmarks page has a Bookmark folder column to sort and search by."
+            },
+            {
+              "type": "note",
+              "text": "The ShardBrowser folder leaves profiles at their next start: bookmarks made in the launcher sit on the bookmarks bar itself. Bookmarks imported before this update land there in one flat row; to get their folders, delete them and import the file again. Bookmarks you add inside a profile are never moved or removed."
+            }
+          ]
+        },
+        {
+          "id": "bookmarks-bulk-delete",
+          "title": "Deleting many bookmarks",
+          "lead": "Bookmarks could only be deleted one at a time.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Select bookmarks, or all of them with the box in the header, and delete them in one go. Selection follows the search and the folder tab, and Undo brings them all back. The folder tabs above the list now scroll with the mouse wheel when they don't fit."
+            }
+          ]
+        },
+        {
+          "id": "select-all-header",
+          "title": "Select all",
+          "lead": "The select-all box in the header of Profiles, Proxies and Trash appeared only once something was already selected.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "It now shows as soon as the pointer is over the list."
+            }
+          ]
+        },
+        {
+          "id": "automation-open-profile",
+          "title": "Automation on an open profile",
+          "lead": "Starting automation for a profile that was already open failed with an error in English.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "If the profile is open without automation, the launcher offers to restart it: it closes the normal way and reopens with its tabs. If it is already running with automation, the automator connects to it. While a project run is driving the profile, the launcher says so instead."
+            }
+          ]
+        },
+        {
+          "id": "sdk-install",
+          "title": "Installing the engine ahead of time",
+          "lead": "The SDKs can now install the browser engine before the first run.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Run shardx install in Python (python -m shardx install works too) or npx shardx install in Node; --force reinstalls and --cache-dir picks the folder. This suits Docker images. In Rust, call install on the runtime."
+            }
+          ]
+        },
+        {
+          "id": "sdk-gentle-close",
+          "title": "Closing from the SDKs",
+          "lead": "On Windows the SDKs ended the browser abruptly, so what pages had just saved could be lost and sites could log out.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Closing a session now asks the browser to quit the normal way first, as the launcher does, on every system."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "2.1.2",
       "date": "2026-10-25",
       "entries": [

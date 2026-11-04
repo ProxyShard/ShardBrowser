@@ -188,8 +188,8 @@ class ShardX:
                 `device_memory` and `platform_version` before launch. Leave it
                 off for a saved profile or its frozen fingerprint will drift.
             proxy, cdp, headless, webrtc, webrtc_public_ip, quic, screen_mode,
-            extra_args, env, probe_timeout: passed to `Browser.launch` — see
-            its docstring.
+            extra_args, env, probe_timeout, hide_profile_name: passed to
+            `Browser.launch` — see its docstring.
         """
         if isinstance(profile, dict):
             profile = Profile(profile)
@@ -281,4 +281,4 @@ __all__ = [
     "has_auto_fields", "resolve_auto_fields",
     "Motion",
 ]
-__version__ = "2.1.2"
+__version__ = "2.1.3"

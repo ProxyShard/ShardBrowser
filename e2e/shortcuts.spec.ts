@@ -173,6 +173,9 @@ test("keys typed into the Automation live browser view go to that browser", asyn
   await page.getByRole("combobox", { name: "Choose a profile…" }).click();
   await page.getByRole("option", { name: "Amazon US seller" }).click();
   await page.getByRole("button", { name: "Start", exact: true }).click();
+  // The mock has it open without automation, so the launcher offers a restart.
+  await page.getByRole("dialog", { name: "“Amazon US seller” is open without automation" })
+    .getByRole("button", { name: "Restart" }).click();
   const canvas = page.locator("canvas[tabindex='0']");
   await canvas.focus();
   await page.evaluate(() => {

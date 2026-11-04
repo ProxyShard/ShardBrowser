@@ -367,7 +367,12 @@ fn up_of(stored: &StoredProfile, tags: Vec<String>) -> Up {
 /// there but unreadable is left out too: [`unreadable`] says which.
 fn local_profiles() -> Result<BTreeMap<String, StoredProfile>, Stop> {
     let rows = local::profile::list_all().map_err(|e| unread("the profiles", e))?;
-    Ok(rows.into_iter().filter_map(|m| local::profile::load_raw(&m.id).ok().map(|s| (m.id, s))).collect())
+    // A protected profile never syncs; one picked before it was locked is left alone too.
+    Ok(rows
+        .into_iter()
+        .filter(|m| !m.protected)
+        .filter_map(|m| local::profile::load_raw(&m.id).ok().map(|s| (m.id, s)))
+        .collect())
 }
 
 /// Its file is here but did not read: neither changed nor deleted.

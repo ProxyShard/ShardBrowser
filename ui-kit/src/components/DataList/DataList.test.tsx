@@ -8,8 +8,8 @@ const ROWS: Row[] = [{ id: 'a', name: 'Alpha' }, { id: 'b', name: 'Beta' }, { id
 const COLUMNS: DataListColumn<Row>[] = [{ id: 'name', header: 'Name', width: 'minmax(0,1fr)', cell: (r) => r.name }]
 const LABELS = { selectAll: 'Select all', select: (n: string) => `Select ${n}`, more: 'More actions', actions: 'Actions' }
 
-function Harness({ onOpen = () => {}, onDelete = () => {}, items = ROWS, status = 'ready' as const }: {
-  onOpen?: (r: Row) => void; onDelete?: (ids: string[]) => void; items?: Row[]; status?: 'loading' | 'error' | 'ready'
+function Harness({ onOpen = () => {}, onDelete = () => {}, items = ROWS, status = 'ready' as const, openOnClick = false }: {
+  onOpen?: (r: Row) => void; onDelete?: (ids: string[]) => void; items?: Row[]; status?: 'loading' | 'error' | 'ready'; openOnClick?: boolean
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   return (
@@ -27,6 +27,7 @@ function Harness({ onOpen = () => {}, onDelete = () => {}, items = ROWS, status 
         selected={selected}
         onSelectedChange={setSelected}
         onOpen={onOpen}
+        openOnClick={openOnClick}
         onDelete={onDelete}
         menuItems={(r) => [{ label: `Delete ${r.name}`, onSelect: () => onDelete([r.id]), danger: true }]}
       />
@@ -222,6 +223,30 @@ describe('DataList (table)', () => {
     fireEvent.click(within(rowOf('Beta')).getByRole('checkbox', { name: 'Select Beta' }))
     expect(screen.getByTestId('sel').textContent).toBe('')
     expect(onOpen).not.toHaveBeenCalled()
+  })
+
+  it('a list that opens on a click opens with a plain click; Cmd/Ctrl+click and its box toggle', () => {
+    const onOpen = vi.fn()
+    render(<Harness onOpen={onOpen} openOnClick />)
+    fireEvent.click(within(rowOf('Beta')).getByText('Beta'))
+    expect(onOpen).toHaveBeenCalledWith(ROWS[1])
+    expect(screen.getByTestId('sel').textContent).toBe('')
+    fireEvent.click(within(rowOf('Beta')).getByText('Beta'), { ctrlKey: true, metaKey: true })
+    expect(screen.getByTestId('sel').textContent).toBe('b')
+    fireEvent.click(within(rowOf('Gamma')).getByRole('checkbox', { name: 'Select Gamma' }))
+    expect(screen.getByTestId('sel').textContent).toBe('b,c')
+    expect(onOpen).toHaveBeenCalledTimes(1)
+  })
+
+  it('unticking Select all leaves the keyboard on it', () => {
+    render(<Harness />)
+    const all = screen.getByRole('checkbox', { name: 'Select all' })
+    act(() => all.focus())
+    fireEvent.click(all)
+    expect(screen.getByTestId('sel').textContent).toBe('a,b,c')
+    fireEvent.click(all)
+    expect(screen.getByTestId('sel').textContent).toBe('')
+    expect(all).toHaveFocus()
   })
 
   it('a saved layout draws its own header, its order and its template', () => {

@@ -104,7 +104,8 @@ export function computeSignals(input: SignalInput): Signal[] {
   // (b) A timezone or language set by hand that places the browser outside
   // the country its proxy's last good test saw; a profile whose proxy never
   // passed a test, or whose settings are not read yet, is not judged.
-  const direct = scope.filter((p) => boundTo(p) === null).map(nameOf);
+  // A protected row's proxy is unknown while it is locked: never judged.
+  const direct = scope.filter((p) => boundTo(p) === null && !p.protected).map(nameOf);
   const mismatch: LeakDetail["mismatch"] = [];
   for (const p of scope) {
     const px = boundTo(p);

@@ -37,8 +37,9 @@ export const automationCall = <T = unknown>(
   params: Record<string, unknown> = {},
 ) => invoke<T>("automation_call", { profileId, method, params });
 
-export const automationLaunch = (profileId: string) =>
-  invoke<number>("automation_launch", { profileId });
+/** `restart`: a profile already open without automation is closed and started again with it. */
+export const automationLaunch = (profileId: string, restart = false) =>
+  invoke<number>("automation_launch", restart ? { profileId, restart } : { profileId });
 
 export const automationPick = (profileId: string, x: number, y: number) =>
   invoke<Picked>("automation_pick", { profileId, x, y });

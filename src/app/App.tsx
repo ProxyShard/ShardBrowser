@@ -9,6 +9,7 @@ import { EngineUpdateBanner } from "../widgets/FirstRunGate/EngineUpdateBanner";
 import { ToastHost } from "../widgets/ToastHost/ToastHost";
 import { LiveAnnouncer } from "../widgets/LiveAnnouncer/LiveAnnouncer";
 import { ConfirmHost } from "../widgets/ConfirmHost/ConfirmHost";
+import { PasswordHost } from "../widgets/PasswordHost/PasswordHost";
 import { UnsavedGuard } from "../widgets/UnsavedGuard/UnsavedGuard";
 import { StarModal } from "../widgets/StarModal/StarModal";
 import { HelperWatcher } from "../widgets/HelperWatcher";
@@ -350,6 +351,8 @@ function Shell() {
       <AssignProxiesHost />
       <ViewDialog />
       <ProfileFormDialog />
+      {/* After the profile form: a protected profile's password is asked over it. */}
+      <PasswordHost />
       <CommandPalette />
       <ShortcutSheet />
       <WelcomeDialog />

@@ -105,10 +105,12 @@ export function readableUrl(url: string, keepScheme = false): string {
 ///   an intranet address once it goes on past the host: a port, a path, a
 ///   query or a fragment;
 /// - any other scheme (chrome://flags, file:///C:/x.html) only needs
-///   something after "://".
+///   something after "://";
+/// - a bookmarklet (javascript:…) needs its script, and is kept as written.
 export function isFullUrl(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
+  if (/^javascript:/i.test(t)) return t.slice(11).trim() !== "";
   const at = t.indexOf("://");
   const scheme = at >= 0;
   let url: URL;

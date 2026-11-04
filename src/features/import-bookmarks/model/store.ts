@@ -91,7 +91,7 @@ export const useImportBookmarks = create<ImportState>((set, get) => ({
       set({ progress: null, failure: { done: 0, total: 0, reason: t("useBookmarks.loadFailed") } });
       return;
     }
-    const { fresh } = newMarks(file.marks, useBookmarks.getState().items.map((b) => b.url));
+    const { fresh } = newMarks(file.marks, useBookmarks.getState().items);
     const total = fresh.length;
     let done = 0;
     let failure: ImportFailure | null = null;
@@ -100,7 +100,7 @@ export const useImportBookmarks = create<ImportState>((set, get) => ({
     for (const m of fresh) {
       if (get().stopping) break;
       try {
-        await bookmarkSave({ id: "", title: m.title, url: m.url, folder });
+        await bookmarkSave({ id: "", title: m.title, url: m.url, folder, root: m.root, path: m.path });
       } catch (e) {
         failure = { done, total, reason: reasonOf(e) };
         break;

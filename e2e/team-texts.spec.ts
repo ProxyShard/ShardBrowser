@@ -16,7 +16,7 @@ const clearToasts = (page: Page) => page.evaluate(() => (window as unknown as { 
 
 /** A warning as the backend words it, and the title and line the toast says instead. */
 const WARNINGS: [string, string, string][] = [
-  [TEAM_WARNINGS.quitting, "Saving the open team and synced profiles before quitting…", ""],
+  [TEAM_WARNINGS.quitting, "Saving the open team, synced and password-protected profiles before quitting…", ""],
   [TEAM_WARNINGS.withdrew("Ads team"), "“Ads team” withdrew your access", "You can only remove the team from the space menu now."],
   [TEAM_WARNINGS.withdrew("A team"), "A team withdrew your access", "Its profiles open here were closed."],
   [TEAM_WARNINGS.replaced("Ads team"), "Your invite to “Ads team” was replaced", "paste it in “Join a team”"],

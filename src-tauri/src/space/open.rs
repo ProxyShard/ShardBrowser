@@ -1128,6 +1128,7 @@ impl Copy {
 /// Remove `dir`; what cannot go now (a Windows lock) is tried again every minute.
 /// Unmarked first: a copy half gone is never sent back.
 fn wipe(dir: &Path) {
+    crate::store::remove_browser_cache(dir);
     let _ = fs::remove_file(dir.join(MARKER));
     if let Some(left) = clear(dir) {
         retry_later(left);

@@ -227,7 +227,7 @@ export function teamDoor(state: MockState, cmd: string, args: Record<string, unk
       const id = (args.tag as { id?: string } | undefined)?.id;
       return onTeam(id && state.tags?.tags.some((t) => t.id === id) ? "edit" : "create");
     }
-    case "tag_delete": case "bookmark_delete": case "extension_delete": case "automation_delete":
+    case "tag_delete": case "bookmark_delete": case "bookmark_delete_many": case "extension_delete": case "automation_delete":
       return onTeam("delete");
     case "tag_assign":
       return Object.keys((args.byProfile ?? {}) as Record<string, unknown>).map((id) => onProfile(id, "edit")).find((r) => r) ?? null;

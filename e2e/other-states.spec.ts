@@ -72,7 +72,8 @@ test("Profile Peek: a form that fails to load says so, Retry loads it, and the n
 });
 
 test("Settings: a file that can't be read says so, and shows nothing until Retry reads it", async ({ page }) => {
-  await fail(page, { settings_get: 1 });
+  // Two reads at start, in either order: the profile list's (is the password switch on?) and this page's.
+  await fail(page, { settings_get: 2 });
   await openApp(page, { section: "settings" });
   await expect(page.getByText("Couldn’t load settings")).toBeVisible();
   await expect(page.getByRole("switch", { name: /tray/i })).toHaveCount(0);

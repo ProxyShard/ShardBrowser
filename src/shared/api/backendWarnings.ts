@@ -20,8 +20,8 @@ export const TEAM_WARNINGS = {
   /** A start the server gave only some of the profile's extensions (items.rs). */
   extensionsMissing: (name: string, n: number | string) =>
     `${name} started without ${n} of its extensions: the team server did not give them to this launcher.`,
-  /** Quit waits for the open team and synced profiles (lib.rs exit_app). */
-  quitting: "Saving the team and synced profiles open here before quitting…",
+  /** Quit waits for the open team and synced profiles, and seals the protected ones (lib.rs exit_app). */
+  quitting: "Saving the team, synced and protected profiles open here before quitting…",
   withdrew: (team: string) => `${team} withdrew this launcher's access.`,
   replaced: (team: string) => `${team} replaced this launcher's invite: paste the new one from the team's admin.`,
   permission: (why: string) => `The team's permission did not check out: ${why}`,

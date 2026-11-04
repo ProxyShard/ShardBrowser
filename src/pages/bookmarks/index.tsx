@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button, DataList, DialogModal, EmptyState, IconButton, SegmentControl, Tooltip, useLatched } from "@proxyshard/shardx-ui-kit";
 import { PageBody, PageHeader } from "../../widgets/PageHeader";
+import { BookmarkBulkBar } from "../../widgets/BookmarkBulkBar";
 import { useStoreChanged } from "../../shared/hooks/useStoreChanged";
 import { useHeldLoading } from "../../shared/hooks/useHeldLoading";
 import { useArrivedIds } from "../../shared/hooks/useArrivedIds";
@@ -12,7 +13,7 @@ import { useListLayout, type ListColumnDef } from "../../shared/ui/listHeader";
 import { rowActionIcons } from "../../shared/ui/rowActionIcons";
 import { isFullUrl, readableUrl } from "../../shared/lib/utils";
 import {
-  useBookmarks, emptyBookmark, bookmarkName, BookmarkFolderSelect, type Bookmark,
+  useBookmarks, emptyBookmark, bookmarkName, bookmarkPath, BookmarkFolderSelect, type Bookmark,
   BOOKMARK_TAB_ALL as TAB_ALL, BOOKMARK_TAB_ANY as TAB_ANY, bookmarkFolderTab as folderTab, bookmarkTabFolder as tabFolder,
 } from "../../entities/bookmark";
 import { useFolders, useProfile } from "../../entities/profile";
@@ -25,9 +26,9 @@ import { capOf, command, labelOf, runCommand } from "../../features/commands";
 import { showMeAround } from "../../features/tour";
 import { ImportBookmarksDialog } from "../../features/import-bookmarks";
 
-type BookmarkColumn = "name" | "address" | "shows";
+type BookmarkColumn = "name" | "address" | "path" | "shows";
 /** A bookmark as the list shows it: with the words for where it shows. */
-type BookmarkRow = { bookmark: Bookmark; shows: string };
+type BookmarkRow = { bookmark: Bookmark; shows: string; place: string };
 
 // A real table (CRAFT-27, LAYOUT-13): a header row, 36 px rows, the address
 // without its "https://" (whole on hover). The columns size to their content
@@ -48,6 +49,11 @@ const BOOKMARK_COLUMNS: readonly ListColumnDef<BookmarkColumn, BookmarkRow>[] = 
         <span className="block truncate text-mono text-text-sub-600">{readableUrl(r.bookmark.url)}</span>
       </Tooltip>
     ),
+  },
+  // Where it sits in the browser: Chrome's root and its folders; sorting by it groups them.
+  {
+    id: "path", title: (t) => t("bookmarks.colPath"), need: 140, min: 100, max: 360, shown: true, hideable: true, movable: true,
+    text: (r) => r.place, role: "secondary", compare: (a, b) => a.place.localeCompare(b.place),
   },
   {
     id: "shows", title: (t) => t("bookmarks.showsIn"), need: 140, min: 120, max: 320, shown: true, hideable: true, movable: true,
@@ -125,7 +131,7 @@ function Editor({ open, initial, folders, onClose }: {
           onChange={(v) => setB({ ...b, folder: v })}
         />
         <p className="m-0 text-secondary text-text-soft-400">
-          {t.rich("bookmarks.hint", { b: (s) => <strong>{s}</strong> })}
+          {t("bookmarks.hint")}
         </p>
       </fieldset>
     </DialogModal>
@@ -144,6 +150,9 @@ export function BookmarksPage() {
   const editLife = useDialogLife(editing != null);
   const editingShown = useLatched(editing);
   const remove = useBookmarks((s) => s.remove);
+  const removeMany = useBookmarks((s) => s.removeMany);
+  const selected = useBookmarks((s) => s.selected);
+  const setSelected = useBookmarks((s) => s.setSelected);
   const search = useBookmarks((s) => s.search);
   const setSearch = useBookmarks((s) => s.setSearch);
   const folder = useBookmarks((s) => s.folder);
@@ -163,7 +172,7 @@ export function BookmarksPage() {
     return items.filter(
       (b) =>
         (folder === TAB_ALL || b.folder === (folder === TAB_ANY ? "" : tabFolder(folder))) &&
-        (!q || b.title.toLowerCase().includes(q) || b.url.toLowerCase().includes(q) || readableUrl(b.url).toLowerCase().includes(q)),
+        (!q || b.title.toLowerCase().includes(q) || b.url.toLowerCase().includes(q) || readableUrl(b.url).toLowerCase().includes(q) || bookmarkPath(b).toLowerCase().includes(q)),
     );
   }, [items, search, folder]);
 
@@ -178,8 +187,20 @@ export function BookmarksPage() {
     const n = profiles.filter((p) => p.folder === b.folder).length;
     return n === 1 ? t("bookmarks.folderProfileCountOne", { folder: b.folder }) : t("bookmarks.folderProfileCount", { folder: b.folder, n });
   }, [profiles, lang]);
-  const rows = useMemo(() => shown.map((b): BookmarkRow => ({ bookmark: b, shows: showsIn(b) })), [shown, showsIn]);
-  const allRows = useMemo(() => items.map((b): BookmarkRow => ({ bookmark: b, shows: showsIn(b) })), [items, showsIn]);
+  const placeOf = useCallback((b: Bookmark) => {
+    const t = (key: string) => translate(lang, key);
+    const root = b.root === "other" ? t("bookmarks.rootOther") : b.root === "synced" ? t("bookmarks.rootMobile") : t("bookmarks.rootBar");
+    return [root, ...(b.path ?? [])].join(" / ");
+  }, [lang]);
+  const rows = useMemo(() => shown.map((b): BookmarkRow => ({ bookmark: b, shows: showsIn(b), place: placeOf(b) })), [shown, showsIn, placeOf]);
+  // As the Trash's: a pick the search or the Folder tab hides leaves the
+  // selection, so Select all and the bar act on what the list shows.
+  useEffect(() => {
+    const here = new Set(shown.map((b) => b.id));
+    if ([...selected].some((id) => !here.has(id))) setSelected(new Set([...selected].filter((id) => here.has(id))));
+  }, [shown, selected, setSelected]);
+  const picked = useMemo(() => shown.filter((b) => selected.has(b.id)), [shown, selected]);
+  const allRows = useMemo(() => items.map((b): BookmarkRow => ({ bookmark: b, shows: showsIn(b), place: placeOf(b) })), [items, showsIn, placeOf]);
 
   const tabs = [
     { id: TAB_ALL, label: t("bookmarks.tabAll") },
@@ -213,7 +234,7 @@ export function BookmarksPage() {
     items: rows,
     // Typing in the search or picking a Folder never moves a column.
     sizingRows: allRows,
-    selectable: false,
+    selectable: true,
     tail: ACTIONS_TRACK,
     actionsLabel: t("profileTable.colActions"),
   });
@@ -221,7 +242,11 @@ export function BookmarksPage() {
   useScrollMemory(list.layout.scrollRef, "bookmarks");
   // A new bookmark (or one added through the API) slides in once.
   const arrived = useArrivedIds(items.map((b) => b.id), status === "ready");
-  const endRoom = useListEndRoom(false);
+  const endRoom = useListEndRoom(picked.length > 0);
+  const backToList = () => {
+    const box = list.layout.scrollRef.current;
+    (box?.querySelector<HTMLElement>("[data-row-id][tabindex='0']") ?? box)?.focus();
+  };
   // No rows (nothing yet, no match, an error): a plain region the state
   // centers in, with no header row (owner), as the Trash's is.
   const stateShown = !loading && (status === "error" || shown.length === 0);
@@ -294,8 +319,12 @@ export function BookmarksPage() {
           // (LAYOUT-13). p-1.5 with -m-1.5: room for a focused tab's ring
           // (2 px + 2 px offset, 5 px at high contrast), which the scroll box
           // would clip; the tabs stay where they were. The same room when a
-          // key scrolls a tab into view (scroll-px-1.5).
-          <div className="-mx-1.5 -mt-1.5 mb-2 shrink-0 scroll-px-1.5 overflow-x-auto p-1.5">
+          // key scrolls a tab into view (scroll-px-1.5). A plain mouse wheel
+          // has no sideways turn: its up and down move the row.
+          <div
+            className="-mx-1.5 -mt-1.5 mb-2 shrink-0 scroll-px-1.5 overflow-x-auto p-1.5"
+            onWheel={(e) => { if (e.deltaX === 0 && e.deltaY !== 0) e.currentTarget.scrollLeft += e.deltaY; }}
+          >
             {/* The same tabs as the Fingerprints OS filter (owner): a segment
                 at its own width, one control for a list's filter row. */}
             <SegmentControl
@@ -309,10 +338,10 @@ export function BookmarksPage() {
           </div>
         )}
 
-        {/* The list scrolls itself; the page does not. No bulk selection:
-            there is little to act on in bulk. A row opens its editor (a
-            click, Enter); Edit on hover, Delete in its menu, not a red
-            button on every row (CRAFT-03, IFACE-11). */}
+        {/* The list scrolls itself; the page does not. A row opens its
+            editor (a click, Enter); its box, Cmd/Ctrl+click, Shift+click and
+            Select all pick rows for the bar's Delete. Edit on hover, Delete
+            in its menu, not a red button on every row (CRAFT-03, IFACE-11). */}
         <ListColumn>
           <DataList<BookmarkRow>
             aria-label={t("bookmarks.heading")}
@@ -323,18 +352,26 @@ export function BookmarksPage() {
             getName={(r) => bookmarkName(r.bookmark)}
             // An address as a menu heading: cut in the middle, its end kept.
             menuHeadingTruncate="middle"
-            labels={{ selectAll: t("dataList.selectAll"), select: (name) => t("dataList.select", { name }), more: t("pageHeader.more"), actions: t("profileTable.colActions") }}
+            labels={{
+              selectAll: t("dataList.selectAll"),
+              select: (name) => t("dataList.select", { name }),
+              more: t("pageHeader.more"),
+              actions: t("profileTable.colActions"),
+              selectedCount: (n) => t("bulkActionsBar.selectedCount", { n }),
+              selectionCleared: t("listSelection.cleared"),
+            }}
             status={loading ? "loading" : status === "error" ? "error" : "ready"}
             loading={<LoadingRows rows={4} inGrid />}
             error={<LoadError what={t("listStates.bookmarks")} error={loadError} onRetry={() => void init()} />}
             empty={emptyState}
             arrived={arrived}
+            selected={selected}
+            onSelectedChange={setSelected}
             onOpen={(r) => setEditing(r.bookmark)}
+            openOnClick
             onDelete={(ids) => {
-              for (const id of ids) {
-                const b = items.find((x) => x.id === id);
-                if (b) void remove(b);
-              }
+              const gone = new Set(ids);
+              void removeMany(items.filter((x) => gone.has(x.id)));
             }}
             rowActions={(r) => (
               <IconButton
@@ -351,6 +388,7 @@ export function BookmarksPage() {
             ]}
             bottomInset={endRoom}
           />
+          <BookmarkBulkBar selected={picked} onClear={() => setSelected(new Set())} onClosedWithFocus={backToList} />
         </ListColumn>
       </PageBody>
 
