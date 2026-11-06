@@ -227,7 +227,14 @@ jobs:
             status=$(printf '%s' "$info" | field status)
             case "$status" in
               Accepted)
-                xcrun stapler staple "$dmg"
+                # The ticket reaches Apple's servers a little after "Accepted",
+                # and stapling at once fails with error 68 (no ticket found).
+                for try in $(seq 1 10); do
+                  xcrun stapler staple "$dmg" && break
+                  [ "$try" -lt 10 ] || { echo "::error::could not staple the ticket"; exit 1; }
+                  echo "::warning::staple attempt $try failed; retrying in 30s"
+                  sleep 30
+                done
                 xcrun stapler validate "$dmg"
                 exit 0 ;;
               Invalid|Rejected)
