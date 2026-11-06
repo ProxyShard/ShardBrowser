@@ -50,7 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14            # Apple Silicon (M-series) runner — free, ARM-only
+          - os: macos-15            # Apple Silicon (M-series) runner — free, ARM-only; macos-14 was retired 2026-11-02
             target: aarch64-apple-darwin
             label: mac-arm64
           - os: ubuntu-22.04
@@ -355,7 +355,7 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             label: windows-x64
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             label: macos-arm64
 
