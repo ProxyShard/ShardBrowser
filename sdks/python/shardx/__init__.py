@@ -281,4 +281,4 @@ __all__ = [
     "has_auto_fields", "resolve_auto_fields",
     "Motion",
 ]
-__version__ = "2.1.4"
+__version__ = "2.1.5"

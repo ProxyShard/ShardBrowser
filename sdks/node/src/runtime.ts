@@ -16,7 +16,7 @@ import AdmZip from "adm-zip";
 export const PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
 export const CHROMIUM_VERSION = "157.0.8103.39";
 /** This SDK's own version, compared against the manifest's `min_sdk_version`. */
-export const SDK_VERSION = "2.1.4";
+export const SDK_VERSION = "2.1.5";
 // Version manifest (GitHub raw) — one tiny GET yields every archive's current
 // etag, so we never poll R2/S3 (no per-archive HEAD). Changed archives are then
 // pulled from PUB_BASE.
@@ -93,6 +93,7 @@ interface Manifest {
    *  SDK is too old for. */
   installed_grease_brand?: string;
   installed_grease_version?: string;
+  installed_android_chromium_version?: string;
   installed_tls?: Record<string, unknown>;
 }
 
@@ -112,6 +113,8 @@ export class Runtime {
    *  derived from the version number). Applied to profiles on launch. */
   private _greaseBrand?: string;
   private _greaseVersion?: string;
+  /** Chrome for Android build of the engine's major, for phone profiles. */
+  private _androidVersion?: string;
   /** TLS block from the manifest (signature_algorithms / cipher_suites).
    *  Applied to profiles on launch so the JA4 hash keeps matching the Chrome
    *  version the profile claims — 152 added the ML-DSA signature schemes, and
@@ -148,6 +151,8 @@ export class Runtime {
   get greaseBrand(): string | undefined { return this._greaseBrand; }
   /** GREASE version from the manifest (e.g. "24"); set on install(). */
   get greaseVersion(): string | undefined { return this._greaseVersion; }
+  /** Chrome for Android build phone profiles report; set on install(). */
+  get androidChromiumVersion(): string | undefined { return this._androidVersion; }
   /** TLS overrides from the manifest; set on install(). */
   get tls(): Record<string, unknown> | undefined { return this._tls; }
 
@@ -259,6 +264,7 @@ export class Runtime {
     this._chromiumVersion = v;
     this._greaseBrand = local.installed_grease_brand;
     this._greaseVersion = local.installed_grease_version;
+    this._androidVersion = local.installed_android_chromium_version;
     this._tls = local.installed_tls;
   }
 
@@ -292,6 +298,7 @@ export class Runtime {
       offered?.chromiumVersion ?? this.effectiveInstalledVersion(local) ?? CHROMIUM_VERSION;
     this._greaseBrand = offered?.greaseBrand ?? local.installed_grease_brand;
     this._greaseVersion = offered?.greaseVersion ?? local.installed_grease_version;
+    this._androidVersion = offered?.androidChromiumVersion ?? local.installed_android_chromium_version;
     this._tls = offered?.tls ?? local.installed_tls;
     if (tooOld) {
       console.warn(
@@ -327,6 +334,7 @@ export class Runtime {
         this._chromiumVersion = this.effectiveInstalledVersion(local) ?? CHROMIUM_VERSION;
         this._greaseBrand = local.installed_grease_brand;
         this._greaseVersion = local.installed_grease_version;
+        this._androidVersion = local.installed_android_chromium_version;
         this._tls = local.installed_tls;
         console.warn(
           `[shardx] the engine update was not installed: ${(e as Error).message}. Staying on the `
@@ -341,6 +349,7 @@ export class Runtime {
       local.installed_chromium_version = this._chromiumVersion;
       if (remote.greaseBrand) local.installed_grease_brand = remote.greaseBrand;
       if (remote.greaseVersion) local.installed_grease_version = remote.greaseVersion;
+      if (remote.androidChromiumVersion) local.installed_android_chromium_version = remote.androidChromiumVersion;
       if (remote.tls) local.installed_tls = remote.tls;
       delete local.widevine_etag;
       this.saveManifest(local);
@@ -367,6 +376,7 @@ export class Runtime {
     if (!needBrowser || swapped) {
       if (remote.greaseBrand) local.installed_grease_brand = remote.greaseBrand;
       if (remote.greaseVersion) local.installed_grease_version = remote.greaseVersion;
+      if (remote.androidChromiumVersion) local.installed_android_chromium_version = remote.androidChromiumVersion;
       if (remote.tls) local.installed_tls = remote.tls;
     }
     this.saveManifest(local);
@@ -386,11 +396,11 @@ export class Runtime {
   /** Fetch the version manifest (GitHub raw) — one request that yields every
    *  archive's current etag + the chromium version, replacing per-archive HEADs
    *  against R2/S3. Empty archives / undefined version when unreachable. */
-  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; engineBuild?: string; minSdkVersion?: string; greaseBrand?: string; greaseVersion?: string; tls?: Record<string, unknown> }> {
+  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; engineBuild?: string; minSdkVersion?: string; greaseBrand?: string; greaseVersion?: string; androidChromiumVersion?: string; tls?: Record<string, unknown> }> {
     try {
       const r = await fetch(MANIFEST_URL);
       if (!r.ok) return { archives: {} };
-      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; engine_build?: string | number; min_sdk_version?: string; grease_brand?: string; grease_version?: string; tls?: Record<string, unknown> };
+      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; engine_build?: string | number; min_sdk_version?: string; grease_brand?: string; grease_version?: string; android_chromium_version?: string; tls?: Record<string, unknown> };
       const str = (v: unknown) => (typeof v === "string" ? v : undefined);
       return {
         archives: (data && typeof data.archives === "object" && data.archives) || {},
@@ -402,6 +412,7 @@ export class Runtime {
         minSdkVersion: str(data?.min_sdk_version),
         greaseBrand: str(data?.grease_brand),
         greaseVersion: str(data?.grease_version),
+        androidChromiumVersion: str(data?.android_chromium_version),
         tls: (data?.tls && typeof data.tls === "object" && !Array.isArray(data.tls))
           ? data.tls as Record<string, unknown>
           : undefined,

@@ -241,12 +241,14 @@ impl Browser {
         // Keep the spoofed Chrome version coherent with the installed engine,
         // regardless of where the profile config came from (library / file / value).
         let (grease_brand, grease_version) = self.runtime.grease();
+        let android = profile.claims_mobile().then(|| self.runtime.android_chromium_version()).flatten();
         crate::profile::apply_engine_version(
             &mut profile.config,
             &self.runtime.chromium_version(),
             grease_brand.as_deref(),
             grease_version.as_deref(),
             self.runtime.tls().as_ref(),
+            android.as_deref(),
         );
         crate::profile::adopt_library_fields(&mut profile.config, &self.runtime.fingerprints_dir());
         crate::profile::apply_apple_webgpu_features(&mut profile.config);

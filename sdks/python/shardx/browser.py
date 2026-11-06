@@ -190,6 +190,7 @@ class Browser:
             self.runtime.grease_brand,
             self.runtime.grease_version,
             self.runtime.tls,
+            self.runtime.android_chromium_version if profile.claims_mobile else None,
         )
         adopt_library_fields(profile.config, self.runtime.fingerprints_dir)
         apply_apple_webgpu_features(profile.config)

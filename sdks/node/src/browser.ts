@@ -184,7 +184,8 @@ export class Browser {
     // Keep the spoofed Chrome version coherent with the installed engine,
     // regardless of where the profile config came from (library / file / dict).
     applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand,
-                       this.runtime.greaseVersion, this.runtime.tls);
+                       this.runtime.greaseVersion, this.runtime.tls,
+                       profile.claimsMobile ? this.runtime.androidChromiumVersion : undefined);
     adoptLibraryFields(profile.config, this.runtime.fingerprintsDir);
     applyAppleWebGpuFeatures(profile.config);
     if (profile.claimsMobile) applyChromeBrand(profile.config);

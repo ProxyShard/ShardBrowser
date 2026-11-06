@@ -157,6 +157,10 @@ export class FingerprintLibrary {
  * advertises the new ones, and the JA4 hash no longer matches the Chrome
  * version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so a
  * 149-era profile is eleven entries short and reads as a mismatch.
+ *
+ * `androidVersion` is the Chrome for Android build of the same major, passed
+ * for phone profiles: Android ships its own build numbers, and a phone
+ * reporting a desktop one claims a build no phone has.
  */
 export function applyEngineVersion(
   config: Record<string, unknown>,
@@ -164,10 +168,15 @@ export function applyEngineVersion(
   greaseBrand?: string,
   greaseVersion?: string,
   tls?: Record<string, unknown>,
+  androidVersion?: string,
 ): void {
-  const parts = chromiumVersion.split(".");
+  let parts = chromiumVersion.split(".");
   if (parts.length !== 4) return;
   const major = parts[0];
+  if (androidVersion && androidVersion.split(".").length === 4 && androidVersion.split(".")[0] === major) {
+    chromiumVersion = androidVersion;
+    parts = chromiumVersion.split(".");
+  }
   const build = parseInt(parts[2], 10);
   const patch = parseInt(parts[3], 10);
 

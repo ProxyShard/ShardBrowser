@@ -28,7 +28,7 @@ import httpx
 PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev"
 CHROMIUM_VERSION = "157.0.8103.39"
 # This SDK's own version, compared against the manifest's `min_sdk_version`.
-SDK_VERSION = "2.1.4"
+SDK_VERSION = "2.1.5"
 # Version manifest (GitHub raw) — one tiny GET tells us every archive's current
 # etag, so we never poll R2/S3 (no per-archive HEAD). Updated archives are then
 # pulled from PUB_BASE only when their etag changed.
@@ -104,6 +104,7 @@ def apply_engine_version(
     grease_brand: Optional[str] = None,
     grease_version: Optional[str] = None,
     tls: Optional[dict] = None,
+    android_version: Optional[str] = None,
 ) -> None:
     """Normalise a profile config's spoofed Chrome version to `chromium_version`
     (e.g. "152.0.7977.65") so it always matches the running engine — bumps
@@ -122,11 +123,18 @@ def apply_engine_version(
     profile keeps the previous release's signature_algorithms while the engine
     advertises the new ones, and the JA4 hash no longer matches the Chrome
     version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so
-    a 149-era profile is eleven entries short and reads as a mismatch."""
+    a 149-era profile is eleven entries short and reads as a mismatch.
+
+    `android_version` is the Chrome for Android build of the same major, passed
+    for phone profiles: Android ships its own build numbers, and a phone
+    reporting a desktop one claims a build no phone has."""
     parts = chromium_version.split(".")
     if len(parts) != 4:
         return
     major = parts[0]
+    if android_version and len(android_version.split(".")) == 4 and android_version.split(".")[0] == major:
+        chromium_version = android_version
+        parts = chromium_version.split(".")
     try:
         build = int(parts[2])
         patch = int(parts[3])
@@ -268,6 +276,8 @@ class Runtime:
         # derived from the version number). Applied to profiles on launch.
         self._grease_brand: Optional[str] = None
         self._grease_version: Optional[str] = None
+        # Chrome for Android build of the engine's major, for phone profiles.
+        self._android_version: Optional[str] = None
         # TLS block from the manifest (signature_algorithms / cipher_suites).
         # Applied to profiles on launch so the JA4 hash keeps matching the
         # Chrome version the profile claims.
@@ -317,6 +327,11 @@ class Runtime:
     def grease_version(self) -> Optional[str]:
         """GREASE version from the manifest (e.g. "24"); set on install()."""
         return self._grease_version
+
+    @property
+    def android_chromium_version(self) -> Optional[str]:
+        """Chrome for Android build phone profiles report; set on install()."""
+        return self._android_version
 
     @property
     def tls(self) -> Optional[dict]:
@@ -439,6 +454,7 @@ class Runtime:
         self._chromium_version = v
         self._grease_brand = local.get("installed_grease_brand") or None
         self._grease_version = local.get("installed_grease_version") or None
+        self._android_version = local.get("installed_android_chromium_version") or None
         tls = local.get("installed_tls")
         self._tls = tls if isinstance(tls, dict) else None
 
@@ -446,6 +462,7 @@ class Runtime:
         self._chromium_version = self._effective_installed_version(local) or CHROMIUM_VERSION
         self._grease_brand = local.get("installed_grease_brand") or None
         self._grease_version = local.get("installed_grease_version") or None
+        self._android_version = local.get("installed_android_chromium_version") or None
         tls = local.get("installed_tls")
         self._tls = tls if isinstance(tls, dict) else None
 
@@ -485,6 +502,8 @@ class Runtime:
         )
         self._grease_brand = offered.get("grease_brand") or local.get("installed_grease_brand") or None
         self._grease_version = offered.get("grease_version") or local.get("installed_grease_version") or None
+        self._android_version = (offered.get("android_chromium_version")
+                                 or local.get("installed_android_chromium_version") or None)
         remote_tls = offered.get("tls")
         if not isinstance(remote_tls, dict):
             remote_tls = local.get("installed_tls")
@@ -576,7 +595,8 @@ class Runtime:
     def _record_descriptor(local: dict, manifest: dict) -> None:
         """GREASE and TLS of the engine on disk, for runs without the manifest."""
         for src, dst in (("grease_brand", "installed_grease_brand"),
-                         ("grease_version", "installed_grease_version")):
+                         ("grease_version", "installed_grease_version"),
+                         ("android_chromium_version", "installed_android_chromium_version")):
             if manifest.get(src):
                 local[dst] = manifest[src]
         if isinstance(manifest.get("tls"), dict):

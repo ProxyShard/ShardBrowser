@@ -7,6 +7,32 @@
       "date": "2026-11-06",
       "entries": [
         {
+          "id": "android-version",
+          "title": "Android version number",
+          "lead": "Android profiles reported a Chrome version number that Chrome for Android never had.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Sites can compare it with the versions real phones run, and some, including ones protected by Akamai, flagged Android profiles for it. They now report the number of the Chrome for Android release."
+            }
+          ]
+        },
+        {
+          "id": "android-features",
+          "title": "Android profiles",
+          "lead": "Android profiles showed a few features the way a computer has them, not the way a phone does.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now match a phone in system accent colors, in-app purchases, saved offline content and barcode scanning."
+            }
+          ]
+        },
+        {
           "id": "video-codecs",
           "title": "Video codecs",
           "lead": "Sites saw this computer's video hardware, not the graphics card the profile claims.",

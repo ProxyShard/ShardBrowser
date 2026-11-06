@@ -251,18 +251,27 @@ impl FingerprintLibrary {
 /// advertises the new ones, and the JA4 hash no longer matches the Chrome
 /// version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so a
 /// 149-era profile is eleven entries short and reads as a mismatch.
+///
+/// `android_version` is the Chrome for Android build of the same major, passed
+/// for phone profiles: Android ships its own build numbers, and a phone
+/// reporting a desktop one claims a build no phone has.
 pub fn apply_engine_version(
     config: &mut Value,
     chromium_version: &str,
     grease_brand: Option<&str>,
     grease_version: Option<&str>,
     tls: Option<&Value>,
+    android_version: Option<&str>,
 ) {
     let parts: Vec<&str> = chromium_version.split('.').collect();
     if parts.len() != 4 {
         return;
     }
     let major = parts[0];
+    let chromium_version = android_version
+        .filter(|v| v.split('.').count() == 4 && v.split('.').next() == Some(major))
+        .unwrap_or(chromium_version);
+    let parts: Vec<&str> = chromium_version.split('.').collect();
     let build = parts[2].parse::<i64>().ok();
     let patch = parts[3].parse::<i64>().ok();
 
@@ -419,6 +428,36 @@ pub fn user_data_dir(runtime: &Runtime, profile_id: &str, base: Option<&Path>) -
     let d = root.join(profile_id);
     fs::create_dir_all(&d)?;
     Ok(d)
+}
+
+#[cfg(test)]
+mod android_version_tests {
+    use super::apply_engine_version;
+    use serde_json::{json, Value};
+
+    fn phone() -> Value {
+        json!({ "navigator": { "user_agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Mobile Safari/537.36" },
+                "client_hints": { "mobile": true, "brand_full_version": "156.0.8078.48" } })
+    }
+
+    #[test]
+    fn a_phone_gets_the_android_build() {
+        let mut cfg = phone();
+        apply_engine_version(&mut cfg, "157.0.8103.39", None, None, None, Some("157.0.8103.38"));
+        let ch = &cfg["client_hints"];
+        assert_eq!((ch["brand_version"].as_str(), ch["brand_full_version"].as_str(), ch["chrome_patch"].as_i64()),
+                   (Some("157"), Some("157.0.8103.38"), Some(38)));
+        assert!(cfg["navigator"]["user_agent"].as_str().unwrap().contains("Chrome/157.0.0.0 Mobile"));
+    }
+
+    #[test]
+    fn no_android_build_or_another_major_keeps_the_engines() {
+        for android in [None, Some("156.0.8078.81"), Some("157.0.8103"), Some("")] {
+            let mut cfg = phone();
+            apply_engine_version(&mut cfg, "157.0.8103.39", None, None, None, android);
+            assert_eq!(cfg["client_hints"]["brand_full_version"], "157.0.8103.39", "{android:?}");
+        }
+    }
 }
 
 #[cfg(test)]
