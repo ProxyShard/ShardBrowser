@@ -23,6 +23,11 @@ type Space = NonNullable<MockState["space"]>;
 const PERSONAL: Space = { kind: "personal" };
 const nowSecs = () => Math.floor(Date.now() / 1000);
 const keyOf = (sp: Space) => (sp.kind === "team" ? sp.team_id : "personal");
+/** A launcher date ("@<unix seconds>" or ISO) as the server's unix seconds; null when there is none. */
+const secsOf = (stamp: string | null): number | null => {
+  const ms = !stamp ? NaN : stamp.startsWith("@") ? Number(stamp.slice(1)) * 1000 : Date.parse(stamp);
+  return Number.isFinite(ms) && ms > 0 ? Math.floor(ms / 1000) : null;
+};
 
 /** Up by one each time the space in use changes (team.rs SPACE_EPOCH). */
 let epoch = 1;
@@ -92,6 +97,8 @@ function teamSeed(state: MockState, team: string): SpaceData {
   rows.forEach((r, i) => {
     const p = profileFromFingerprint(fps[i % Math.max(1, fps.length)], r.name, r.folder);
     p._meta.id = r.id;
+    // The list's date is the server's row (remote.rs meta); a state saved before it had none.
+    p._meta.created_at = typeof r.created_at === "number" ? `@${r.created_at}` : null;
     profiles[r.id] = p;
   });
   return {
@@ -165,7 +172,10 @@ export function mirror(state: MockState): void {
   const server = team && team !== "personal" ? state.teamServers?.[team] : undefined;
   // Nothing was read of it yet: the empty lists here are not the server's.
   if (!server || unread.has(team!)) return;
-  server.profiles = state.order.filter((id) => state.profiles[id]).map((id) => ({ id, name: state.profiles[id].name, folder: state.profiles[id]._meta.folder }));
+  server.profiles = state.order.filter((id) => state.profiles[id]).map((id) => {
+    const p = state.profiles[id];
+    return { id, name: p.name, folder: p._meta.folder, created_at: secsOf(p._meta.created_at) };
+  });
 }
 
 /** The refusal a write gets before anything is written (space::window_ticket, then the team's reach). */

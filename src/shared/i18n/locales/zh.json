@@ -870,6 +870,8 @@
   "inlineEditor.gpuLabel": "指纹",
   "inlineEditor.keepFocusHelp": "适合在后台工作的配置；窗口从不失去焦点本身也并不常见。",
   "inlineEditor.keepFocusLabel": "始终报告窗口处于焦点状态",
+  "inlineEditor.maximizedHelp": "窗口按配置的屏幕大小打开，网站看到的是最大化的窗口，就像大多数人浏览时那样。调整窗口大小后，网站会看到它的实际大小。",
+  "inlineEditor.maximizedLabel": "将窗口报告为最大化",
   "inlineEditor.languageAuto": "自动（根据代理）",
   "inlineEditor.languageLabel": "语言",
   "inlineEditor.latitudeLabel": "纬度",

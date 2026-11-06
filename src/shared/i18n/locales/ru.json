@@ -870,6 +870,8 @@
   "inlineEditor.gpuLabel": "Отпечаток",
   "inlineEditor.keepFocusHelp": "Подходит профилям, которые работают в фоне; окно, никогда не теряющее фокус, само по себе необычно.",
   "inlineEditor.keepFocusLabel": "Всегда сообщать, что окно в фокусе",
+  "inlineEditor.maximizedHelp": "Окно открывается по размеру экрана профиля, и сайты видят его развёрнутым, как у большинства людей. Если изменить размер окна, сайты увидят настоящий.",
+  "inlineEditor.maximizedLabel": "Показывать окно развёрнутым",
   "inlineEditor.languageAuto": "Авто (по прокси)",
   "inlineEditor.languageLabel": "Язык",
   "inlineEditor.latitudeLabel": "Широта",

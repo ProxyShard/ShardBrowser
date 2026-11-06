@@ -34,6 +34,9 @@ pub struct ProfileRow {
     pub session_rev: u64,
     #[serde(default)]
     pub open_on: Option<Lease>,
+    /// Unix seconds; None from an older server, or for a row it kept from before.
+    #[serde(default)]
+    pub created_at: Option<u64>,
 }
 
 /// Who has a profile open, and on which device.
@@ -146,7 +149,8 @@ pub fn meta(team: &str, row: &ProfileRow, detail: Option<&StoredProfile>, device
         proxy_id: row.card.bound_proxy().map(str::to_owned),
         // Last launched is the lease: no count is kept for a team's profile.
         last_launched_at: row.open_on.as_ref().map(|l| format!("@{}", l.acquired_at)),
-        created_at: detail.and_then(|d| d.meta.created_at.clone()),
+        // The server's date, else what this device read in the settings.
+        created_at: row.created_at.map(|t| format!("@{t}")).or_else(|| detail.and_then(|d| d.meta.created_at.clone())),
         pinned: false,
         folder: row.folder.clone(),
         total_runtime_ms: 0,
@@ -325,6 +329,8 @@ pub struct Written {
     pub revision: u64,
     #[serde(default)]
     pub updated_at: u64,
+    #[serde(default)]
+    pub created_at: Option<u64>,
 }
 
 /// The settings the team keeps: the launcher's JSON without one member's marks.
@@ -371,7 +377,23 @@ pub fn row_after(w: &Written, card: Option<Card>, before: Option<&ProfileRow>) -
         card: Card { proxy_id: card.bound_proxy().map(str::to_owned), ..card },
         session_rev: before.map_or(0, |b| b.session_rev),
         open_on: before.and_then(|b| b.open_on.clone()),
+        created_at: w.created_at.or_else(|| before.and_then(|b| b.created_at)),
     }
+}
+
+/// A launcher date ("@<unix seconds>", or ISO from older or imported data) as unix seconds.
+pub fn stamp_secs(stamp: Option<&str>) -> Option<u64> {
+    let s = stamp?.trim();
+    let secs = match s.strip_prefix('@') {
+        Some(n) => n.parse::<i64>().ok()?,
+        None => crate::psapi::parse_ts(&Value::String(s.to_string()))?,
+    };
+    u64::try_from(secs).ok().filter(|&t| t > 0)
+}
+
+/// When a profile was made: the row's date, else the one its settings carry.
+pub fn made_at(row: &ProfileRow, data: &str) -> Option<u64> {
+    row.created_at.or_else(|| stamp_secs(opened(data)?.get("_meta")?.get("created_at")?.as_str()))
 }
 
 pub fn proxy_row_after(w: &Written) -> ProxyRow {
@@ -406,6 +428,8 @@ pub struct ProfileFields<'a> {
     pub data: &'a str,
     /// None keeps the card the server has.
     pub card: Option<&'a Card>,
+    /// Unix seconds; the server keeps it only for a row with no date yet.
+    pub created_at: Option<u64>,
 }
 
 fn path_of(kind: &str, id: &str) -> Result<String, TeamError> {
@@ -422,6 +446,9 @@ async fn put_profile(c: &TeamClient, id: &str, folder: &str, f: &ProfileFields<'
     let mut body = json!({ "name": f.name, "folder": folder, "data": f.data, "base_revision": base });
     if let Some(card) = f.card {
         body["card"] = serde_json::to_value(card).unwrap_or_default();
+    }
+    if let Some(t) = f.created_at {
+        body["created_at"] = t.into();
     }
     c.json(Method::PUT, &path_of("profiles", id)?, Some(&body)).await
 }
@@ -665,6 +692,39 @@ mod tests {
         // Nothing to read: the row alone.
         let bare = stored(&row("p1"), Some(""));
         assert_eq!((bare.meta.id.as_str(), bare.config["notes"].as_str()), ("p1", Some("card notes")));
+    }
+
+    #[test]
+    fn the_list_takes_the_servers_creation_date_over_the_settings() {
+        let blob = b64(json!({ "_meta": { "created_at": "@1600000000" }, "name": "x" }));
+        let s = stored(&row("p1"), Some(&blob));
+        // An older server's row: what the settings read here say.
+        assert_eq!(meta("t1", &row("p1"), Some(&s), "").created_at.as_deref(), Some("@1600000000"));
+        assert_eq!(meta("t1", &row("p1"), None, "").created_at, None);
+        let mut dated = row("p1");
+        dated.created_at = Some(1_700_000_000);
+        for detail in [Some(&s), None] {
+            assert_eq!(meta("t1", &dated, detail, "").created_at.as_deref(), Some("@1700000000"));
+        }
+        // What is sent: the row's, else the settings'.
+        assert_eq!(made_at(&dated, &blob), Some(1_700_000_000));
+        assert_eq!(made_at(&row("p1"), &blob), Some(1_600_000_000));
+        assert_eq!(made_at(&row("p1"), ""), None);
+        // A write's answer keeps it, or the row's before when an older server says none.
+        let w: Written = serde_json::from_value(json!({ "id": "p1", "name": "x", "revision": 5 })).unwrap();
+        assert_eq!(row_after(&w, None, Some(&dated)).created_at, Some(1_700_000_000));
+        let w: Written = serde_json::from_value(json!({ "id": "p1", "name": "x", "revision": 5, "created_at": 9 })).unwrap();
+        assert_eq!(row_after(&w, None, None).created_at, Some(9));
+    }
+
+    #[test]
+    fn a_launcher_date_reads_as_seconds_whichever_way_it_was_written() {
+        assert_eq!(stamp_secs(Some("@1700000000")), Some(1_700_000_000));
+        assert_eq!(stamp_secs(Some("2023-11-14T22:13:20Z")), Some(1_700_000_000));
+        assert_eq!(stamp_secs(Some("2023-11-15T00:13:20+02:00")), Some(1_700_000_000));
+        for junk in [None, Some(""), Some("@"), Some("@-5"), Some("@0"), Some("yesterday")] {
+            assert_eq!(stamp_secs(junk), None, "{junk:?}");
+        }
     }
 
     #[test]

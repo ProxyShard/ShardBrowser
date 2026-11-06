@@ -1,6 +1,6 @@
 [package]
 name = "shardbrowser-launcher"
-version = "2.1.3"
+version = "2.1.4"
 description = "ShardBrowser Launcher: profiles, proxies, fingerprints and automation for the ShardBrowser engine."
 authors = ["ProxyShard"]
 edition = "2021"

@@ -56,6 +56,20 @@ for (const { stage, busy, says } of STOPS) {
   });
 }
 
+// Windows and Linux draw the caption buttons over the banner's row (#142).
+test.describe("on Windows", () => {
+  test.use({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36" });
+
+  test("the banner ends before the caption buttons, Try again clear of them", async ({ page }) => {
+    await knobs(page, { ...UPDATE, __shardxMockEngineFail: "download" });
+    await open(page);
+    const captions = (await page.locator("[data-captions]").boundingBox())!;
+    const box = (await banner(page).boundingBox())!;
+    expect(box.x + box.width).toBeLessThanOrEqual(captions.x);
+    await banner(page).getByRole("button", { name: "Try again" }).click();
+  });
+});
+
 test("a busy stop counts the profiles in Russian with the right word form", async ({ page }) => {
   await page.addInitScript(() => localStorage.setItem("shardx.lang", "ru"));
   await knobs(page, { ...UPDATE, __shardxMockEngineFail: "busy", __shardxMockEngineBusy: 5 });

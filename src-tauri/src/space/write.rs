@@ -138,7 +138,9 @@ pub async fn save_profile(door: Door, t: &Ticket, team: &str, stored: StoredProf
     let data = remote::profile_data(&stored);
     let name = remote::name_of(&stored);
     let base = opts.sent_rev.unwrap_or(now.row.revision);
-    let fields = ProfileFields { name: &name, data: &data, card: Some(&card) };
+    // Fills a row an older server left undated; a dated one keeps its own.
+    let created_at = remote::stamp_secs(stored.meta.created_at.as_deref()).or_else(|| remote::made_at(&now.row, &now.data));
+    let fields = ProfileFields { name: &name, data: &data, card: Some(&card), created_at };
     t.commit().await?;
     let w = remote::edit_profile(&c, &edit, to.as_ref(), &fields, base)
         .await
@@ -181,7 +183,8 @@ async fn put_new(
     let card = remote::card(stored, tags);
     let data = remote::profile_data(stored);
     let name = remote::name_of(stored);
-    let fields = ProfileFields { name: &name, data: &data, card: Some(&card) };
+    let created_at = remote::stamp_secs(stored.meta.created_at.as_deref());
+    let fields = ProfileFields { name: &name, data: &data, card: Some(&card), created_at };
     t.commit().await?;
     let w = remote::create_profile(&c, create, id, &fields)
         .await
@@ -250,7 +253,8 @@ async fn rewrite(
     };
     let mut card = now.row.card.clone();
     change(&mut card);
-    let fields = ProfileFields { name: &now.row.name, data: &now.data, card: Some(&card) };
+    let created_at = remote::made_at(&now.row, &now.data);
+    let fields = ProfileFields { name: &now.row.name, data: &now.data, card: Some(&card), created_at };
     let base = now.row.revision;
     t.commit().await?;
     let w = remote::edit_profile(&c, &edit, to.as_ref(), &fields, base)

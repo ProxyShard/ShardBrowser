@@ -1,10 +1,11 @@
 import { useEffect, useRef } from "react";
-import { Button, CopyButton } from "@proxyshard/shardx-ui-kit";
+import { Button, CopyButton, cn } from "@proxyshard/shardx-ui-kit";
 import { AlertCircleIcon } from "../../shared/icons";
 import { useT } from "../../shared/i18n";
 import { clip } from "../../shared/lib/clipboard";
 import { fmtBytesProgress } from "../../shared/lib/format";
 import { useRunningCount } from "../../entities/profile";
+import { HAS_CAPTIONS } from "../WindowControls";
 import { joined, reason, retryEngineUpdate, stopAndFinish, useEngineUpdate } from "./engineUpdate";
 
 /// An engine update that stopped with the previous engine kept (#122): one
@@ -46,7 +47,8 @@ export function EngineUpdateBanner() {
   return (
     <div
       data-engine-update={error.stage}
-      className="mx-gutter mt-2.5 flex shrink-0 items-center gap-2 rounded-control bg-warning-tint px-3 py-1 text-secondary text-text-strong-950 forced-edge"
+      // On Windows and Linux the caption buttons sit over this row (#142): their room, as PageHeader keeps.
+      className={cn("mx-gutter mt-2.5 flex shrink-0 items-center gap-2 rounded-control bg-warning-tint px-3 py-1 text-secondary text-text-strong-950 forced-edge", HAS_CAPTIONS && "me-[150px]")}
     >
       <div className="flex min-w-0 flex-1 items-start gap-2 py-1">
         <AlertCircleIcon aria-hidden="true" className="mt-0.5 size-3.5 shrink-0 text-warning-text" />

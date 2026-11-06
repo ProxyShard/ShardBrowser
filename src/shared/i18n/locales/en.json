@@ -870,6 +870,8 @@
   "inlineEditor.gpuLabel": "Fingerprint",
   "inlineEditor.keepFocusHelp": "Suits profiles that work in the background; a window that never loses focus is unusual in itself.",
   "inlineEditor.keepFocusLabel": "Always report the window as focused",
+  "inlineEditor.maximizedHelp": "The window opens the size of the profile’s screen, and sites see it maximized, the way most people browse. Resize it, and sites see its real size.",
+  "inlineEditor.maximizedLabel": "Report the window as maximized",
   "inlineEditor.languageAuto": "Auto (from proxy)",
   "inlineEditor.languageLabel": "Language",
   "inlineEditor.latitudeLabel": "Latitude",

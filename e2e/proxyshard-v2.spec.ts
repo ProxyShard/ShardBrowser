@@ -186,6 +186,42 @@ test("the Add to proxies dialog names each row checkbox by its address", async (
   await expect(box.first()).toHaveAccessibleName(/^Select \d{1,3}(\.\d{1,3}){3}:1080$/);
 });
 
+test("proxies added from an order are in Proxies at once, no restart needed (owner, 2026-11-06)", async ({ page }) => {
+  // Proxies read first, so a list that stays as it was would show here.
+  await openApp(page, { section: "proxies" });
+  const rows = page.locator("[role='row'][data-proxy-id]");
+  await expect(rows.first()).toBeVisible();
+  const before = await rows.count();
+  await page.locator("aside [data-nav='proxyshard']").click();
+  const grid = page.locator("[data-ps-card='orders']").getByRole("treegrid", { name: "Orders" });
+  const row = grid.getByRole("row").filter({ hasText: "Datacenter USA" });
+  await row.hover();
+  await row.getByRole("button", { name: "Add to proxies" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("checkbox", { name: /^Select \d/ }).first()).toBeVisible();
+  await dialog.getByRole("button", { name: /^Add \d+$/ }).click();
+  await expect(dialog).toBeHidden();
+  // Ones already in the list are skipped: the toast says how many came in.
+  const added = Number((await page.getByText(/^Added \d+ prox/).first().textContent())!.match(/\d+/)![0]);
+  expect(added).toBeGreaterThan(0);
+  await page.locator("aside [data-nav='proxies']").click();
+  await expect(rows).toHaveCount(before + added);
+});
+
+test("generated proxies are in Proxies at once, no restart needed (owner, 2026-11-06)", async ({ page }) => {
+  await openApp(page, { section: "proxies" });
+  await expect(page.locator("[role='row'][data-proxy-id]").first()).toBeVisible();
+  await page.locator("aside [data-nav='proxyshard']").click();
+  await page.locator("[data-ps-tile='residential']").getByRole("button", { name: "Generate proxies" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByLabel("Name prefix").fill("Fresh resi");
+  await dialog.getByRole("button", { name: /^Generate \d+$/ }).click();
+  await expect(page.getByText(/Added \d+ prox/).first()).toBeVisible();
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await page.locator("aside [data-nav='proxies']").click();
+  await expect(page.getByText(/^Fresh resi/).first()).toBeVisible();
+});
+
 test("orders are a table with a header row; actions show on the row (craft target)", async ({ page }) => {
   await openApp(page, { section: "proxyshard" });
   const grid = page.locator("[data-ps-card='orders']").getByRole("treegrid", { name: "Orders" });

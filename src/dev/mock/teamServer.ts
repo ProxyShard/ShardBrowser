@@ -18,7 +18,8 @@ export type MockTeamServer = {
   me: string | null;
   members: MockTeamMember[];
   folders: { name: string; color: string }[];
-  profiles: { id: string; name: string; folder: string }[];
+  /** `created_at`: unix seconds, null for a row an older server kept (store.rs). */
+  profiles: { id: string; name: string; folder: string; created_at: number | null }[];
   /** What was deleted in the team, 30 days (teamTrash.ts); a profile's folder cannot go while it waits. */
   trash?: MockTrashRow[];
   /** Profiles another device has open now, by id: its lease (unix seconds). */
@@ -37,6 +38,7 @@ const refuse = (scope: Grant["scope"], action: TeamAction): Grant => ({ scope, a
 export function seedTeamServer(name: string): MockTeamServer {
   // Seen relative to the join, so the tooltip reads the same in every run.
   const ago = (secs: number) => nowSecs() - secs;
+  const days = (n: number) => ago(n * 86_400);
   const team = { kind: "team" } as const;
   const shops = { kind: "folder", name: "Shops" } as const;
   const ads = { kind: "folder", name: "Ads" } as const;
@@ -59,14 +61,14 @@ export function seedTeamServer(name: string): MockTeamServer {
     ],
     folders: [{ name: "Ads", color: "blue" }, { name: "Shops", color: "green" }, { name: "Warm-up", color: "orange" }],
     profiles: [
-      { id: "tp-ads-1", name: "FB Ads 01", folder: "Ads" },
-      { id: "tp-ads-2", name: "FB Ads 02", folder: "Ads" },
-      { id: "tp-ads-3", name: "Google Ads 01", folder: "Ads" },
-      { id: "tp-shop-1", name: "Etsy main", folder: "Shops" },
-      { id: "tp-shop-2", name: "Etsy backup", folder: "Shops" },
-      { id: "tp-shop-3", name: "Amazon seller", folder: "Shops" },
-      { id: "tp-misc-1", name: "Shared sandbox", folder: "" },
-      { id: "tp-misc-2", name: "Reddit 01", folder: "" },
+      { id: "tp-ads-1", name: "FB Ads 01", folder: "Ads", created_at: days(22) },
+      { id: "tp-ads-2", name: "FB Ads 02", folder: "Ads", created_at: days(18) },
+      { id: "tp-ads-3", name: "Google Ads 01", folder: "Ads", created_at: days(4) },
+      { id: "tp-shop-1", name: "Etsy main", folder: "Shops", created_at: days(27) },
+      { id: "tp-shop-2", name: "Etsy backup", folder: "Shops", created_at: days(25) },
+      { id: "tp-shop-3", name: "Amazon seller", folder: "Shops", created_at: days(11) },
+      { id: "tp-misc-1", name: "Shared sandbox", folder: "", created_at: days(29) },
+      { id: "tp-misc-2", name: "Reddit 01", folder: "", created_at: days(1) },
     ],
   };
 }

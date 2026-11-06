@@ -151,6 +151,16 @@ pub struct ProfileFields<'a> {
     pub folder: &'a str,
     pub data: &'a [u8],
     pub card: Option<&'a Card>,
+    /// When the writer says it was made, unix seconds; kept only by a row that has no date yet.
+    pub created_at: Option<i64>,
+}
+
+/// How far ahead of the server's clock a writer's creation date may be.
+const MADE_AHEAD_SECS: i64 = 24 * 3600;
+
+/// A writer's creation date, if it could be one.
+fn made_at(asked: Option<i64>, now: u64) -> Option<u64> {
+    asked.filter(|&t| t > 0 && t <= now as i64 + MADE_AHEAD_SECS).map(|t| t as u64)
 }
 
 /// What a proxy write carries.
@@ -375,6 +385,9 @@ fn live_lease(db: &Connection, id: &str) -> Result<Option<Lease>> {
         .optional()?)
 }
 
+/// What [`profile_row`] reads, in its order.
+const PROFILE_COLUMNS: &str = "id, name, folder, revision, updated_at, updated_by, created_at";
+
 fn profile_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamProfile> {
     Ok(TeamProfile {
         id: r.get(0)?,
@@ -383,7 +396,13 @@ fn profile_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamProfile> {
         revision: r.get::<_, i64>(3)? as u64,
         updated_at: r.get::<_, i64>(4)? as u64,
         updated_by: r.get(5)?,
+        created_at: r.get::<_, Option<i64>>(6)?.map(|t| t as u64),
     })
+}
+
+fn profile_by_id(db: &Connection, id: &str) -> Result<TeamProfile> {
+    let sql = format!("SELECT {PROFILE_COLUMNS} FROM profiles WHERE id = ?1");
+    Ok(db.query_row(&sql, params![id], profile_row)?)
 }
 
 fn proxy_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamProxy> {
@@ -402,10 +421,9 @@ fn proxy_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<TeamProxy> {
 fn profile_with_space(db: &Connection, id: &str) -> Result<Option<(TeamProfile, String)>> {
     Ok(db
         .query_row(
-            "SELECT id, name, folder, revision, updated_at, updated_by, space
-             FROM profiles WHERE id = ?1",
+            &format!("SELECT {PROFILE_COLUMNS}, space FROM profiles WHERE id = ?1"),
             params![id],
-            |r| Ok((profile_row(r)?, r.get::<_, String>(6)?)),
+            |r| Ok((profile_row(r)?, r.get::<_, String>(7)?)),
         )
         .optional()?)
 }
@@ -950,14 +968,14 @@ pub struct Listed {
 }
 
 const LISTED_COLUMNS: &str = "p.id, p.name, p.folder, p.revision, p.updated_at, p.updated_by,
-     p.card, b.rev, b.size, b.updated_at, b.updated_by, p.space";
+     p.created_at, p.card, b.rev, b.size, b.updated_at, b.updated_by, p.space";
 const LISTED_FROM: &str =
     "profiles p LEFT JOIN blobs b ON b.kind = 'session' AND b.space = '' AND b.id = p.id";
 
 type ListedRow = (TeamProfile, Option<Vec<u8>>, Option<BlobMeta>, String);
 
 fn listed_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ListedRow> {
-    Ok((profile_row(r)?, r.get(6)?, blob_meta_at(r, 7)?, r.get(11)?))
+    Ok((profile_row(r)?, r.get(7)?, blob_meta_at(r, 8)?, r.get(12)?))
 }
 
 /// What a session read finds beside the bytes.
@@ -1300,6 +1318,9 @@ impl Store {
         // A profile's card, sealed: what lists show beside its name.
         add_column(&tx, "profiles", "card", "BLOB")?;
         add_column(&tx, "trash", "card", "BLOB")?;
+        // When a profile was made; null for one an older server kept, never guessed.
+        add_column(&tx, "profiles", "created_at", "INTEGER")?;
+        add_column(&tx, "trash", "created_at", "INTEGER")?;
         // Null until the member first uses their invite.
         add_column(&tx, "members", "last_seen_at", "INTEGER")?;
         // Hashes of re-issued tokens, so their holder hears "replaced", not "removed".
@@ -1637,8 +1658,8 @@ impl Store {
         let db = self.lock();
         let ts = now();
         db.execute(
-            "INSERT INTO profiles(id, name, folder, revision, updated_at, updated_by, sealed)
-             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6)
+            "INSERT INTO profiles(id, name, folder, revision, updated_at, updated_by, sealed, created_at)
+             VALUES (?1, ?2, ?3, 1, ?4, ?5, ?6, ?4)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 folder = excluded.folder,
@@ -1648,36 +1669,15 @@ impl Store {
                 sealed = excluded.sealed",
             params![id, name, folder, ts as i64, by, &sealed],
         )?;
-        let revision: i64 =
-            db.query_row("SELECT revision FROM profiles WHERE id = ?1", params![id], |r| r.get(0))?;
-        Ok(TeamProfile {
-            id: id.into(),
-            name: name.into(),
-            folder: folder.into(),
-            revision: revision as u64,
-            updated_at: ts,
-            updated_by: by.into(),
-        })
+        profile_by_id(&db, id)
     }
 
     pub fn profiles(&self) -> Result<Vec<TeamProfile>> {
         let db = self.lock();
-        let mut q = db.prepare(
-            "SELECT id, name, folder, revision, updated_at, updated_by FROM profiles
-             WHERE space = 'team' ORDER BY name",
-        )?;
-        let rows = q
-            .query_map([], |r| {
-                Ok(TeamProfile {
-                    id: r.get(0)?,
-                    name: r.get(1)?,
-                    folder: r.get(2)?,
-                    revision: r.get::<_, i64>(3)? as u64,
-                    updated_at: r.get::<_, i64>(4)? as u64,
-                    updated_by: r.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut q = db.prepare(&format!(
+            "SELECT {PROFILE_COLUMNS} FROM profiles WHERE space = 'team' ORDER BY name"
+        ))?;
+        let rows = q.query_map([], profile_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
 
@@ -1865,10 +1865,9 @@ impl Store {
     #[cfg(test)]
     pub fn profiles_in(&self, space: &str) -> Result<Vec<TeamProfile>> {
         let db = self.lock();
-        let mut q = db.prepare(
-            "SELECT id, name, folder, revision, updated_at, updated_by FROM profiles
-             WHERE space = ?1 ORDER BY name",
-        )?;
+        let mut q = db.prepare(&format!(
+            "SELECT {PROFILE_COLUMNS} FROM profiles WHERE space = ?1 ORDER BY name"
+        ))?;
         let rows = q
             .query_map(params![space], profile_row)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -2145,7 +2144,7 @@ impl Store {
         base_revision: Option<u64>,
         authorize: impl FnOnce(&Standing, Option<&TeamProfile>) -> std::result::Result<(), Refusal>,
     ) -> Result<std::result::Result<TeamProfile, Refusal>> {
-        let fields = ProfileFields { name, folder, data, card: None };
+        let fields = ProfileFields { name, folder, data, card: None, created_at: None };
         self.put_profile_with(space, id, &fields, writer, base_revision, |s, e, _| authorize(s, e))
     }
 
@@ -2167,7 +2166,7 @@ impl Store {
         base_revision: Option<u64>,
         authorize: impl FnOnce(&Standing, Option<&TeamProfile>, Found<'_>) -> std::result::Result<(), Refusal>,
     ) -> Result<std::result::Result<TeamProfile, Refusal>> {
-        let ProfileFields { name, folder, data, card } = *fields;
+        let ProfileFields { name, folder, data, card, created_at } = *fields;
         let sealed = self.vault.seal(&format!("profile:{id}"), data)?;
         let sealed_card = card
             .map(|c| self.vault.seal(&card_aad(id), &serde_json::to_vec(c)?))
@@ -2227,28 +2226,24 @@ impl Store {
             )?;
         }
         let ts = now();
+        // A new one is dated now unless the writer knows better; an old one keeps its date,
+        // and one with none takes only the writer's.
+        let made = made_at(created_at, ts).or(existing.is_none().then_some(ts));
         tx.execute(
-            "INSERT INTO profiles(id, space, name, folder, revision, updated_at, updated_by, sealed, card)
-             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8)
+            "INSERT INTO profiles(id, space, name, folder, revision, updated_at, updated_by, sealed, card, created_at)
+             VALUES (?1, ?2, ?3, ?4, 1, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name, folder = excluded.folder,
                 revision = profiles.revision + 1, updated_at = excluded.updated_at,
                 updated_by = excluded.updated_by, sealed = excluded.sealed,
-                card = COALESCE(excluded.card, profiles.card)",
-            params![id, space, name, folder, ts as i64, writer.member_id, &sealed, sealed_card],
+                card = COALESCE(excluded.card, profiles.card),
+                created_at = COALESCE(profiles.created_at, excluded.created_at)",
+            params![id, space, name, folder, ts as i64, writer.member_id, &sealed, sealed_card, made.map(|t| t as i64)],
         )?;
-        let revision: i64 =
-            tx.query_row("SELECT revision FROM profiles WHERE id = ?1", params![id], |r| r.get(0))?;
+        let row = profile_by_id(&tx, id)?;
         let moved = watch.finish(&tx)?;
         self.commit_regranted(tx, moved)?;
-        Ok(Ok(TeamProfile {
-            id: id.into(),
-            name: name.into(),
-            folder: folder.into(),
-            revision: revision as u64,
-            updated_at: ts,
-            updated_by: writer.member_id.into(),
-        }))
+        Ok(Ok(row))
     }
 
     /// Test setup: a proxy write judged on the row alone.
@@ -2390,11 +2385,7 @@ impl Store {
              WHERE id = ?1",
             params![id, to, folder, ts as i64, writer.member_id],
         )?;
-        let row = tx.query_row(
-            "SELECT id, name, folder, revision, updated_at, updated_by FROM profiles WHERE id = ?1",
-            params![id],
-            profile_row,
-        )?;
+        let row = profile_by_id(&tx, id)?;
         let moved = watch.finish(&tx)?;
         self.commit_regranted(tx, moved)?;
         Ok(Ok(row))
@@ -2472,8 +2463,9 @@ impl Store {
             // The session stays under the id the trash keeps, for a restore.
             tx.execute(
                 "INSERT INTO trash(id, kind, name, folder, revision, updated_at, updated_by,
-                                   deleted_at, deleted_by, sealed, card)
-                 SELECT id, 'profile', name, folder, revision, updated_at, updated_by, ?2, ?3, sealed, card
+                                   deleted_at, deleted_by, sealed, card, created_at)
+                 SELECT id, 'profile', name, folder, revision, updated_at, updated_by, ?2, ?3, sealed, card,
+                        created_at
                  FROM profiles WHERE id = ?1",
                 params![id, now() as i64, writer.member_id],
             )?;
@@ -2567,15 +2559,13 @@ impl Store {
                     )?;
                 }
                 tx.execute(
-                    "INSERT INTO profiles(id, space, name, folder, revision, updated_at, updated_by, sealed, card)
-                     SELECT id, ?2, name, folder, revision + 1, ?3, ?4, sealed, card FROM trash WHERE id = ?1",
+                    "INSERT INTO profiles(id, space, name, folder, revision, updated_at, updated_by, sealed, card,
+                                          created_at)
+                     SELECT id, ?2, name, folder, revision + 1, ?3, ?4, sealed, card, created_at
+                     FROM trash WHERE id = ?1",
                     params![id, TEAM, ts as i64, writer.member_id],
                 )?;
-                Restored::Profile(tx.query_row(
-                    "SELECT id, name, folder, revision, updated_at, updated_by FROM profiles WHERE id = ?1",
-                    params![id],
-                    profile_row,
-                )?)
+                Restored::Profile(profile_by_id(&tx, id)?)
             }
             // The trash table holds profiles and proxies only; items wait in their own.
             TrashKind::Bookmark | TrashKind::Extension | TrashKind::Automation | TrashKind::Tag => {
@@ -4533,7 +4523,7 @@ mod tests {
         s.put_proxy_checked(TEAM, "x1", "DC", "socks5", "JP", b"login", me, None, anyone).unwrap().unwrap();
         s.put_proxy_checked(&mine, "x-own", "Home", "http", "", b"own", me, None, anyone).unwrap().unwrap();
         let put = |space: &str, id: &str, c: Option<&Card>, seen: &mut Vec<Option<String>>| {
-            let fields = ProfileFields { name: "Shop", folder: "", data: b"x", card: c };
+            let fields = ProfileFields { name: "Shop", folder: "", data: b"x", card: c, created_at: None };
             s.put_profile_with(space, id, &fields, me, None, |_, _, found| {
                 seen.push(found.bound.map(str::to_owned));
                 Ok(())
@@ -4575,7 +4565,7 @@ mod tests {
         let s = Store::open_memory().unwrap();
         let me = w("m1", "a");
         s.put_proxy_checked(TEAM, "x1", "DC", "socks5", "JP", b"user:pass@host", me, None, anyone).unwrap().unwrap();
-        let fields = ProfileFields { name: "Shop", folder: "", data: b"x", card: Some(&card(Some("x1"), "")) };
+        let fields = ProfileFields { name: "Shop", folder: "", data: b"x", card: Some(&card(Some("x1"), "")), created_at: None };
         s.put_profile_with(TEAM, "p1", &fields, me, None, |_, _, _| Ok(())).unwrap().unwrap();
         s.lease_acquire("p1", "m1", "a", "Mac", 90).unwrap().unwrap();
 
@@ -5014,6 +5004,118 @@ mod tests {
         assert!(s.token_replaced("h1").unwrap());
         drop(s);
         drop(Store::open(&path, Vault::for_tests()).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- when a profile was made ----
+
+    fn dated(created_at: Option<i64>) -> ProfileFields<'static> {
+        ProfileFields { name: "Shop", folder: "", data: b"x", card: None, created_at }
+    }
+
+    fn put_dated(s: &Store, space: &str, id: &str, at: Option<i64>) -> TeamProfile {
+        s.put_profile_with(space, id, &dated(at), w("m1", "a"), None, |_, _, _| Ok(())).unwrap().unwrap()
+    }
+
+    const MADE: i64 = 1_700_000_000;
+
+    #[test]
+    fn a_new_profile_keeps_its_writers_date_when_plausible_and_is_dated_now_otherwise() {
+        let s = Store::open_memory().unwrap();
+        assert_eq!(put_dated(&s, TEAM, "p1", Some(MADE)).created_at, Some(MADE as u64));
+        // A clock a little ahead is still a clock.
+        let soon = now() as i64 + 3600;
+        assert_eq!(put_dated(&s, TEAM, "p2", Some(soon)).created_at, Some(soon as u64));
+        let before = now();
+        for (id, at) in [("p3", None), ("p4", Some(0)), ("p5", Some(-5)), ("p6", Some(now() as i64 + 3 * 86_400))] {
+            let got = put_dated(&s, TEAM, id, at).created_at.unwrap();
+            assert!((before..=now()).contains(&got), "{id}: {got}");
+        }
+        // Every read of the row carries it.
+        let listed = s.listed_in(TEAM, Some(&["p1"])).unwrap();
+        assert_eq!(listed[0].profile.created_at, Some(MADE as u64));
+        assert_eq!(s.listed_one("p1").unwrap().unwrap().0.profile.created_at, Some(MADE as u64));
+        assert_eq!(s.profile_meta("p1").unwrap().unwrap().0.created_at, Some(MADE as u64));
+    }
+
+    #[test]
+    fn a_known_date_never_changes_on_an_edit() {
+        let s = Store::open_memory().unwrap();
+        put_dated(&s, TEAM, "p1", Some(MADE));
+        for at in [Some(MADE + 500), None] {
+            assert_eq!(put_dated(&s, TEAM, "p1", at).created_at, Some(MADE as u64));
+        }
+        // The test setup's own write dates a new row too, and keeps it.
+        let p = s.put_profile("p2", "Shop", "", b"x", "m1").unwrap();
+        assert_eq!(s.put_profile("p2", "Shop", "", b"y", "m1").unwrap().created_at, p.created_at);
+    }
+
+    #[test]
+    fn a_row_with_no_date_takes_the_first_a_writer_knows_and_no_guess() {
+        let s = Store::open_memory().unwrap();
+        put_dated(&s, TEAM, "p1", None);
+        // As an older server left it.
+        s.lock().execute("UPDATE profiles SET created_at = NULL WHERE id = 'p1'", []).unwrap();
+        // An older launcher's edit says nothing, and nothing is made up.
+        assert_eq!(put_dated(&s, TEAM, "p1", None).created_at, None);
+        assert_eq!(put_dated(&s, TEAM, "p1", Some(-1)).created_at, None);
+        assert_eq!(put_dated(&s, TEAM, "p1", Some(MADE)).created_at, Some(MADE as u64));
+        assert_eq!(put_dated(&s, TEAM, "p1", Some(MADE + 9)).created_at, Some(MADE as u64));
+    }
+
+    #[test]
+    fn the_date_moves_with_the_profile_and_waits_in_the_trash() {
+        let s = Store::open_memory().unwrap();
+        let mine = personal_space("m1");
+        put_dated(&s, &mine, "p1", Some(MADE));
+        let moved = s.move_profile("p1", &mine, TEAM, "Ads", w("m1", "a"), |_, _, _| Ok(())).unwrap().unwrap();
+        assert_eq!(moved.created_at, Some(MADE as u64));
+        s.delete_profile_checked(TEAM, "p1", w("m1", "a"), None, |_, _| Ok(())).unwrap().unwrap();
+        let Restored::Profile(back) = s.restore_from_trash("p1", w("m1", "a"), |_, _| Ok(())).unwrap().unwrap() else {
+            panic!("a profile comes back as one")
+        };
+        assert_eq!((back.created_at, back.revision), (Some(MADE as u64), 3));
+        let out = s.move_profile("p1", TEAM, &mine, "", w("m1", "a"), |_, _, _| Ok(())).unwrap().unwrap();
+        assert_eq!(out.created_at, Some(MADE as u64));
+    }
+
+    #[test]
+    fn an_older_database_gains_the_date_columns_and_leaves_its_rows_undated() {
+        let dir = std::env::temp_dir().join(format!("shardx-store-made-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("team.sqlite");
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "CREATE TABLE profiles (id TEXT PRIMARY KEY, space TEXT NOT NULL DEFAULT 'team',
+                    name TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL DEFAULT 1,
+                    updated_at INTEGER NOT NULL, updated_by TEXT NOT NULL, sealed BLOB NOT NULL, card BLOB);
+                 CREATE TABLE trash (id TEXT PRIMARY KEY, kind TEXT NOT NULL, name TEXT NOT NULL,
+                    folder TEXT NOT NULL DEFAULT '', proxy_kind TEXT NOT NULL DEFAULT '',
+                    country TEXT NOT NULL DEFAULT '', revision INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+                    updated_by TEXT NOT NULL, deleted_at INTEGER NOT NULL, deleted_by TEXT NOT NULL,
+                    sealed BLOB NOT NULL, card BLOB);
+                 INSERT INTO profiles(id, name, updated_at, updated_by, sealed) VALUES ('p1', 'Old', 5, 'm1', x'00');
+                 INSERT INTO trash(id, kind, name, revision, updated_at, updated_by, deleted_at, deleted_by, sealed)
+                    VALUES ('p2', 'profile', 'Gone', 1, 5, 'm1', 6, 'm1', x'00');",
+            )
+            .unwrap();
+        }
+        let s = Store::open(&path, Vault::for_tests()).unwrap();
+        // Not guessed from when it was last written.
+        assert_eq!(s.listed_in(TEAM, None).unwrap()[0].profile.created_at, None);
+        let Restored::Profile(back) = s.restore_from_trash("p2", w("m1", "a"), |_, _| Ok(())).unwrap().unwrap() else {
+            panic!("a profile comes back as one")
+        };
+        assert_eq!(back.created_at, None);
+        // The first writer who knows the date fills it in.
+        assert_eq!(put_dated(&s, TEAM, "p1", Some(MADE)).created_at, Some(MADE as u64));
+        drop(s);
+        // And opening again changes nothing.
+        let s = Store::open(&path, Vault::for_tests()).unwrap();
+        assert_eq!(s.profile_meta("p1").unwrap().unwrap().0.created_at, Some(MADE as u64));
+        drop(s);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

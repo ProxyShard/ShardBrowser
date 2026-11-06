@@ -1,6 +1,6 @@
 [package]
 name = "shardx"
-version = "2.1.3"
+version = "2.1.4"
 edition = "2021"
 rust-version = "1.74"
 description = "Self-contained Rust SDK for the ShardBrowser anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."

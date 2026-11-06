@@ -6,7 +6,7 @@ import { toast } from "../../../shared/model/toast";
 import { useT } from "../../../shared/i18n";
 import type { PsOrder, PsActiveProxy } from "../../../entities/proxyshard";
 import { PS_SIGNATURES, psActive, psOrder, psSignatureSet } from "../../../entities/proxyshard";
-import { proxyBulkSave } from "../../../entities/proxy";
+import { proxyBulkSave, useProxy } from "../../../entities/proxy";
 
 /// Active-proxy picker: fetch an order's proxies, choose SOCKS5/HTTP and which
 /// IPs to import into the local proxy list (via proxy_bulk_save, which dedups).
@@ -83,6 +83,8 @@ export function PsImportModal({ open, order, onClose }: { open: boolean; order: 
     setSaving(true);
     try {
       const n = await proxyBulkSave(entries);
+      // The list reads again, as after any import: else they showed only after a restart.
+      await useProxy.getState().reload();
       toast.ok(n > 0
         ? (n === 1 ? t("psImportModal.addedOne", { n }) : t("psImportModal.addedMany", { n }))
         : t("psImportModal.noNewProxies"));

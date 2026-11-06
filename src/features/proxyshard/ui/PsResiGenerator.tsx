@@ -10,7 +10,7 @@ import { randSid } from "../../../shared/lib/utils";
 import { useT } from "../../../shared/i18n";
 import type { ResiType, PsLoc } from "../../../entities/proxyshard";
 import { PS_PLAN, PS_PROXY_TYPE, PS_RELAYS, PS_PORT, psProfileTraffic, psCountries, psRegions, psCities, psResiIsps } from "../../../entities/proxyshard";
-import { proxyBulkSave } from "../../../entities/proxy";
+import { proxyBulkSave, useProxy } from "../../../entities/proxy";
 import { tierLabel } from "../lib/tier";
 
 
@@ -158,6 +158,8 @@ export function PsResiGenerator({ open, type, onClose }: { open: boolean; type: 
     setSaving(true);
     try {
       const added = await proxyBulkSave(entries);
+      // The list reads again, as after any import: else they showed only after a restart.
+      await useProxy.getState().reload();
       toast.ok(added > 0
         ? (added === 1 ? t("psResiGenerator.addedOne", { n: added }) : t("psResiGenerator.addedMany", { n: added }))
         : t("psResiGenerator.noNewProxies"));

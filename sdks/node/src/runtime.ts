@@ -16,7 +16,7 @@ import AdmZip from "adm-zip";
 export const PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
 export const CHROMIUM_VERSION = "157.0.8103.39";
 /** This SDK's own version, compared against the manifest's `min_sdk_version`. */
-export const SDK_VERSION = "2.1.3";
+export const SDK_VERSION = "2.1.4";
 // Version manifest (GitHub raw) — one tiny GET yields every archive's current
 // etag, so we never poll R2/S3 (no per-archive HEAD). Changed archives are then
 // pulled from PUB_BASE.

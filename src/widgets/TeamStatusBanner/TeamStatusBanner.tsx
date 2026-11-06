@@ -3,6 +3,7 @@ import { activeTeam, useSpace } from "../../entities/space";
 import { teamError } from "../../entities/team";
 import { AlertCircleIcon, SyncOffIcon } from "../../shared/icons";
 import { intlLocale, useLang, useT } from "../../shared/i18n";
+import { HAS_CAPTIONS } from "../WindowControls";
 
 /// A team's lists while its server is not answering, or refused: one slim
 /// tile over the page, its bold title the word, gone once a read gets through.
@@ -26,6 +27,8 @@ export function TeamStatusBanner() {
         // forced-edge: forced colors drop the tint, an edge keeps the tile.
         "mx-gutter mt-2.5 flex shrink-0 items-start gap-2 rounded-control px-3 py-2 text-secondary text-text-strong-950 forced-edge",
         offline ? "bg-warning-tint" : "bg-error-tint",
+        // The caption buttons' room on Windows and Linux (#142), as PageHeader keeps.
+        HAS_CAPTIONS && "me-[150px]",
       )}
     >
       <Icon aria-hidden="true" className={cn("mt-0.5 size-3.5 shrink-0", offline ? "text-warning-text" : "text-error-text")} />

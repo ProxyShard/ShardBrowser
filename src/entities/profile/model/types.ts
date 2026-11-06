@@ -86,6 +86,9 @@ export type ProfileForm = {
   /// `document.hasFocus()` stays true. Stored as `window.keep_focus`; off by
   /// default, because a window that never loses focus is unusual in itself.
   keep_focus: boolean;
+  /// Present the window as maximized within the profile's screen (#140).
+  /// Stored as `window.maximized`; off by default.
+  maximized: boolean;
   /// Cookies file picked in the editor, imported once the profile exists.
   /// Editor state, not part of the fingerprint — `toStored` does not write it.
   cookies_file: string;

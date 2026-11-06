@@ -896,6 +896,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_list_dates_each_row_by_the_server_and_a_new_one_keeps_its_own_date() {
+        let t = Team::new(&[on(Scope::Team, Action::See), on(ads(), Action::Create)]).await;
+        // Seen only: its settings are never read here.
+        let body = json!({ "name": "Seen", "folder": "Shops", "data": b64(json!({})), "created_at": 1_700_000_000 });
+        t.put("/profiles/seen-1", body).await;
+        super::super::ready().await;
+        let made = |id: &str| profiles(&t.team_id).into_iter().find(|m| m.id == id).and_then(|m| m.created_at);
+        assert_eq!(made("seen-1").as_deref(), Some("@1700000000"));
+
+        // Brought in with the ISO date of older data: the server keeps that date.
+        let mut stored = StoredProfile::default();
+        stored.meta.folder = "Ads".into();
+        stored.meta.created_at = Some("2023-11-14T22:13:20Z".into());
+        stored.config.insert("name".into(), json!("Imported"));
+        let tk = super::super::Ticket::now();
+        let m = super::super::profile::save(super::super::Door("profile_import"), &tk, stored, Default::default()).await.unwrap();
+        assert_eq!(m.created_at.as_deref(), Some("@1700000000"));
+        let rows: Vec<Value> = t.admin().get("/profiles").await.unwrap();
+        let row = rows.iter().find(|r| r["id"] == m.id.as_str()).unwrap();
+        assert_eq!(row["created_at"], 1_700_000_000);
+        drop(t.srv);
+    }
+
+    #[tokio::test]
     async fn a_proxy_login_comes_only_with_a_right_that_uses_it() {
         let t = Team::new(&[on(Scope::Team, Action::See), on(Scope::Profile { id: "x2".into() }, Action::Start)]).await;
         for id in ["x1", "x2"] {

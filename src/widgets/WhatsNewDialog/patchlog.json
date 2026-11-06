@@ -3,6 +3,150 @@
   "repoUrl": "https://github.com/ProxyShard/ShardBrowser",
   "releases": [
     {
+      "version": "2.1.4",
+      "date": "2026-11-06",
+      "entries": [
+        {
+          "id": "video-codecs",
+          "title": "Video codecs",
+          "lead": "Sites saw this computer's video hardware, not the graphics card the profile claims.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Video support now matches the profile's graphics card and system, so a profile with an older card no longer reports formats that card cannot play. Profiles for macOS and phones, and cards the browser does not know, keep this computer's answers."
+            },
+            {
+              "type": "note",
+              "text": "A profile can only lose formats this computer has, never gain new ones, so video keeps playing."
+            }
+          ]
+        },
+        {
+          "id": "webrtc-same-page",
+          "title": "WebRTC on one page",
+          "lead": "Behind a proxy, two WebRTC connections on the same page never connected to each other.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "In Chrome they do, and some sites check this. Now they connect as in Chrome, and nothing between them leaves the browser. Where Chrome would show this computer's local address, the profile shows a made-up one that stays the same for the profile."
+            }
+          ]
+        },
+        {
+          "id": "webrtc-setup-time",
+          "title": "WebRTC setup time",
+          "lead": "Behind a SOCKS5 proxy, WebRTC took 40 seconds to prepare a connection.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Chrome takes under a second, and sites can measure this. It now takes as long as in Chrome."
+            }
+          ]
+        },
+        {
+          "id": "webrtc-error-address",
+          "title": "WebRTC error address",
+          "lead": "Behind a proxy, a WebRTC error could show sites part of this computer's local address.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "That part was the same for every profile on the computer. The error no longer shows any of it."
+            }
+          ]
+        },
+        {
+          "id": "canvas-page-pixels",
+          "title": "Images a site draws",
+          "lead": "Images a site put on a canvas came back slightly changed, and the site could compare the two.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now come back exactly as the site wrote them, as in Chrome. What the browser draws itself, such as text and shapes, still gets the profile's canvas noise."
+            }
+          ]
+        },
+        {
+          "id": "canvas-webgl-reads",
+          "title": "Canvas, WebGL and WebGPU reads",
+          "lead": "Reading one canvas image in different ways could give different results.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Some ways also returned it without the profile's noise. Every way of reading a canvas, WebGL or WebGPU image now gives the same result with the noise, as Chrome gives the same image every way."
+            }
+          ]
+        },
+        {
+          "id": "maximized-window",
+          "title": "Maximized window",
+          "lead": "A profile's window can now open maximized, the way most people browse.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Turn on “Report the window as maximized” in the profile's Window settings. The window opens the size of the profile's screen, and sites see it maximized. Resize it, and sites see its real size. Phone profiles do not have this setting."
+            }
+          ]
+        },
+        {
+          "id": "team-created-date",
+          "title": "Creation date in a team",
+          "lead": "Profiles in a team showed no creation date, so the list could not be sorted by newest or oldest.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The team server now keeps the date, and every member sees it, including members who may only see a profile."
+            },
+            {
+              "type": "note",
+              "text": "Update the team server to 2.1.4 too. Profiles made before the update get their date the first time someone edits them from launcher 2.1.4."
+            }
+          ]
+        },
+        {
+          "id": "proxyshard-new-proxies",
+          "title": "Proxies from ProxyShard",
+          "lead": "Proxies added on the ProxyShard page showed up in Proxies only after the launcher restarted.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now show up at once, whether added from an order or generated."
+            }
+          ]
+        },
+        {
+          "id": "windows-banner-buttons",
+          "title": "Banners on Windows",
+          "lead": "On Windows, the engine update and team banners ran under the window's minimize, maximize and close buttons.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The Try again button could end up under them and could not be clicked. The banners now end before the buttons."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "2.1.3",
       "date": "2026-11-04",
       "entries": [

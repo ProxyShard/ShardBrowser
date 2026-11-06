@@ -25,6 +25,8 @@ pub struct TeamProfile {
     pub revision: u64,
     pub updated_at: u64,
     pub updated_by: String,
+    /// When it was made, unix seconds; None for a row from before the server kept it.
+    pub created_at: Option<u64>,
 }
 
 /// A member of the team. The token itself is never stored — only its hash, so

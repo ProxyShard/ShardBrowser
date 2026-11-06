@@ -32,6 +32,11 @@
 //! `GET /permission` carries only the rules about what the member can see, and
 //! their epoch moves, with `grants-changed`, whenever that set of rules does.
 //!
+//! Every profile row carries `created_at`, unix seconds, null for one an older
+//! server kept. A PUT may send it: a new profile keeps it if it is plausible
+//! (past 0, at most a day ahead), else is dated now; an existing one keeps the
+//! date it has, and only one with none takes the writer's. Moves and the trash keep it.
+//!
 //! A profile's `card` (`proxy_id`, `color`, `notes`, `tags`) travels beside its
 //! sealed `data` on PUT and shows in every row; absent on PUT keeps the stored
 //! one. Its `proxy_id` is the proxy binding: a new one must be in the profile's
@@ -1211,6 +1216,9 @@ struct ProfileWrite {
     base_revision: Option<u64>,
     /// What lists show; its `proxy_id` is the binding. Absent keeps the stored one.
     card: Option<Card>,
+    /// When the profile was made, unix seconds, as the writer knows it.
+    #[serde(default)]
+    created_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1379,7 +1387,7 @@ async fn profile_put(
 ) -> Result<(StatusCode, Json<TeamProfile>), ApiError> {
     let c = require_member(&st, &headers)?;
     let (name, folder, data, card) = profile_args(&body)?;
-    let fields = ProfileFields { name, folder, data: &data, card: card.as_ref() };
+    let fields = ProfileFields { name, folder, data: &data, card: card.as_ref(), created_at: body.created_at };
 
     // Rights, lease and revision are all decided inside the write's transaction,
     // so a profile made a moment ago by someone else is an Edit, not a Create.
@@ -2566,7 +2574,7 @@ async fn my_profile_put(
 ) -> Result<(StatusCode, Json<TeamProfile>), ApiError> {
     let c = require_member(&st, &headers)?;
     let (name, folder, data, card) = profile_args(&body)?;
-    let fields = ProfileFields { name, folder, data: &data, card: card.as_ref() };
+    let fields = ProfileFields { name, folder, data: &data, card: card.as_ref(), created_at: body.created_at };
     // An id already in the team or in someone else's space comes back as
     // OtherSpace, which reads as missing. A bound proxy must be one of mine.
     let p = st.store.put_profile_with(
@@ -3222,6 +3230,7 @@ mod tests {
             data: STANDARD.encode(b"data-by-the-team"),
             base_revision: None,
             card: None,
+            created_at: None,
         }
     }
 
@@ -3900,6 +3909,7 @@ mod tests {
                 data: STANDARD.encode(&raw),
                 base_revision: None,
                 card: None,
+                created_at: None,
             }),
         )
         .await
@@ -3922,6 +3932,7 @@ mod tests {
                 data: "not base64 at all!!".into(),
                 base_revision: None,
                 card: None,
+                created_at: None,
             }),
         )
         .await
@@ -4054,6 +4065,7 @@ mod tests {
                 data: STANDARD.encode(b"cookies and all"),
                 base_revision: None,
                 card: None,
+                created_at: None,
             }),
         )
         .await;
@@ -5866,6 +5878,31 @@ mod tests {
         let e = write_session(&st, &c, TEAM, "p1".into(), base(), &h, Body::from("jar")).await.unwrap_err();
         assert_eq!((e.status, e.code), (StatusCode::FORBIDDEN, code::SWITCHED_OFF));
         assert!(st.store.session_sealed("p1").unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn every_profile_row_says_when_it_was_made() {
+        let st = state();
+        let a = admin(&st);
+        let dated = |mut b: Value, at: Value| {
+            b["created_at"] = at;
+            b
+        };
+        let first = dated(profile_json("Shop", "Ads", b"s"), json!(1_700_000_000));
+        let (code, made) = answer(&st, ask("PUT", "/profiles/p1", &a), Some(first)).await;
+        assert_eq!((code, made["created_at"].clone()), (StatusCode::CREATED, json!(1_700_000_000)));
+        let (_, list) = answer(&st, ask("GET", "/profiles", &a), None).await;
+        let (_, one) = answer(&st, ask("GET", "/profiles/p1", &a), None).await;
+        assert_eq!((list[0]["created_at"].clone(), one["created_at"].clone()), (json!(1_700_000_000), json!(1_700_000_000)));
+        // An edit's own date changes nothing.
+        let later = dated(based_on(profile_json("Shop", "Ads", b"s2"), 1), json!(1_800_000_000));
+        let (_, edited) = answer(&st, ask("PUT", "/profiles/p1", &a), Some(later)).await;
+        assert_eq!(edited["created_at"], json!(1_700_000_000));
+        // None sent: dated by the server, and the date goes with a move into the team.
+        let (_, own) = answer(&st, ask("PUT", "/me/profiles/p2", &a), Some(profile_json("Mine", "", b"m"))).await;
+        let at = own["created_at"].as_u64().expect("dated now");
+        let (code, moved) = answer(&st, ask("POST", "/me/profiles/p2/to-team", &a), None).await;
+        assert_eq!((code, moved["created_at"].as_u64()), (StatusCode::OK, Some(at)));
     }
 
     #[tokio::test]

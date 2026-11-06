@@ -455,7 +455,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 /// A provider timestamp as unix seconds: ISO 8601 with `Z`, an offset or
 /// none (then UTC, which is the timezone asked for), or a number of seconds
 /// or milliseconds.
-fn parse_ts(v: &Value) -> Option<i64> {
+pub(crate) fn parse_ts(v: &Value) -> Option<i64> {
     if let Some(n) = v.as_i64() {
         return Some(if n > 100_000_000_000 { n / 1000 } else { n });
     }

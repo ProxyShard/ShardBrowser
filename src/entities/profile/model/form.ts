@@ -19,6 +19,7 @@ export const defaultForm = (): ProfileForm => ({
   screen_host: false,
   screen_dpr: 0,
   keep_focus: false,
+  maximized: false,
   cookies_file: "",
 
   // Empty until snapped to gpusForOs[0] by useEffect.
@@ -79,6 +80,7 @@ export function fromStored(stored: any): ProfileForm {
   // it. Only the marker does, and only it may travel back to disk.
   f.screen_custom = stored?._meta?.screen_custom === true;
   f.keep_focus = stored?.window?.keep_focus === true;
+  f.maximized = stored?.window?.maximized === true;
   f.device_memory = stored?.navigator?.device_memory ?? 16;
   f.timezone = stored?.timezone ?? AUTO_TZ;
   f.language = stored?.navigator?.language ?? AUTO_LANG;
@@ -232,13 +234,16 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
     else delete base.window;
   }
 
-  // "Always focused": one flag inside the window block, written only while it
-  // is on, so a profile that never asked for it keeps its window exactly as it
+  // "Always focused" and "maximized": flags inside the window block, written
+  // only while on, so a profile that never asked keeps its window exactly as it
   // was. Last of the window work on purpose — the branches above rebuild the
-  // block and would drop the flag.
-  if (f.keep_focus) {
+  // block and would drop them.
+  if (f.keep_focus || f.maximized) {
     const win = { ...(base.window || {}) };
-    win.keep_focus = true;
+    if (f.keep_focus) win.keep_focus = true;
+    else delete win.keep_focus;
+    if (f.maximized) win.maximized = true;
+    else delete win.maximized;
     // A block with no size is one the launcher replaces at start when the
     // profile claims a screen (fill_window_from_screen) — and the flag would go
     // with it. So give it the very block the launcher would derive: the window
@@ -256,6 +261,7 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
     base.window = win;
   } else if (base.window) {
     delete base.window.keep_focus;
+    delete base.window.maximized;
   }
 
   base.media_devices = {
