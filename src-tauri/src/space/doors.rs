@@ -391,6 +391,12 @@ const RULES: &[(&str, Need)] = &[
     ("GET /bookmarks", SEE_T),
     ("POST /bookmarks", UPSERT_T),
     ("DELETE /bookmarks/:id", DELETE_T),
+    // Tags: the team's list reads with See, changes with Create/Edit, and a
+    // profile carries them under Edit on that profile.
+    ("GET /tags", SEE_T),
+    ("POST /tags", UPSERT_T),
+    ("DELETE /tags/:id", DELETE_T),
+    ("PUT /profiles/:id/tags", EDIT_P),
     ("GET /trash", Off),
     ("DELETE /trash/:id", Off),
     ("POST /trash/:id/restore", Off),
@@ -458,6 +464,9 @@ pub const ENFORCED: &[&str] = &[
     "DELETE /extensions/:id",
     "POST /bookmarks",
     "DELETE /bookmarks/:id",
+    "POST /tags",
+    "DELETE /tags/:id",
+    "PUT /profiles/:id/tags",
     "POST /automation/projects",
     "PUT /automation/projects/:id",
     "DELETE /automation/projects/:id",

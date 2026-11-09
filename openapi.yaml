@@ -852,6 +852,109 @@ paths:
                   id: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /tags:
+    get:
+      tags: [Tags]
+      summary: List tags
+      description: |
+        The tags this store holds and which profiles carry them. `by_profile`
+        maps a profile id to the tag ids on it; a profile with none is left out.
+        A profile's own `tags` field lists the same ids.
+      responses:
+        "200":
+          description: Tags and their profiles.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Tags]
+      summary: Add or rename a tag
+      description: |
+        With `id` it changes that tag; without, it creates one and answers the
+        id it was given (`t-` and eight characters). Two tags cannot share a
+        name, and names are compared without case. A new tag needs a `color`.
+
+        Renaming changes what the chips read on every profile that carries it;
+        it does not have to be applied again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagRequest" }
+      responses:
+        "200":
+          description: The saved tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tag" }
+        "400":
+          description: No name, a name already taken, or no color on a new tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /tags/{id}:
+    delete:
+      tags: [Tags]
+      summary: Delete a tag
+      description: The profiles that carried it stop showing it; the profiles stay.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, example: t-1a2b3c4d }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean, example: true }
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /profiles/{id}/tags:
+    put:
+      tags: [Tags]
+      summary: Set one profile's tags
+      description: |
+        The profile carries exactly these tag ids afterwards; `[]` takes them
+        all off. Ids come from `GET /tags` or the `POST /tags` that made them.
+        This is the one call, where the interface's multi-select assigns to
+        many profiles at once.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileTagsRequest" }
+      responses:
+        "200":
+          description: The profile's tags now.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  tags:
+                    type: array
+                    items: { type: string }
+        "400":
+          description: No such profile in this store.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
   /trash:
     get:
       tags: [Trash]
@@ -1676,6 +1779,54 @@ components:
           type: string
           description: A local `.crx`, `.zip` or unpacked folder on the launcher's machine.
 
+    Tag:
+      type: object
+      properties:
+        id:
+          type: string
+          description: "`t-` and eight characters. Sending an existing id edits that tag."
+          example: t-1a2b3c4d
+        name: { type: string, description: Trimmed, at most 32 characters, unique without case. }
+        color:
+          type: string
+          enum: [blue, violet, magenta, red, orange, yellow, green, sky]
+          description: A palette id the interface knows; the chip is drawn in it.
+
+    TagState:
+      type: object
+      properties:
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/Tag" }
+        by_profile:
+          type: object
+          description: Tag ids by profile id; a profile with none is left out.
+          additionalProperties:
+            type: array
+            items: { type: string }
+
+    TagRequest:
+      type: object
+      required: [name]
+      properties:
+        id:
+          type: string
+          description: Present edits that tag; absent creates one.
+        name: { type: string }
+        color:
+          type: string
+          enum: [blue, violet, magenta, red, orange, yellow, green, sky]
+          description: Required on a new tag; absent on an existing one keeps its color.
+
+    ProfileTagsRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items: { type: string }
+          description: The tag ids this profile carries, exactly; `[]` clears them.
+
     Bookmark:
       type: object
       properties:
@@ -1765,6 +1916,10 @@ components:
         - $ref: "#/components/schemas/ProfileMeta"
         - type: object
           properties:
+            tags:
+              type: array
+              items: { type: string }
+              description: Tag ids on this profile; names come from `GET /tags`.
             running: { type: boolean }
             pid: { type: integer, format: int64, nullable: true }
             cdp:
@@ -1800,6 +1955,10 @@ components:
                 top of a change made through this API is refused rather than
                 silently reverting it. API edits are never refused; they read
                 the profile and write it back in one step.
+        tags:
+          type: array
+          items: { type: string }
+          description: Tag ids on this profile; names come from `GET /tags`.
         running: { type: boolean }
         cdp:
           nullable: true
