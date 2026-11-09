@@ -8,7 +8,7 @@ use axum::{
     http::{header::AUTHORIZATION, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Extension, Json, Router,
 };
 use serde::Deserialize;
@@ -199,6 +199,8 @@ async fn list_profiles() -> ApiResult {
     let running = crate::process::Tracker::shared().running();
     let by_id: std::collections::HashMap<String, crate::process::RunningProfile> =
         running.into_iter().map(|r| (r.profile_id.clone(), r)).collect();
+    // A profile carries tag ids; `GET /tags` turns one into a name.
+    let tagged = crate::space::tags::list().map(|s| s.by_profile).unwrap_or_default();
     let out: Vec<Value> = metas
         .into_iter()
         .map(|m| {
@@ -213,6 +215,7 @@ async fn list_profiles() -> ApiResult {
                 "pinned": m.pinned,
                 "folder": m.folder,
                 "color": m.color,
+                "tags": tagged.get(&m.id).cloned().unwrap_or_default(),
                 "extensions": m.extensions,
                 "protected": m.protected,
                 "running": r.is_some(),
@@ -229,6 +232,13 @@ async fn get_profile(Path(id): Path<String>) -> ApiResult {
     let stored = crate::space::profile::fetch(&id).await.map_err(fail(StatusCode::NOT_FOUND))?;
     let mut val = serde_json::to_value(stored)
         .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if let Some(obj) = val.as_object_mut() {
+        let ids = crate::space::tags::list()
+            .ok()
+            .and_then(|s| s.by_profile.get(&id).cloned())
+            .unwrap_or_default();
+        obj.insert("tags".into(), json!(ids));
+    }
     if let Some(cdp) = crate::process::Tracker::shared().cdp(&id) {
         if let Some(obj) = val.as_object_mut() {
             obj.insert("running".into(), json!(true));
@@ -949,6 +959,83 @@ async fn delete_bookmark(Extension(t): Extension<Ticket>, Path(id): Path<String>
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+// ---- tags ----
+
+/// The tags the store holds and which profiles carry them. `by_profile` holds
+/// tag ids, the same ids a profile's own `tags` field lists.
+async fn list_tags() -> ApiResult {
+    crate::space::ready().await;
+    let state = crate::space::tags::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Json(serde_json::to_value(state).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct TagReq {
+    /// Present = edit that tag; absent = a new one (which gets an id).
+    id: Option<String>,
+    name: String,
+    /// A palette id: "blue", "violet", "magenta", "red", "orange", "yellow",
+    /// "green" or "sky". Absent on an existing tag keeps the color it has.
+    color: Option<String>,
+}
+
+/// Adds a tag or changes one. Two tags cannot share a name.
+async fn save_tag_ep(Extension(t): Extension<Ticket>, Json(body): Json<TagReq>) -> ApiResult {
+    let id = body.id.unwrap_or_default();
+    let was = if id.is_empty() {
+        None
+    } else {
+        crate::space::tags::list().ok().and_then(|s| s.tags.into_iter().find(|x| x.id == id))
+    };
+    let tag = crate::space::tags::Tag {
+        color: body.color.or_else(|| was.map(|x| x.color)).unwrap_or_default(),
+        name: body.name,
+        id,
+    };
+    let saved = crate::space::tags::save(Door("POST /tags"), &t, tag, None)
+        .await
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    // The profile list shows the chips, so it is what has to reload.
+    crate::notify_store_changed("profiles");
+    Ok(Json(serde_json::to_value(saved).unwrap_or(Value::Null)))
+}
+
+/// Deletes the tag; the profiles that carried it stop showing it.
+async fn delete_tag_ep(Extension(t): Extension<Ticket>, Path(id): Path<String>) -> ApiResult {
+    crate::space::tags::delete(Door("DELETE /tags/:id"), &t, &id)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    crate::notify_store_changed("profiles");
+    Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+#[derive(Deserialize)]
+struct ProfileTagsReq {
+    /// The tag ids this profile carries, exactly; `[]` takes them all off.
+    /// Ids come from `GET /tags` (`POST /tags` returns the one it made).
+    tags: Vec<String>,
+}
+
+/// Gives one profile exactly these tags, in one call: what the interface's
+/// multi-select does for a batch.
+async fn set_profile_tags(
+    Extension(t): Extension<Ticket>,
+    Path(id): Path<String>,
+    Json(body): Json<ProfileTagsReq>,
+) -> ApiResult {
+    let mut by_profile = std::collections::BTreeMap::new();
+    by_profile.insert(id.clone(), body.tags);
+    crate::space::tags::assign(Door("PUT /profiles/:id/tags"), &t, by_profile)
+        .await
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    crate::notify_store_changed("profiles");
+    let now = crate::space::tags::list()
+        .ok()
+        .and_then(|s| s.by_profile.get(&id).cloned())
+        .unwrap_or_default();
+    Ok(Json(json!({ "id": id, "tags": now })))
+}
+
 // ---- trash ----
 
 async fn list_trash() -> ApiResult {
@@ -1255,6 +1342,9 @@ fn router() -> Router {
         .route("/extensions/:id", delete(delete_extension))
         .route("/bookmarks", get(list_bookmarks).post(save_bookmark))
         .route("/bookmarks/:id", delete(delete_bookmark))
+        .route("/tags", get(list_tags).post(save_tag_ep))
+        .route("/tags/:id", delete(delete_tag_ep))
+        .route("/profiles/:id/tags", put(set_profile_tags))
         .route("/trash", get(list_trash))
         .route("/trash/:id", delete(purge_trash))
         .route("/trash/:id/restore", post(restore_trash))
@@ -1326,6 +1416,43 @@ mod tests {
                 "{method} {path} answered without a token"
             );
         }
+    }
+
+    /// Tags: make one, put it on a profile, read it back, take it off. This is
+    /// the surface an agent needs to mark and select profiles.
+    #[tokio::test]
+    async fn a_tag_reaches_its_profiles_and_leaves_them() {
+        let _serial = crate::migrate::serial();
+        let _root = crate::store::test_root("api-tags").with_config();
+        let (status, _, made) = authed("POST", "/profiles", Some(json!({ "name": "A", "fingerprint": {} }))).await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = made["id"].as_str().unwrap().to_string();
+
+        let (status, _, tag) = authed("POST", "/tags", Some(json!({ "name": "web", "color": "blue" }))).await;
+        assert_eq!(status, StatusCode::OK, "{tag}");
+        let tid = tag["id"].as_str().unwrap().to_string();
+        assert!(tid.starts_with("t-"), "{tag}");
+        // One name, one tag: the interface's own rule, refused with 400.
+        let dup = authed("POST", "/tags", Some(json!({ "name": "web", "color": "red" }))).await;
+        assert_eq!(dup.0, StatusCode::BAD_REQUEST, "{dup:?}");
+
+        let path = format!("/profiles/{id}/tags");
+        let (status, _, got) = authed("PUT", &path, Some(json!({ "tags": [tid] }))).await;
+        assert_eq!((status, got["tags"].clone()), (StatusCode::OK, json!([tid])), "{got}");
+        let (_, _, one) = authed("GET", &format!("/profiles/{id}"), None).await;
+        assert_eq!(one["tags"], json!([tid]), "{one}");
+        let (_, _, listed) = authed("GET", "/profiles", None).await;
+        assert_eq!(listed[0]["tags"], json!([tid]), "{listed}");
+        let (_, _, all) = authed("GET", "/tags", None).await;
+        assert_eq!(all["tags"][0]["name"].as_str(), Some("web"), "{all}");
+        assert_eq!(all["by_profile"][id.as_str()][0].as_str(), Some(tid.as_str()), "{all}");
+
+        // `[]` takes them all off, and deleting the tag takes it off too.
+        assert_eq!(authed("PUT", &path, Some(json!({ "tags": [] }))).await.0, StatusCode::OK);
+        assert_eq!(authed("PUT", &path, Some(json!({ "tags": [tid] }))).await.0, StatusCode::OK);
+        assert_eq!(authed("DELETE", &format!("/tags/{tid}"), None).await.0, StatusCode::OK);
+        let (_, _, after) = authed("GET", &format!("/profiles/{id}"), None).await;
+        assert_eq!(after["tags"], json!([]), "{after}");
     }
 
     /// `/health` is the one route that stays open, for probing before a token.
@@ -1610,6 +1737,18 @@ mod tests {
             (method.to_string(), uri, body)
         }
 
+        /// Every value an empty list or an empty map: `{"tags":[],"by_profile":{}}`.
+        fn carried_nothing(v: &Value) -> bool {
+            v.as_object().is_some_and(|o| {
+                !o.is_empty()
+                    && o.values().all(|x| match x {
+                        Value::Array(a) => a.is_empty(),
+                        Value::Object(m) => m.is_empty(),
+                        _ => false,
+                    })
+            })
+        }
+
         #[tokio::test]
         async fn a_member_with_no_grants_gets_nothing() {
             let t = Team::new(&[]).await;
@@ -1650,7 +1789,9 @@ mod tests {
                 if crate::space::doors::is_open(door) {
                     continue;
                 }
-                let empty = got == json!([]) || got.is_null();
+                // A list answers `[]`; the tag state answers as its two halves,
+                // so an answer carrying no values at all is nothing as well.
+                let empty = got == json!([]) || got.is_null() || carried_nothing(&got);
                 assert!(!status.is_success() || empty, "{door} answered {status}: {text}");
                 assert!(!status.is_server_error() || status == StatusCode::NOT_IMPLEMENTED, "{door}: {status} {text}");
             }

@@ -496,6 +496,57 @@ server.tool(
   async ({ id }) => text(await api(`/bookmarks/${id}`, { method: "DELETE" })),
 );
 
+// ---- tags ----
+
+server.tool(
+  "list_tags",
+  "Tags this store holds, and the tag ids each profile carries (by_profile). Read this before setting one.",
+  {},
+  async () => text(await api("/tags")),
+);
+
+server.tool(
+  "save_tag",
+  "Add a tag or rename/recoller one. Sending an id edits it; without, a new tag is made and its id returned. Names are unique without case and at most 32 characters; a new tag needs a palette color.",
+  {
+    id: z.string().optional(),
+    name: z.string(),
+    color: z.enum(["blue", "violet", "magenta", "red", "orange", "yellow", "green", "sky"]).optional(),
+  },
+  async (args) => text(await api("/tags", { method: "POST", body: args })),
+);
+
+server.tool(
+  "delete_tag",
+  "Delete a tag. The profiles that carried it stop showing it; no profile is deleted.",
+  { id: z.string() },
+  async ({ id }) => text(await api(`/tags/${id}`, { method: "DELETE" })),
+);
+
+server.tool(
+  "set_profile_tags",
+  "Give one profile exactly these tags, replacing what it had; [] clears them. Each entry is a tag id ('t-1a2b3c4d') or a tag name, which is resolved against list_tags first.",
+  { id: z.string(), tags: z.array(z.string()) },
+  async ({ id, tags }) => {
+    const ids = await tagIds(tags);
+    return text(await api(`/profiles/${encodeURIComponent(id)}/tags`, { method: "PUT", body: { tags: ids } }));
+  },
+);
+
+/// Ids as given, names looked up: an agent should not have to know which is which.
+async function tagIds(entries) {
+  const named = entries.filter((e) => !e.startsWith("t-"));
+  if (named.length === 0) return entries;
+  const { tags } = await api("/tags");
+  const byName = new Map(tags.map((t) => [t.name.toLowerCase(), t.id]));
+  return entries.map((e) => {
+    if (e.startsWith("t-")) return e;
+    const id = byName.get(e.toLowerCase());
+    if (!id) throw new Error(`no tag named ${e}; list_tags shows the ones this store has`);
+    return id;
+  });
+}
+
 // ---- trash ----
 
 server.tool(
