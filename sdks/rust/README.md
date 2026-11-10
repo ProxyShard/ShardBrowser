@@ -1,7 +1,7 @@
 # `shardx` — Rust SDK
 
 Self-contained Rust SDK for the **ShardBrowser anti-detect browser** by the
-[ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+[ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 team (formerly ProxyShard). Same surface as the [Python](../python) and [Node](../node) SDKs: on
 first use it downloads the engine, Widevine CDM, and the bundled fingerprint
 library from the ProxyShard CDN into a per-user cache dir, then launches
@@ -225,8 +225,8 @@ use shardx::{Runtime, FingerprintLibrary, parse_proxy, probe_udp, geo_check_via,
 
 ## Links
 
-* **Site:**  [https://proxyshard.com](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-* **Docs:**  [https://docs.proxyshard.com](https://docs.proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-* **Usage:** [https://docs.proxyshard.com/eng/usage-instructions/shardx-browser](https://docs.proxyshard.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+* **Site:**  [https://shardx.com](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+* **Docs:**  [https://docs.shardx.com](https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+* **Usage:** [https://docs.shardx.com/eng/usage-instructions/shardx-browser](https://docs.shardx.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 
 MIT licensed.

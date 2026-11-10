@@ -29,6 +29,7 @@ from .auto_resolve import has_auto_fields, resolve_auto_fields
 from .geo import GeoInfo, geo_check_via
 from .profile import Profile, user_data_dir as _user_data_dir
 from .proxy import ParsedProxy, parse_proxy, probe_udp
+from .randomize import settle_platform_version
 from .runtime import Runtime, adopt_library_fields, apply_apple_webgpu_features, apply_chrome_brand, apply_engine_version
 from .screen import apply_screen_strategy, default_mode_for
 
@@ -194,6 +195,7 @@ class Browser:
         )
         adopt_library_fields(profile.config, self.runtime.fingerprints_dir)
         apply_apple_webgpu_features(profile.config)
+        settle_platform_version(profile.config)
         if profile.claims_mobile:
             apply_chrome_brand(profile.config)
         apply_noise_seeds(profile.config, profile.id)

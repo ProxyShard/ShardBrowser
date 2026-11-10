@@ -17,9 +17,9 @@ export const PS_SIGNATURES: { value: string; label: string }[] = [
 // Residential relay gateway hosts for generated proxy strings (port depends
 // on protocol — see PS_PORT).
 export const PS_RELAYS = [
-  "relay-eu.proxyshard.com",
-  "relay-ru.proxyshard.net",
-  "relay-ua.proxyshard.com",
+  "relay-eu.shardx.com",
+  "relay-ru.shardx.com",
+  "relay-ua.shardx.com",
 ];
 
 // Relay ports differ by protocol: HTTP 8080, SOCKS5 1080.

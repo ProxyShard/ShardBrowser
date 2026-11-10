@@ -785,6 +785,125 @@ paths:
                   id: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /extensions/updates:
+    get:
+      tags: [Extensions]
+      summary: Update state of the extension library
+      description: |
+        One record per library extension, as the Extensions page shows it.
+        `state` says where each one is: `unlinked` (not tied to a Web Store
+        item, so never updated), `unchecked`, `current`, `available`,
+        `downloading`, `ready` (downloaded and checked, goes in on apply),
+        `waiting` (goes in once the profiles in `waiting_on` close),
+        `applying`, `confirm` (the new version asks for more than the
+        installed one; see `confirm`), `failed` (see `error`), `needs_engine`
+        (see `needs_engine`) and `id_conflict`.
+
+        Nothing here asks the Web Store; `POST /extensions/updates/check` does.
+        Poll this while an apply runs to follow `progress`.
+
+        Only this computer's own library: in a team space the call answers 409.
+      parameters:
+        - name: id
+          in: query
+          required: false
+          description: One library id from `GET /extensions`; absent means all.
+          schema: { type: string }
+      responses:
+        "200":
+          description: The records.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtensionUpdateList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No extension with this id in the library.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /extensions/updates/check:
+    post:
+      tags: [Extensions]
+      summary: Check the Web Store for extension updates
+      description: |
+        Asks the Web Store now about every store-linked extension (one request
+        covers them all) and answers with the fresh records. With `id`, the
+        answer is narrowed to that extension. A check already under way is
+        waited for, not repeated. Nothing is downloaded or installed.
+
+        The body is optional.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExtensionUpdateRequest" }
+      responses:
+        "200":
+          description: The records after the check.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtensionUpdateList" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No extension with this id in the library.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "502":
+          description: The Web Store did not answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /extensions/updates/apply:
+    post:
+      tags: [Extensions]
+      summary: Install extension updates
+      description: |
+        Installs updates one at a time through the same updater as the
+        Extensions page, with all of its checks: the package signature and
+        extension id, Web Store flags, the engine the new version needs,
+        versions skipped by hand, and profiles that still have the extension
+        open. The library id and every profile's binding stay as they are.
+
+        Without `id`, every extension whose `state` is `available` or `ready`
+        and that carries no Web Store flag is updated, like Update all. New
+        permissions are never accepted this way: such an extension comes back
+        as `confirm` and is left as it is. Every other extension is listed as
+        `not_eligible` with its `state`.
+
+        With `id`, that one extension is updated whatever its state; the
+        updater itself refuses what it must. `confirmed: true` accepts what its
+        already downloaded version asked about (a `confirm` result), never a
+        package downloaded by this same call.
+
+        The call returns when every update has gone in, is waiting or has
+        failed. Calling it again after a success answers `current` and
+        installs nothing.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ExtensionUpdateRequest" }
+      responses:
+        "200":
+          description: One result per extension, and the records afterwards.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ExtensionUpdateApplyResponse" }
+        "400":
+          description: "`confirmed` without an `id`, or a body that is not JSON."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No extension with this id in the library.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /bookmarks:
     get:
       tags: [Bookmarks]
@@ -1676,6 +1795,119 @@ components:
           type: string
           description: A local `.crx`, `.zip` or unpacked folder on the launcher's machine.
 
+    ExtensionUpdateRequest:
+      type: object
+      properties:
+        id:
+          type: string
+          description: One library id from `GET /extensions`; absent means the whole library.
+        confirmed:
+          type: boolean
+          default: false
+          description: Apply only, and only with `id`. Accepts what the downloaded version asked about.
+    ExtensionUpdate:
+      type: object
+      properties:
+        id: { type: string, description: The library id. }
+        state:
+          type: string
+          enum: [unlinked, unchecked, current, available, downloading, ready, waiting, applying, confirm, failed, needs_engine, id_conflict]
+        installed: { type: string, description: "`version_name`, else `version`." }
+        latest: { type: string, nullable: true, description: The Web Store's version while it is newer. }
+        size: { type: integer, nullable: true, description: Package size in bytes. }
+        first_seen: { type: integer, nullable: true, description: When `latest` was first seen, unix seconds. }
+        ready_since: { type: integer, nullable: true }
+        checked_at: { type: integer, nullable: true, description: Last Web Store answer about it, unix seconds. }
+        waiting_on:
+          type: array
+          description: Profiles that still have it open.
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+        progress:
+          type: object
+          nullable: true
+          properties:
+            phase: { type: string, enum: [download, verify, unpack, apply] }
+            received: { type: integer }
+            total: { type: integer }
+        error: { type: string, nullable: true }
+        flags:
+          type: array
+          description: What the Web Store reports against the item; a flagged extension is never updated.
+          items: { type: string, enum: [malware, policy_violation, potentially_uws] }
+        allowlisted: { type: boolean, nullable: true }
+        skipped: { type: string, nullable: true, description: A version skipped by hand. }
+        needs_engine: { type: string, nullable: true, description: The engine version the new version asks for. }
+        confirm:
+          type: object
+          description: Present when `state` is `confirm`.
+          properties:
+            reason: { type: string, enum: [permissions, identity] }
+            grown:
+              type: array
+              items:
+                type: object
+                properties:
+                  kind: { type: string, enum: [permission, host, script_host, main_world] }
+                  value: { type: string }
+            names:
+              type: object
+              properties:
+                old: { type: string }
+                new: { type: string }
+            overlap: { type: number }
+    ExtensionUpdateList:
+      type: object
+      properties:
+        checked_at: { type: integer, description: When the Web Store was last asked, unix seconds; 0 never. }
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/ExtensionUpdate" }
+    ExtensionUpdateResult:
+      type: object
+      properties:
+        id: { type: string }
+        result:
+          type: string
+          enum: [applied, waiting, confirm, needs_engine, not_served, current, failed, not_eligible]
+          description: |
+            `applied`: installed (`from`, `to`). `waiting`: installs by itself
+            once `waiting_on` close. `confirm`: asks first (`update.confirm`);
+            apply it with `id` and `confirmed: true`. `needs_engine`: the new
+            version wants a newer engine (`version`). `not_served`: the store
+            no longer offers the version it named. `current`: nothing newer.
+            `failed`: see `error`. `not_eligible`: left out of a library-wide
+            apply; see `state` and `flags`.
+        from: { type: string }
+        to: { type: string }
+        version: { type: string }
+        waiting_on:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              name: { type: string }
+        update: { $ref: "#/components/schemas/ExtensionUpdate" }
+        error: { type: string }
+        state: { type: string }
+        flags:
+          type: array
+          items: { type: string }
+    ExtensionUpdateApplyResponse:
+      type: object
+      properties:
+        applied: { type: integer, description: How many went in. }
+        results:
+          type: array
+          items: { $ref: "#/components/schemas/ExtensionUpdateResult" }
+        items:
+          type: array
+          description: The records after the apply.
+          items: { $ref: "#/components/schemas/ExtensionUpdate" }
     Bookmark:
       type: object
       properties:

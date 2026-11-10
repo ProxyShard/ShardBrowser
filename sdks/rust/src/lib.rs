@@ -1,6 +1,6 @@
 //! # ShardX Rust SDK
 //!
-//! Self-contained SDK for the [ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+//! Self-contained SDK for the [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 //! anti-detect browser. Mirrors the Python (`shardx`) and Node
 //! (`@proxyshard/shardx`) SDKs: on first use it downloads the engine,
 //! Widevine CDM, and the bundled fingerprint library from the ProxyShard
@@ -64,8 +64,8 @@ pub use host::{host_logical_cores, host_ram_bucket_gb, host_ram_gb, host_screen_
 pub use profile::{apply_engine_version, user_data_dir, FingerprintLibrary, Profile};
 pub use proxy::{parse_proxy, probe_udp, proxy_to_arg, ParsedProxy, ProxyScheme};
 pub use randomize::{
-    mac_hw_configs, randomize_hardware, randomize_platform_version, LINUX_PLATFORM_VERSIONS,
-    MACOS_PLATFORM_VERSIONS, WINDOWS_PLATFORM_VERSIONS, X86_CORES,
+    mac_hw_configs, randomize_hardware, randomize_platform_version, settle_platform_version,
+    LINUX_PLATFORM_VERSIONS, MACOS_PLATFORM_VERSIONS, WINDOWS_PLATFORM_VERSIONS, X86_CORES,
 };
 pub use runtime::{
     default_cache_dir, host_spec, Archive, HostSpec, ProgressCb, Runtime, CHROMIUM_VERSION,

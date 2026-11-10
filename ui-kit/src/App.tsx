@@ -290,7 +290,7 @@ export default function App() {
             ]}
           />
           <p className="text-body text-text-sub-600">
-            https://proxyshard.com?ref=
+            https://shardx.com?ref=
             <span className="text-ui text-text-strong-950">{referral}</span>
           </p>
         </div>

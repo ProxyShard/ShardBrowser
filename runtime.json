@@ -1,16 +1,16 @@
 {
   "archives": {
-    "ShardX-Fingerprints.zip": "581bb1c58b8c12f38007916a61a222b7",
-    "ShardX-Linux.zip": "d3c995bf872afc27fb63fd49b2ddcbc8-27",
-    "ShardX-Mac-arm64.zip": "fc75fc21464eab135e42dda80a6d2e72-21",
+    "ShardX-Fingerprints.zip": "f18ad288bed2ac5e4599313d6312667b",
+    "ShardX-Linux.zip": "211e3d2582474c58100ccf32ad39a2a2-27",
+    "ShardX-Mac-arm64.zip": "53061ab891a2dc5ff5f35e0eff2f90f9-21",
     "ShardX-Widevine-Linux.zip": "9b7d2697bc8ede2bd9fe72ccaaa2f15f-3",
     "ShardX-Widevine-Mac-arm64.zip": "c54f3fb0b47c47d8f4663ddd3b1f2cf4",
     "ShardX-Widevine-Win.zip": "8852779330edb7ac2096e0d21dc3afb5",
-    "ShardX-Windows.zip": "092a8d87e72b719d2f4fdd30a15dc698-26"
+    "ShardX-Windows.zip": "57a2ea084a8bb5c4199a5b436a678d1c-26"
   },
-  "chromium_version": "157.0.8103.39",
-  "android_chromium_version": "157.0.8103.38",
-  "engine_build": "3",
+  "chromium_version": "157.0.8103.50",
+  "android_chromium_version": "157.0.8103.50",
+  "engine_build": "1",
   "min_launcher_version": "2.0.1",
   "min_sdk_version": "2.1.0",
   "grease_brand": "Not-A.Brand",

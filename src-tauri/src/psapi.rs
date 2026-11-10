@@ -1,4 +1,4 @@
-// ProxyShard billing/user API client (https://user-api.proxyshard.com).
+// ProxyShard billing/user API client (https://user-api.shardx.com).
 //
 // Every /user/api/ path takes `Authorization: Bearer <API_KEY>`.  The key
 // lives in its own `psapi.json` (see store::psapi_path) so the Settings page,
@@ -15,11 +15,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 
-const BASE: &str = "https://user-api.proxyshard.com";
+const BASE: &str = "https://user-api.shardx.com";
 
 /// The PUBLIC site API, which takes no key at all. Only the trial offer comes
 /// from here; everything else in this file is the billing API above.
-const SITE_BASE: &str = "https://site-api.proxyshard.com";
+const SITE_BASE: &str = "https://site-api.shardx.com";
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct PsConfig {
@@ -258,9 +258,9 @@ fn resi_tokens(tier: &str) -> Result<(&'static str, &'static str)> {
 /// Relay gateways and their ports, the same ones the generator card offers.
 #[cfg(feature = "automation")]
 const RESI_RELAYS: [&str; 3] = [
-    "relay-eu.proxyshard.com",
-    "relay-ru.proxyshard.net",
-    "relay-ua.proxyshard.com",
+    "relay-eu.shardx.com",
+    "relay-ru.shardx.com",
+    "relay-ua.shardx.com",
 ];
 
 /// What a project asked for.

@@ -50,7 +50,7 @@ from .host import (
 )
 from .profile import FingerprintLibrary, Profile
 from .proxy import ParsedProxy, parse_proxy, probe_udp
-from .randomize import randomize_hardware, randomize_platform_version
+from .randomize import randomize_hardware, randomize_platform_version, settle_platform_version
 from .runtime import RUNTIME_DIR, Runtime, apply_engine_version
 from .screen import apply_screen_strategy, default_mode_for
 
@@ -273,7 +273,7 @@ __all__ = [
     "Runtime", "RUNTIME_DIR", "apply_engine_version",
     "Profile", "FingerprintLibrary",
     "Browser", "BrowserSession",
-    "randomize_hardware", "randomize_platform_version",
+    "randomize_hardware", "randomize_platform_version", "settle_platform_version",
     "ParsedProxy", "parse_proxy", "probe_udp",
     "host_logical_cores", "host_ram_gb", "host_ram_bucket_gb", "host_screen_size",
     "apply_screen_strategy", "default_mode_for",
@@ -281,4 +281,4 @@ __all__ = [
     "has_auto_fields", "resolve_auto_fields",
     "Motion",
 ]
-__version__ = "2.1.5"
+__version__ = "2.1.6"

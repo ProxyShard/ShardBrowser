@@ -330,11 +330,11 @@ function metaOpen(p: StoredProfile, ua: string, sync: ProfileSync | undefined): 
 // Hosts are .example names and documentation-range addresses (RFC 5737), and
 // every secret is plainly fake (SEC-16).
 const PROXIES: ProxyEntry[] = [
-  { id: "px-us-1", name: "ProxyShard resi US", kind: "socks5", host: "relay-eu.proxyshard.example", port: 1080, username: "plan-premium_country-us_session-a1f9", password: "mock-pass-1", country: "US", notes: "Sticky session, premium tier" },
+  { id: "px-us-1", name: "ProxyShard resi US", kind: "socks5", host: "relay-eu.shardx.example", port: 1080, username: "plan-premium_country-us_session-a1f9", password: "mock-pass-1", country: "US", notes: "Sticky session, premium tier" },
   { id: "px-us-2", name: "DC New York", kind: "socks5", host: "203.0.113.18", port: 1080, username: "shard", password: "mock-pass-2", country: "US", notes: "" },
   { id: "px-de-1", name: "ISP Frankfurt", kind: "http", host: "198.51.100.7", port: 8080, username: "shard", password: "mock-pass-3", country: "DE", notes: "Unlimited ISP" },
   { id: "px-jp-1", name: "DC Tokyo", kind: "socks5", host: "203.0.113.90", port: 1080, username: "shard", password: "mock-pass-4", country: "JP", notes: "" },
-  { id: "px-mobile-1", name: "Mobile UK EE", kind: "socks5", host: "relay-ru.proxyshard.example", port: 1080, username: "plan-mobile_country-gb_session-77c0", password: "mock-pass-5", country: "GB", notes: "Rotates every 10 min" },
+  { id: "px-mobile-1", name: "Mobile UK EE", kind: "socks5", host: "relay-ru.shardx.example", port: 1080, username: "plan-mobile_country-gb_session-77c0", password: "mock-pass-5", country: "GB", notes: "Rotates every 10 min" },
   { id: "px-dead", name: "Old datacenter (expired)", kind: "https", host: "192.0.2.66", port: 443, username: "", password: "", country: "NL", notes: "Order lapsed 2 weeks ago" },
   // Never tested (e2e/status-dots.spec.ts): no entry in the snapshot loop
   // below, so `proxyStatus` sees no history at all — the one seed proxy
@@ -366,8 +366,8 @@ function snapshot(p: ProxyEntry, minutesAgo: number, ok = true): ProxyTestSnapsh
     latitude: ok ? g[5] : 0,
     longitude: ok ? g[6] : 0,
     tcp_ms: ok ? 38 + base * 2 : null,
-    udp_ms: ok && p.kind === "socks5" && p.host.includes("proxyshard") ? 52 + base * 2 : null,
-    udp_error: ok && !(p.kind === "socks5" && p.host.includes("proxyshard")) ? "SOCKS5 UDP ASSOCIATE refused" : null,
+    udp_ms: ok && p.kind === "socks5" && /proxyshard|shardx\./.test(p.host) ? 52 + base * 2 : null,
+    udp_error: ok && !(p.kind === "socks5" && /proxyshard|shardx\./.test(p.host)) ? "SOCKS5 UDP ASSOCIATE refused" : null,
     geo_error: ok ? null : "connect timed out after 8000 ms",
     provider: "ip-api.com",
   };

@@ -265,7 +265,7 @@ test("Profiles: one profile's two tags show whole though no other profile has an
 // smallest window the lists have no room to spare, so the rare long one is cut.
 test("at the smallest window, a cut Folder, Tag, Proxy address or Country shows whole on hover", async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 680 });
-  const HOST = "residential-eu-west-long-hostname.proxyshard.example";
+  const HOST = "residential-eu-west-long-hostname-eu1.shardx.example";
   const FOLDER = "Scrapers for the pricing team";
   await page.addInitScript(() => localStorage.setItem("shardx.tags", JSON.stringify({
     version: 1,

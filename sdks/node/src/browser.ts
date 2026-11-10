@@ -18,6 +18,7 @@ import { hasAutoFields, resolveAutoFields } from "./autoResolve.js";
 import { geoCheckVia, type GeoInfo } from "./geo.js";
 import { Profile, userDataDir, adoptLibraryFields, applyAppleWebGpuFeatures, applyChromeBrand, applyEngineVersion } from "./profile.js";
 import { parseProxy, probeUdp, proxyToArg, type ParsedProxy } from "./proxy.js";
+import { settlePlatformVersion } from "./randomize.js";
 import type { Runtime } from "./runtime.js";
 import { applyScreenStrategy, defaultScreenModeFor, type ScreenStrategy } from "./screen.js";
 
@@ -188,6 +189,7 @@ export class Browser {
                        profile.claimsMobile ? this.runtime.androidChromiumVersion : undefined);
     adoptLibraryFields(profile.config, this.runtime.fingerprintsDir);
     applyAppleWebGpuFeatures(profile.config);
+    settlePlatformVersion(profile.config);
     if (profile.claimsMobile) applyChromeBrand(profile.config);
     applyNoiseSeeds(profile.config, profile.id);
     const fpFile = join(udd, "fingerprint.json");

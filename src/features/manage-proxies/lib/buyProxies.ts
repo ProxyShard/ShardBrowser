@@ -7,5 +7,5 @@ import { t } from "../../../shared/i18n";
 /// from the empty list (CRAFT-25). When the browser cannot open, it says so
 /// instead of doing nothing.
 export function buyProxies() {
-  openUrl(withUtm("https://proxyshard.com")).catch(() => { toast.err(t("proxiesMoreMenu.buyFailed")); });
+  openUrl(withUtm("https://shardx.com")).catch(() => { toast.err(t("proxiesMoreMenu.buyFailed")); });
 }

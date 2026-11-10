@@ -131,7 +131,7 @@ function cloneProfile(src: StoredProfile, name: string): StoredProfile {
 
 function testSnapshot(entry: ProxyEntry, previous?: ProxyTestSnapshot): ProxyTestSnapshot {
   const dead = !entry.host || entry.name.toLowerCase().includes("expired");
-  const isShard = entry.kind === "socks5" && entry.host.includes("proxyshard");
+  const isShard = entry.kind === "socks5" && /proxyshard|shardx\./.test(entry.host);
   const base = 30 + Math.round(Math.random() * 120);
   return {
     // The backend stamps "@<unix seconds>", as it does everywhere.
@@ -1090,7 +1090,7 @@ export const handlers: Record<string, Handler> = {
   // going, which is what a developer should see.
   ps_trial_offer: async () => (window as { __shardxMockTrialOffer?: unknown }).__shardxMockTrialOffer ?? { show: false },
   ps_set_key: ({ key }, ctx) => { ctx.state.psKey = String(key ?? ""); ctx.save(); return null; },
-  ps_me: async (_a, { state }) => { await sleep(400); if (!state.psKey) throw "401 Unauthorized: API key missing"; if (!state.psKey.startsWith("psk_")) throw "401 Unauthorized: key rejected by user-api.proxyshard.com"; return { ...PS_ME, wallet_balance: state.psBalance ?? PS_ME.wallet_balance, active_orders: state.psOrders.filter((o) => o.expires_at && Date.parse(o.expires_at) > Date.now()).length }; },
+  ps_me: async (_a, { state }) => { await sleep(400); if (!state.psKey) throw "401 Unauthorized: API key missing"; if (!state.psKey.startsWith("psk_")) throw "401 Unauthorized: key rejected by user-api.shardx.com"; return { ...PS_ME, wallet_balance: state.psBalance ?? PS_ME.wallet_balance, active_orders: state.psOrders.filter((o) => o.expires_at && Date.parse(o.expires_at) > Date.now()).length }; },
   ps_orders: ({ status = "all", offset = 0, limit = 20 }, { state }) => {
     const active = (o: { expires_at: string | null }) => !!o.expires_at && Date.parse(o.expires_at) > Date.now();
     const all = state.psOrders.filter((o) => status === "all" ? true : status === "active" ? active(o) : status === "cancelled" ? !active(o) : false);

@@ -241,6 +241,10 @@ export function watchExtensionUpdates(): () => void {
       });
     }),
     listen<UpdateNews>("extension-updates:news", ({ payload }) => tellNews(payload)),
+    // A check or an update over the local API: the cards read it again.
+    listen<string>("store-changed", ({ payload }) => {
+      if (payload === "extension-updates" || payload === "extensions") void useExtensionUpdates.getState().load();
+    }),
   ];
   // Another space: its own records, none of the old ones.
   const offSpace = onSpaceMoved(() => {

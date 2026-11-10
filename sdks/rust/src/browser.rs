@@ -252,6 +252,7 @@ impl Browser {
         );
         crate::profile::adopt_library_fields(&mut profile.config, &self.runtime.fingerprints_dir());
         crate::profile::apply_apple_webgpu_features(&mut profile.config);
+        crate::randomize::settle_platform_version(&mut profile.config);
         if profile.claims_mobile() {
             crate::profile::apply_chrome_brand(&mut profile.config);
         }

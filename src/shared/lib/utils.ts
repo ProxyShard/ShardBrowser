@@ -132,12 +132,12 @@ export function daysUntil(unixSecs: number): number {
   return Math.max(0, Math.ceil((unixSecs * 1000 - Date.now()) / 86_400_000));
 }
 
-// Single UTM tag appended to every outbound proxyshard.com link.
+// Single UTM tag appended to every outbound shardx.com link.
 export const UTM_QS = "utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher";
 export const withUtm = (url: string) => url + (url.includes("?") ? "&" : "?") + UTM_QS;
 
 // ProxyShard dashboard (account, billing, API key).
-export const DASHBOARD_URL = withUtm("https://dashboard.proxyshard.com/");
+export const DASHBOARD_URL = withUtm("https://dashboard.shardx.com/");
 
 export const GH_REPO_URL = "https://github.com/ProxyShard/ShardBrowser";
 

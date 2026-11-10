@@ -965,7 +965,7 @@ pub mod extensions {
     pub use local::{import_each, ExtensionEntry, Imported};
 
     /// Updates of a team's extensions come later (design v2).
-    const TEAM_UPDATES_NOT_YET: &str = "not offered for a team's extensions yet";
+    pub const TEAM_UPDATES_NOT_YET: &str = "not offered for a team's extensions yet";
 
     pub fn list() -> Result<Vec<ExtensionEntry>> {
         match team_now() {

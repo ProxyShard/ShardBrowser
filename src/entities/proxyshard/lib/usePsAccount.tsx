@@ -49,7 +49,7 @@ export const usePsAccount = create<PsAccountStore>((set, get) => ({
             initing = false;
         }
     },
-    // Validate the saved key against user-api.proxyshard.com and pull the wallet.
+    // Validate the saved key against user-api.shardx.com and pull the wallet.
     refreshMe: async () => {
         set({ status: "checking", err: "" });
         try {

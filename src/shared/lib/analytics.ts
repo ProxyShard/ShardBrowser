@@ -11,7 +11,7 @@ import { randomId } from "./utils";
 const MEASUREMENT_ID = "G-PLHRZ45072";
 const ENDPOINT = "https://www.google-analytics.com/g/collect";
 /** Reported as the page: GA4 would otherwise log `tauri://localhost`. */
-const APP_URL = "https://launcher.proxyshard.com/";
+const APP_URL = "https://launcher.shardx.com/";
 
 const CLIENT_ID_KEY = "shardx-analytics-client-id";
 const SESSION_COUNT_KEY = "shardx-analytics-session-count";

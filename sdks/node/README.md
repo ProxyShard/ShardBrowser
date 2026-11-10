@@ -1,7 +1,7 @@
 # @proxyshard/shardx (Node)
 
 Self-contained Node/TypeScript SDK for the **ShardBrowser anti-detect
-browser** by the [ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
+browser** by the [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
 
 Does **not** depend on the desktop launcher. On first use it downloads
 the patched Chromium 157 engine, Widevine CDM, and the 220-profile

@@ -24,9 +24,10 @@ export type PlanUsage = {
 const TOKEN_TIER = Object.fromEntries(Object.entries(PS_PLAN).map(([tier, token]) => [token, tier])) as Record<string, ResiType>;
 
 /** The residential tier a proxy draws its traffic from: a ProxyShard relay
- *  whose user name starts with the plan's token ("plan-premium-…"). */
+ *  whose user name starts with the plan's token ("plan-premium-…"). The
+ *  relays moved to shardx.com; proxies saved on the old hosts still count. */
 export function planTierOf(p: { host: string; username: string }): ResiType | null {
-  if (!/proxyshard/i.test(p.host)) return null;
+  if (!/proxyshard|(?:^|\.)shardx\.(?:com|net)$/i.test(p.host)) return null;
   const token = /^plan-([a-z]+)/i.exec(p.username)?.[1]?.toLowerCase();
   return token ? TOKEN_TIER[token] ?? null : null;
 }

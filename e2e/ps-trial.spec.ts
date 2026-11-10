@@ -5,7 +5,7 @@ import { openApp, reloadApp } from "./support/app";
 // no ProxyShard key is connected. Everything in the dialog comes from
 // the site API's answer — the amount, the link, and whether there is an offer
 // at all — so the test states the answer and reads the dialog built from it.
-const OFFER = { show: true, url: "https://dashboard.proxyshard.example/trial", trial_gb: 0.1 };
+const OFFER = { show: true, url: "https://dashboard.shardx.example/trial", trial_gb: 0.1 };
 
 type Mock = { state: { psKey: string }; save: () => void };
 

@@ -118,7 +118,8 @@ test("Proxy balance: under 15 % left, with how long the traffic lasts at the rat
 test("Proxy balance names the profiles on that plan's proxies, and the most urgent plan", async ({ page }) => {
   await load(page);
   const proxies = [
-    proxy("resi", { host: "relay-eu.proxyshard.com", username: "plan-premium-country-us" }),
+    proxy("resi", { host: "relay-eu.shardx.com", username: "plan-premium-country-us" }),
+    // Saved before the relays moved to shardx.com: still the same plan.
     proxy("std", { host: "relay-eu.proxyshard.com", username: "plan-limited-country-de" }),
     proxy("dc", { host: "203.0.113.9" }),
   ];

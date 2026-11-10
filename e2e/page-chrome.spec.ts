@@ -121,7 +121,7 @@ test("Buy proxies says so when the browser cannot open", async ({ page }) => {
   await openApp(page, { section: "proxies" });
   await openMore(page);
   await menuItem(page, "Buy proxies").click();
-  await expect(page.locator("[data-toast]").filter({ hasText: "Could not open proxyshard.com" })).toBeVisible();
+  await expect(page.locator("[data-toast]").filter({ hasText: "Could not open shardx.com" })).toBeVisible();
 });
 
 // One line goes through the preview too, so the proxy can be tested before

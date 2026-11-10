@@ -40,7 +40,7 @@
   <a href="#usage">Usage</a>
 </p>
 
-ShardBrowser is built by the **[ShardX](https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)** team (formerly ProxyShard).
+ShardBrowser is built by the **[ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)** team (formerly ProxyShard).
 ProxyShard provides full **SOCKS5 UDP relay** support (RFC 1928 §7) and
 active **p0f TCP fingerprint spoofing** at the proxy exit. This keeps the
 operating system presented by the proxy consistent with the SYN/ACK shape
@@ -50,11 +50,11 @@ ships a patched **Chromium 157** build that applies fingerprint changes
 inside the browser engine.
 
 <p align="center">
-  <a href="https://proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Website</strong></a> ·
-  <a href="https://docs.proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Documentation</strong></a> ·
-  <a href="https://docs.proxyshard.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Browser guide</strong></a> ·
-  <a href="https://docs.proxyshard.com/eng/our-products/about-udp?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>UDP relay</strong></a> ·
-  <a href="https://docs.proxyshard.com/eng/our-products/p0f-spoofing?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>p0f spoofing</strong></a>
+  <a href="https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Website</strong></a> ·
+  <a href="https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Documentation</strong></a> ·
+  <a href="https://docs.shardx.com/eng/usage-instructions/shardx-browser?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>Browser guide</strong></a> ·
+  <a href="https://docs.shardx.com/eng/technologies-and-capabilities/about-udp?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>UDP relay</strong></a> ·
+  <a href="https://docs.shardx.com/eng/technologies-and-capabilities/p0f-spoofing?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"><strong>p0f spoofing</strong></a>
 </p>
 
 <table>
@@ -267,7 +267,7 @@ iframes, web workers, developer tools and headless mode.
   machine would name it.
 * **Local automation API:** axum HTTP server on `127.0.0.1`,
   Bearer JWT authentication. Full reference at
-  [docs.proxyshard.com/eng/shardx-launcher-api](https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true&utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher),
+  [docs.shardx.com/eng/shardx-launcher-api](https://docs.shardx.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true&utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher),
   raw schema in [openapi.yaml](openapi.yaml). Create / start / stop
   profiles and get a CDP WebSocket URL programmatically.
 * **MCP server bundled:** connect ShardBrowser to Claude Desktop, Cursor and
@@ -510,7 +510,7 @@ Python, Go, curl or any other HTTP client. Every endpoint except
 `GET /health` requires the Bearer JWT shown in *Settings > Automation API*.
 Regenerating the token rotates the signing secret immediately.
 
-* **Reference docs:** [https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle](https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
+* **Reference docs:** [https://docs.shardx.com/eng/shardx-launcher-api/binding-and-lifecycle](https://docs.shardx.com/eng/shardx-launcher-api/binding-and-lifecycle?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 * **OpenAPI schema:** [openapi.yaml](openapi.yaml)
 
 Launching a profile and getting a CDP endpoint:

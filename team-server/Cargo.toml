@@ -1,6 +1,6 @@
 [package]
 name = "shardbrowser-team-server"
-version = "2.1.4"
+version = "2.1.5"
 description = "Self-hosted team server for ShardBrowser: team profiles, member tokens and live permissions."
 authors = ["ProxyShard"]
 edition = "2021"

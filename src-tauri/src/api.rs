@@ -893,6 +893,114 @@ async fn delete_extension(Extension(t): Extension<Ticket>, Path(id): Path<String
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+// ---- extension updates (#150) ----
+// The window's own updater: the same checks, the same approvals, one at a time.
+
+/// Both fields optional, and so is the body itself.
+#[derive(Deserialize, Default)]
+struct ExtUpdateReq {
+    /// One library id from `GET /extensions`; absent means the whole library.
+    id: Option<String>,
+    /// Lets in what the staged version asked about (`result: "confirm"`); one id only.
+    #[serde(default)]
+    confirmed: bool,
+}
+
+#[derive(Deserialize)]
+struct ExtUpdateQuery {
+    id: Option<String>,
+}
+
+fn ext_update_req(raw: &[u8]) -> Result<ExtUpdateReq, ApiError> {
+    if raw.iter().all(u8::is_ascii_whitespace) {
+        return Ok(ExtUpdateReq::default());
+    }
+    serde_json::from_slice(raw).map_err(|e| err(StatusCode::BAD_REQUEST, format!("invalid body: {e}")))
+}
+
+/// This machine's library only: a team's extensions are not updated yet.
+fn ext_updates_here(t: &Ticket) -> Result<(), ApiError> {
+    match t.team() {
+        Some(_) => Err(refusal(&CmdError::NotOffered(space::extensions::TEAM_UPDATES_NOT_YET))),
+        None => Ok(()),
+    }
+}
+
+/// Every library entry's update record, or the one `id` names.
+fn ext_update_states(id: Option<&str>) -> Result<Vec<space::extensions::ExtensionUpdate>, ApiError> {
+    let all = space::extensions::updates(crate::ext_updates::engine())
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let Some(id) = id else { return Ok(all) };
+    let one: Vec<_> = all.into_iter().filter(|u| u.id == id).collect();
+    if one.is_empty() {
+        return Err(err(StatusCode::NOT_FOUND, format!("no extension {id} in the library")));
+    }
+    Ok(one)
+}
+
+fn ext_updates_json(items: &[space::extensions::ExtensionUpdate]) -> Value {
+    json!({ "checked_at": space::extensions::updates_checked_at(), "items": items })
+}
+
+async fn list_extension_updates(Extension(t): Extension<Ticket>, Query(q): Query<ExtUpdateQuery>) -> ApiResult {
+    ext_updates_here(&t)?;
+    space::ready().await;
+    Ok(Json(ext_updates_json(&ext_update_states(q.id.as_deref())?)))
+}
+
+/// Asks the Web Store now. One request covers every linked extension, so `id`
+/// only narrows the answer; a check already under way is waited for.
+async fn check_extension_updates(Extension(t): Extension<Ticket>, raw: axum::body::Bytes) -> ApiResult {
+    let req = ext_update_req(&raw)?;
+    ext_updates_here(&t)?;
+    space::ready().await;
+    ext_update_states(req.id.as_deref())?;
+    crate::ext_updates::check_now(&t).await.map_err(|e| err(StatusCode::BAD_GATEWAY, e))?;
+    crate::notify_store_changed("extension-updates");
+    Ok(Json(ext_updates_json(&ext_update_states(req.id.as_deref())?)))
+}
+
+/// What Update all puts in without asking anyone: a newer version, no Web Store flag.
+fn ext_update_eligible(u: &space::extensions::ExtensionUpdate) -> bool {
+    let state = serde_json::to_value(u.state).unwrap_or_default();
+    (state == "available" || state == "ready") && u.flags.is_empty()
+}
+
+/// Updates one at a time, as the window does. With `id`, that one, whatever its
+/// state (the updater refuses what it must). Without, every eligible one and
+/// never `confirmed`; the rest are listed as not eligible, with their state.
+async fn apply_extension_updates(Extension(t): Extension<Ticket>, raw: axum::body::Bytes) -> ApiResult {
+    let req = ext_update_req(&raw)?;
+    ext_updates_here(&t)?;
+    space::ready().await;
+    if req.confirmed && req.id.is_none() {
+        return Err(err(StatusCode::BAD_REQUEST, "`confirmed` needs an `id`: updating them all never lets in new permissions"));
+    }
+    let engine = crate::ext_updates::engine();
+    let mut results = Vec::new();
+    let mut applied = 0;
+    for u in ext_update_states(req.id.as_deref())? {
+        if req.id.is_none() && !ext_update_eligible(&u) {
+            results.push(json!({ "id": u.id, "result": "not_eligible", "state": u.state, "flags": u.flags }));
+            continue;
+        }
+        let done = space::extensions::update(Door("POST /extensions/updates/apply"), &t, &u.id, req.confirmed, engine.clone()).await;
+        let mut out = match done {
+            Ok(d) => serde_json::to_value(&d).unwrap_or_else(|e| json!({ "result": "failed", "error": e.to_string() })),
+            Err(e) => json!({ "result": "failed", "error": format!("{e:#}") }),
+        };
+        applied += usize::from(out["result"] == "applied");
+        out["id"] = json!(u.id);
+        results.push(out);
+    }
+    if applied > 0 {
+        crate::notify_store_changed("extensions");
+    }
+    crate::notify_store_changed("extension-updates");
+    let items = ext_update_states(req.id.as_deref()).unwrap_or_default();
+    Ok(Json(json!({ "applied": applied, "results": results, "items": items })))
+}
+
 // ---- bookmarks ----
 
 async fn list_bookmarks() -> ApiResult {
@@ -1253,6 +1361,9 @@ fn router() -> Router {
         .route("/proxies/:id", delete(delete_proxy))
         .route("/extensions", get(list_extensions).post(add_extension))
         .route("/extensions/:id", delete(delete_extension))
+        .route("/extensions/updates", get(list_extension_updates))
+        .route("/extensions/updates/check", post(check_extension_updates))
+        .route("/extensions/updates/apply", post(apply_extension_updates))
         .route("/bookmarks", get(list_bookmarks).post(save_bookmark))
         .route("/bookmarks/:id", delete(delete_bookmark))
         .route("/trash", get(list_trash))
@@ -1366,6 +1477,33 @@ mod tests {
         let epoch = res.headers().get(EPOCH_HEADER).and_then(|v| v.to_str().ok()).map(str::to_owned);
         let bytes = axum::body::to_bytes(res.into_body(), usize::MAX).await.unwrap();
         (status, epoch, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    /// #150: the updater over HTTP answers for the library and keeps its rules.
+    #[tokio::test]
+    async fn extension_updates_answer_for_the_library_and_keep_their_rules() {
+        let _serial = crate::migrate::serial();
+        let _root = crate::store::test_root("api-ext-updates").with_config();
+        let (status, _, got) = authed("GET", "/extensions/updates", None).await;
+        assert_eq!(status, StatusCode::OK, "{got}");
+        assert_eq!(got["items"], json!([]));
+        assert!(got["checked_at"].is_u64(), "{got}");
+
+        let (status, _, got) = authed("POST", "/extensions/updates/apply", None).await;
+        assert_eq!((status, got["applied"].as_u64(), got["results"].clone()), (StatusCode::OK, Some(0), json!([])));
+
+        let (status, _, got) = authed("POST", "/extensions/updates/apply", Some(json!({ "confirmed": true }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "bulk never confirms: {got}");
+        for (method, path, body) in [
+            ("GET", "/extensions/updates?id=nope", None),
+            ("POST", "/extensions/updates/check", Some(json!({ "id": "nope" }))),
+            ("POST", "/extensions/updates/apply", Some(json!({ "id": "nope" }))),
+        ] {
+            let (status, _, got) = authed(method, path, body).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{method} {path}: {got}");
+        }
+        let (status, _, _) = authed("POST", "/extensions/updates/check", Some(json!("not an object"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

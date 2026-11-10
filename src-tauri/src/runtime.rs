@@ -33,7 +33,7 @@ const MANIFEST_URL: &str =
 const MANIFEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
 const LAUNCHER_RELEASE_REPO: &str = "ProxyShard/ShardBrowser";
 /// Chromium version baked into the current bundle (used for Mac Framework path).
-pub const CHROMIUM_VERSION: &str = "157.0.8103.39";
+pub const CHROMIUM_VERSION: &str = "157.0.8103.50";
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ArchiveSpec {
@@ -643,6 +643,9 @@ fn migrate_value(
         if add_chrome_brand(cfg) {
             changed = true;
         }
+        if cfg.as_object_mut().is_some_and(crate::settle_platform_version) {
+            changed = true;
+        }
         changed
     }
 }
@@ -703,6 +706,22 @@ fn add_apple_webgpu_features(cfg: &mut serde_json::Value) -> bool {
         changed = true;
     }
     changed
+}
+
+#[cfg(test)]
+mod platform_version_migration_tests {
+    use super::migrate_value;
+    use serde_json::json;
+
+    #[test]
+    fn a_saved_profile_loses_a_windows_version_chrome_never_reports() {
+        let mut p = json!({ "navigator": { "platform": "Windows", "platform_version": "17.0.0" },
+            "client_hints": { "brand_full_version": "156.0.8078.48", "platform_version": "17.0.0" } });
+        assert!(migrate_value(&mut p, "157.0.8103.39", None, None, None, None));
+        assert_eq!((p["navigator"]["platform_version"].as_str(), p["client_hints"]["platform_version"].as_str()),
+            (Some("19.0.0"), Some("19.0.0")));
+        assert!(!migrate_value(&mut p, "157.0.8103.39", None, None, None, None), "once");
+    }
 }
 
 #[cfg(test)]
@@ -1038,7 +1057,7 @@ pub fn migrate_unlocked(cfg: &mut serde_json::Value) -> bool {
 
 /// Raised when `migrate_dir_to` learns a new fix, so a launcher update reruns it once
 /// even on a manifest it has already applied.
-const MIGRATION_REV: u32 = 4;
+const MIGRATION_REV: u32 = 5;
 
 /// What a migration was applied for; the install path and the start share it.
 fn migration_signature(target: &str, m: &RemoteManifest) -> String {

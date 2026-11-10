@@ -3,6 +3,90 @@
   "repoUrl": "https://github.com/ProxyShard/ShardBrowser",
   "releases": [
     {
+      "version": "2.1.5",
+      "date": "2026-11-11",
+      "entries": [
+        {
+          "id": "chrome-security-fix",
+          "title": "Chrome security fix",
+          "lead": "The browser now has the security fix Chrome released on November 9.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "It closes a flaw in how pages handle XML that attackers were already using. How profiles look to sites does not change."
+            }
+          ]
+        },
+        {
+          "id": "os-version",
+          "title": "Operating system version",
+          "lead": "Profiles could report Windows and macOS versions that were never released.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "New profiles now get a version that exists, and a Mac profile gets one its chip can run. Profiles made earlier are corrected the next time the launcher starts. Linux profiles report no version, the way Chrome on Linux does."
+            }
+          ]
+        },
+        {
+          "id": "touch-screen",
+          "title": "Touch screen",
+          "lead": "A profile without a touch screen showed this computer's touch screen to sites.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "On a computer with a touch screen or a pen, such a profile reported touch input although its settings said there was none. It now looks like a computer with only a mouse. Profiles that claim a touch screen keep it."
+            }
+          ]
+        },
+        {
+          "id": "dock-icon",
+          "title": "Dock icon",
+          "lead": "On macOS, clicking the Dock icon did not bring back a window closed to the menu bar.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "It now does, as in other Mac apps. Clicking the icon in the menu bar opens its menu, as menu bar icons do on a Mac; Show Launcher is the first item."
+            }
+          ]
+        },
+        {
+          "id": "extension-updates-api",
+          "title": "Extension updates in the API",
+          "lead": "The local API can now check for extension updates and install them.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "For the whole library or one extension, with the same checks as the Extensions page, and with where each one stands: up to date, update available, waiting for a profile to close, or waiting for your approval. Updating them all never accepts new permissions; such extensions are left for you to approve. The API documentation in Settings describes the calls."
+            }
+          ]
+        },
+        {
+          "id": "shardx-address",
+          "title": "Website address",
+          "lead": "Our website moved to shardx.com.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Links in the launcher and on the browser's start page now open shardx.com. New proxies made on the ProxyShard page use the shardx.com addresses; proxies you already have keep working."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "2.1.4",
       "date": "2026-11-06",
       "entries": [

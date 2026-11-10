@@ -11,31 +11,40 @@ ceilinged by `host_ram_bucket_gb`.
 from __future__ import annotations
 
 import random
+import re
 from typing import Optional
 
 from .host import host_logical_cores, host_ram_bucket_gb
 
+# Chrome writes major.minor.patch, never two parts. Current releases as of
+# 2026-11 (support.apple.com/100100); Sonoma ends at 14.8.9.
 MACOS_PLATFORM_VERSIONS = [
-    "14.6.1", "14.7", "14.7.1", "14.7.2",
-    "15.4", "15.4.1", "15.5", "15.6", "15.6.1", "15.7",
-    "26.0", "26.0.1", "26.1",
+    "14.8.8", "14.8.9",
+    "15.7.9", "15.8.1", "15.8.2", "15.8.2",
+    "26.6.1", "26.6.2", "26.7.1", "26.7.2", "26.7.2", "26.7.2",
+    "27.0.1", "27.2.0", "27.2.0", "27.2.0",
 ]
 
-# Win 10 ("10.0.0") + Win 11 21H2..25H2 ("13".."17"), weighted to common ones.
+# Chrome reports the UniversalApiContract: 10 on Win10 2004+, 15 on Win11
+# 22H2/23H2, 19 on 24H2/25H2. 13 and 16-18 exist only on Insider builds.
 WINDOWS_PLATFORM_VERSIONS = [
-    "10.0.0",
-    "13.0.0",
-    "14.0.0", "14.0.0", "14.0.0",
-    "15.0.0", "15.0.0", "15.0.0", "15.0.0",
-    "16.0.0", "16.0.0", "16.0.0",
-    "17.0.0",
+    "10.0.0", "10.0.0", "10.0.0", "10.0.0", "10.0.0",
+    "15.0.0",
+    "19.0.0", "19.0.0", "19.0.0", "19.0.0", "19.0.0", "19.0.0", "19.0.0",
 ]
 
+# Chrome on Linux reports an empty version, and the engine since build 4 says
+# so itself. A value is still written so an older engine does not pass on the
+# host's own.
 LINUX_PLATFORM_VERSIONS = [
     "5.15.0", "6.1.0", "6.5.0",
     "6.6.0", "6.8.0", "6.10.0", "6.11.0", "6.12.0",
     "6.14.0", "6.15.0", "6.16.0",
 ]
+
+# What a version that cannot stand becomes on a Mac, and on an M4 claiming 14.x.
+_MACOS_SETTLED = "26.7.2"
+_MACOS_SETTLED_M4 = "15.8.2"
 
 # (cores, mem_GiB) combos per Apple model id — keep in sync with lib.rs.
 MAC_HW_CONFIGS: dict[str, list[tuple[int, int]]] = {
@@ -76,14 +85,35 @@ MAC_HW_CONFIGS: dict[str, list[tuple[int, int]]] = {
 X86_CORES: list[int] = [4, 6, 8, 12, 16, 20, 24, 28, 32]
 
 
+def _mac_first_major(config: dict) -> int:
+    """The first macOS major the claimed Apple chip shipped with: M4 came with
+    15, M5 with 26; older chips run everything in the pool."""
+    webgl = config.get("webgl")
+    renderer = webgl.get("renderer") if isinstance(webgl, dict) else None
+    if not isinstance(renderer, str) or "Apple M" not in renderer:
+        return 0
+    digits = re.match(r"\d+", renderer[renderer.index("Apple M") + 7:], re.ASCII)
+    gen = int(digits.group()) if digits else 0
+    return 26 if gen >= 5 else 15 if gen == 4 else 0
+
+
+def _major(version: str) -> Optional[int]:
+    head = version.split(".")[0]
+    return int(head) if re.fullmatch(r"\d+", head, re.ASCII) else None
+
+
 def randomize_platform_version(config: dict) -> None:
-    """In-place: pick a fresh `navigator.platform_version` (+ mirror to client_hints)."""
+    """In-place: pick a fresh `navigator.platform_version` (+ mirror to client_hints).
+    A Mac gets only versions its claimed chip can run."""
     platform = ((config.get("navigator") or {}).get("platform") or "")
     pool = {
         "macOS":   MACOS_PLATFORM_VERSIONS,
         "Windows": WINDOWS_PLATFORM_VERSIONS,
         "Linux":   LINUX_PLATFORM_VERSIONS,
     }.get(platform)
+    if platform == "macOS":
+        first = _mac_first_major(config)
+        pool = [v for v in MACOS_PLATFORM_VERSIONS if (_major(v) or 0) >= first]
     if not pool:
         return
     v = random.choice(pool)
@@ -92,6 +122,54 @@ def randomize_platform_version(config: dict) -> None:
     ch = config.get("client_hints")
     if isinstance(ch, dict):
         ch["platform_version"] = v
+
+
+def _settled_windows(version: str) -> str:
+    if version in ("10.0.0", "14.0.0", "15.0.0", "19.0.0"):
+        return version
+    # The engine counts an unreadable version as Windows 11, and picks its fonts by that.
+    major = _major(version)
+    return "10.0.0" if major is not None and major < 13 else "19.0.0"
+
+
+def _settled_macos(version: str, first_major: int) -> str:
+    parts = version.split(".")
+    if not all(re.fullmatch(r"\d+", p, re.ASCII) for p in parts):
+        return _MACOS_SETTLED
+    nums = [int(p) for p in parts]
+    if not 1 <= len(nums) <= 3 or nums[0] < 12:
+        return _MACOS_SETTLED
+    if nums[0] < first_major:
+        return _MACOS_SETTLED if first_major >= 26 else _MACOS_SETTLED_M4
+    nums += [0] * (3 - len(nums))
+    return ".".join(str(n) for n in nums)
+
+
+def settle_platform_version(config: dict) -> bool:
+    """In-place: a Windows or macOS `platform_version` Chrome could not report
+    (Windows 13/16/17, a two-part macOS version, an M4 on 14.x) becomes the
+    nearest one it can, in navigator and client_hints alike. Deterministic, so
+    launch applies it every time. Linux is left to the engine. Returns whether
+    anything changed. SDK equivalent of the launcher's function of the same name."""
+    nav = config.get("navigator") if isinstance(config.get("navigator"), dict) else {}
+    ch = config.get("client_hints") if isinstance(config.get("client_hints"), dict) else {}
+    # The engine reads client_hints over navigator.
+    current = next((v for v in (ch.get("platform_version"), nav.get("platform_version"))
+                    if isinstance(v, str) and v), "")
+    platform = nav.get("platform")
+    if platform == "Windows":
+        want = _settled_windows(current)
+    elif platform == "macOS":
+        want = _settled_macos(current, _mac_first_major(config))
+    else:
+        return False
+    changed = False
+    for key in ("navigator", "client_hints"):
+        obj = config.get(key)
+        if isinstance(obj, dict) and obj.get("platform_version") != want:
+            obj["platform_version"] = want
+            changed = True
+    return changed
 
 
 def randomize_hardware(config: dict, profile_id: Optional[str] = None) -> None:

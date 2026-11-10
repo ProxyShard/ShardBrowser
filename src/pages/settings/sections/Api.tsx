@@ -16,7 +16,7 @@ import { holdSave } from "../useSettingsDraft";
 
 // The one docs page there is (plan ruling 8). A real href gives the link its
 // role and a copyable target; the click opens the system browser.
-const API_DOCS = "https://docs.proxyshard.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true";
+const API_DOCS = "https://docs.shardx.com/eng/shardx-launcher-api/binding-and-lifecycle?fallback=true";
 const LOOPBACK = "127.0.0.1";
 
 export function ApiSection({ s, saved, setS, api, setApi, apiError, retryApi }: SettingsProps & {

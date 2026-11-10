@@ -654,6 +654,8 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
     // Strip `_meta` wrapper and resolve "auto" sentinels before serialising.
     let mut raw = engine_config(&input.stored);
     resolve_auto_fields(&mut raw, input.proxy.as_ref()).await;
+    // A version Chrome could not report never reaches the engine, wherever the profile came from.
+    crate::settle_platform_version(&mut raw);
     // The proxy probe and the geo lookup are the slow part: a cancel made
     // while they ran stops here, before anything is written.
     check_cancel(&input.profile_id)?;
@@ -1612,6 +1614,11 @@ mod tests {
         }
         // No monitor to ask (as here): the fingerprint's own screen.
         assert_eq!(crate::build_fingerprint_config(None, "t-win").unwrap()["screen"]["width"], 1920);
+        // #147: the API's answer follows the language it sets, and reports a version Chrome can.
+        let api = crate::build_fingerprint_config(None, "t-win").unwrap();
+        assert!(api["icu_locale"].is_null());
+        let pv = api["navigator"]["platform_version"].as_str().unwrap();
+        assert!(crate::platform_version::WINDOWS_PLATFORM_VERSIONS.contains(&pv), "{pv}");
 
         // A new profile with a screen picked by hand is saved with it, marked.
         let mut picked = template("Windows", WIN_UA);

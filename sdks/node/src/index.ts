@@ -236,7 +236,7 @@ export type { LaunchOptions, WebRtcMode, ScreenMode } from "./browser.js";
 export { parseProxy, probeUdp, proxyToArg } from "./proxy.js";
 export type { ParsedProxy } from "./proxy.js";
 export {
-  randomizeHardware, randomizePlatformVersion,
+  randomizeHardware, randomizePlatformVersion, settlePlatformVersion,
   MAC_HW_CONFIGS, X86_CORES,
   MACOS_PLATFORM_VERSIONS, WINDOWS_PLATFORM_VERSIONS, LINUX_PLATFORM_VERSIONS,
 } from "./randomize.js";

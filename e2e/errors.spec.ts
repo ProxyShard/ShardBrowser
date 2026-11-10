@@ -13,7 +13,7 @@ const explainAll = (page: Page) =>
     const { explainError } = (window as unknown as { __e: Errs }).__e;
     return [
       explainError(new Error("profile 7f3a2c1e-0000 is already running")),
-      explainError("error sending request for url (https://user-api.proxyshard.com/me): dns error"),
+      explainError("error sending request for url (https://user-api.shardx.com/me): dns error"),
       explainError("expected value at line 1 column 1"),
       explainError({ code: "proxy_missing", message: "proxy p-1 not found" }),
       explainError({ code: "something_new", message: "the raw words" }),

@@ -1,6 +1,6 @@
 [package]
 name = "shardx"
-version = "2.1.5"
+version = "2.1.6"
 edition = "2021"
 rust-version = "1.74"
 description = "Self-contained Rust SDK for the ShardBrowser anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
@@ -9,7 +9,7 @@ license = "MIT"
 readme = "README.md"
 homepage = "https://github.com/ProxyShard/ShardBrowser"
 repository = "https://github.com/ProxyShard/ShardBrowser"
-documentation = "https://docs.proxyshard.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"
+documentation = "https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"
 keywords = ["anti-detect", "browser", "fingerprint", "chromium", "automation"]
 categories = ["web-programming", "api-bindings"]
 

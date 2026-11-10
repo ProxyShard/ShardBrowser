@@ -1038,7 +1038,7 @@ dependencies = [
 
 [[package]]
 name = "shardbrowser-team-server"
-version = "2.1.4"
+version = "2.1.5"
 dependencies = [
  "aes-gcm",
  "anyhow",
