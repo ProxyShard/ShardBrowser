@@ -5,7 +5,8 @@ import {
   useFingerprintPick, OsField, TemplateField,
   HardwareFields, ScreenField, WindowFields, LocaleFields, NoiseFields, PrivacyFields, MediaFields,
 } from "../../manage-profiles/ui/fields";
-import { patchForm, setFieldInvalid, useProfileForm, type ProfileFormDraft } from "../model/useProfileForm";
+import { patchForm, setFieldInvalid, setSourceKind, useProfileForm, type ProfileFormDraft } from "../model/useProfileForm";
+import { SourceField } from "./SourceField";
 
 /** A titled group of fields: a heading over them, the fields in one column. */
 function Group({ title, children }: { title: string; children: ReactNode }) {
@@ -20,7 +21,9 @@ function Group({ title, children }: { title: string; children: ReactNode }) {
 
 /// Fingerprint: the OS and the library fingerprint, then the full editor in
 /// three groups, with a line under the fields that need one. A fingerprint
-/// this computer cannot back asks first, as everywhere.
+/// this computer cannot back asks first, as everywhere. A template's form
+/// (#145) says where each profile's fingerprint comes from instead of its
+/// hardware and screen: those are drawn for each profile.
 export function FingerprintTab({ draft }: { draft: ProfileFormDraft }) {
   const t = useT();
   const fingerprints = useProfile((s) => s.fingerprints);
@@ -31,6 +34,8 @@ export function FingerprintTab({ draft }: { draft: ProfileFormDraft }) {
     if (useProfileForm.getState().draft?.form.id === id) patchForm(changes);
   };
   const pick = useFingerprintPick(f, patchFor, fingerprints);
+  const template = useProfileForm((s) => s.mode === "template");
+  const lib = fingerprints.find((x) => x.id === f.gpu_preset_id) ?? null;
   return (
     <div className="flex flex-col gap-6">
       <Group title={t("profileForm.groupHardware")}>
@@ -38,10 +43,20 @@ export function FingerprintTab({ draft }: { draft: ProfileFormDraft }) {
         {/* What the walk through the form points at: the computer this profile looks like. */}
         <div data-tour="form-fingerprint" className="flex flex-col gap-4">
           <OsField pick={pick} />
-          <TemplateField f={f} u={u} pick={pick} label={t("peek.template")} help={t("profileForm.gpuHelp")} />
+          {/* A template keeps no graphics-card choice: each profile's fingerprint is drawn whole. */}
+          <TemplateField f={f} u={template ? undefined : u} pick={pick} label={t("peek.template")} help={t("profileForm.gpuHelp")} />
         </div>
-        <HardwareFields f={f} u={u} os={pick.osFilter} />
-        <ScreenField f={f} u={u} os={pick.osFilter} />
+        {template ? (
+          <>
+            <SourceField value={draft.sourceKind ?? "library"} onChange={setSourceKind} library={lib} os={pick.osFilter} />
+            <p data-template-drawn className="m-0 text-secondary text-text-sub-600">{t("templates.drawnEach")}</p>
+          </>
+        ) : (
+          <>
+            <HardwareFields f={f} u={u} os={pick.osFilter} />
+            <ScreenField f={f} u={u} os={pick.osFilter} />
+          </>
+        )}
         <WindowFields f={f} u={u} />
       </Group>
       <Group title={t("profileForm.groupLocale")}>

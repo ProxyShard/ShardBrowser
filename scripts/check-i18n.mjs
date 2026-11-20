@@ -25,7 +25,7 @@ const TEXT_PROPS = new Set([
 // Same in every language: product and protocol names, OS names, the language
 // picker's own entries, and samples of code or headers.
 const KEEP = new Set([
-  "ShardBrowser", "ShardBrowser Launcher", "ProxyShard", "Shard Helper", "GitHub", "MCP", "GPU", "CPU",
+  "ShardBrowser", "ShardBrowser Launcher", "ProxyShard", "ShardX", "Shard Helper", "GitHub", "MCP", "GPU", "CPU",
   "URL", "SQL", "UDP", "TCP", "HTTP", "HTTPS", "SOCKS5", "Canvas", "WebGL",
   "WebGPU", "WebRTC", "TLS", "CDP", "API", "JSON", "Cookie", "User-Agent",
   "macOS", "MacOS", "Windows", "Windows 10", "Windows 11", "Linux", "Android",

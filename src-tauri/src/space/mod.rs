@@ -1,5 +1,5 @@
 //! Every read and write of profiles, proxies, bookmarks, extensions, projects,
-//! tags, folders, the trash and cookies goes through here, in the space the
+//! tags, profile templates, folders, the trash and cookies goes through here, in the space the
 //! launcher works in. The personal space is this machine's files in `local`;
 //! a team is read from `cache` and written through `write` and `items`, door by door.
 //! A write carries a [`Ticket`]: it goes to the space it was asked in, or nowhere.
@@ -684,8 +684,24 @@ pub mod proxy {
 
     pub use local::{
         can_send_udp_directly, country_to_locale, country_to_timezone, geo_check, geo_check_via,
-        parse_bulk, parse_single, probe, probe_udp, GeoInfo, ProxyEntry, ProxyKind, TestSnapshot,
+        parse_bulk, parse_single, probe, probe_udp, rotation_get, rotation_ids, rotation_set, ChangeIp,
+        GeoInfo, ProxyEntry, ProxyKind, TestSnapshot,
     };
+
+    /// Opens `id`'s change-IP link and reads the new exit (#162); the proxy's
+    /// test is then run again so the list shows it. A team's proxy needs Edit:
+    /// its exit changes for everyone who uses it.
+    pub async fn change_ip(door: Door, t: &Ticket, id: &str) -> Result<ChangeIp> {
+        if let Some(team) = t.team() {
+            super::doors::clear(door, team, &super::doors::Ask { proxy: Some(id), ..Default::default() })?;
+        }
+        let entry = get(id)?.ok_or_else(|| anyhow::anyhow!("no proxy with id {id}"))?;
+        let url = local::rotation_get(id).ok_or_else(|| anyhow::anyhow!("this proxy has no change-IP link"))?;
+        let before = latest_test(id).map(|s| s.ip).filter(|ip| !ip.is_empty());
+        let out = local::change_ip(&entry, &url, before).await?;
+        let _ = full_test(&entry).await;
+        Ok(out)
+    }
 
     /// A team's proxies carry an address only where this member may use them.
     pub fn list() -> Result<Vec<ProxyEntry>> {
@@ -754,7 +770,10 @@ pub mod proxy {
                 if local::get(id)?.is_none() {
                     return Err(CmdError::Missing(format!("no proxy {id} in your own space")).into());
                 }
-                local::delete(id)
+                local::delete(id)?;
+                // Its change-IP link goes with it (#162).
+                let _ = local::rotation_set(id, None);
+                Ok(())
             }
         }
     }
@@ -835,6 +854,55 @@ pub mod tags {
     pub fn import(t: &Ticket, state: TagState) -> Result<bool> {
         t.here(NOT_IN_TEAM)?;
         local::import(state)
+    }
+}
+
+/// Profile templates (#145): a new profile's settings and where its fresh fingerprint comes from.
+pub mod templates {
+    use super::local::templates as local;
+    use super::{cache, items, team_now, CmdError, Door, Ticket};
+    use anyhow::Result;
+
+    pub use local::{apply, os_of, settings_of, source_of, ProfileTemplate, Source};
+
+    /// By name. A team's are those this member may read: with the team's See,
+    /// or wherever they may make a profile (team_model `reads_items`).
+    pub fn list() -> Result<Vec<ProfileTemplate>> {
+        let mut all = match team_now() {
+            Some(team) => cache::templates(&team),
+            None => local::list()?,
+        };
+        all.sort_by_cached_key(|t| (t.name.to_lowercase(), t.id.clone()));
+        Ok(all)
+    }
+
+    pub fn get(id: &str) -> Result<ProfileTemplate> {
+        let found = list()?.into_iter().find(|t| t.id == id);
+        found.ok_or_else(|| CmdError::Missing(format!("no profile template {id} in this space")).into())
+    }
+
+    /// Adds the template or changes the one with its id; a default one takes the mark from the rest.
+    pub async fn save(door: Door, t: &Ticket, tpl: ProfileTemplate) -> Result<ProfileTemplate> {
+        match t.team() {
+            Some(team) => items::save_template(door, t, team, tpl).await,
+            None => {
+                t.still()?;
+                local::save(tpl)
+            }
+        }
+    }
+
+    pub async fn delete(door: Door, t: &Ticket, id: &str) -> Result<()> {
+        match t.team() {
+            Some(team) => items::delete_template(door, t, team, id).await,
+            None => {
+                t.still()?;
+                if !local::list()?.iter().any(|x| x.id == id) {
+                    return Err(CmdError::Missing(format!("no profile template {id} in your own space")).into());
+                }
+                local::delete(id)
+            }
+        }
     }
 }
 
@@ -967,6 +1035,18 @@ pub mod extensions {
     /// Updates of a team's extensions come later (design v2).
     pub const TEAM_UPDATES_NOT_YET: &str = "not offered for a team's extensions yet";
 
+    /// The Widevine CDM from Google's component update server into `cache`,
+    /// through `proxy` (widevine.rs). The version put there; None when `have` is current.
+    pub async fn fetch_widevine(
+        proxy: Option<&super::proxy::ProxyEntry>,
+        chrome: &str,
+        have: Option<&str>,
+        cache: &Path,
+        background: bool,
+    ) -> Result<Option<String>> {
+        local::widevine::fetch(proxy, chrome, have, cache, background).await
+    }
+
     pub fn list() -> Result<Vec<ExtensionEntry>> {
         match team_now() {
             Some(team) => Ok(cache::extensions(&team)),
@@ -1063,6 +1143,11 @@ pub mod extensions {
     pub async fn check_updates(engine: Option<String>) -> Result<UpdateNews, String> {
         let env = Env::real(engine).map_err(|e| e.to_string())?;
         local::updates::check(&env).await
+    }
+
+    /// Whether a proxy is chosen for the Web Store (#154); without one nothing reaches it.
+    pub fn store_proxy_chosen() -> bool {
+        local::store_proxy_chosen()
     }
 
     /// When the store was last asked, unix seconds; 0 never.

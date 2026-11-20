@@ -2,7 +2,7 @@ import { t } from "../../shared/i18n";
 import {
   AddIcon, ChangePasswordIcon, ChevronDownIcon, ChevronRightIcon, CloseIcon, CopyIcon, DeleteIcon, DownloadIcon, EditIcon, FolderIcon, FolderMinusIconApp, IdCardIcon,
   PasswordIcon, PeekIcon, PinIconApp, PlayIcon, RegenerateIcon, RemovePasswordIcon, RenameIcon, RouteIcon, StopIcon, SyncIcon, SyncedIcon, SyncOffIcon, TagIcon,
-  UnpinIconApp, UploadIcon,
+  TemplateIcon, UnpinIconApp, UploadIcon,
 } from "../../shared/icons";
 import { syncConnected, useSync } from "../../entities/sync";
 import { openHereInstead, setProfilesSync } from "../profile-sync";
@@ -12,12 +12,13 @@ import { toast } from "../../shared/model/toast";
 import { useNav } from "../../shared/model/navigation";
 import { defineCommands, type Command, type RunFrom, type Subject } from "../../shared/commands";
 import {
-  cloneRefusal, findView, folderNamesOf, isProtected, isTeamRow, lockedRefusal, moveRefusal, profileRefusal, resolveId, selectVisible, setContinueByHand, startRefusal, syncBlockReason,
+  cloneRefusal, findView, folderNamesOf, isProtected, isTeamRow, lockedRefusal, moveRefusal, profileRefusal, resolveId, selectVisible, setContinueByHand, settingsRefusal, startRefusal, syncBlockReason,
   useOverviewFolds, useProfile, useProfileUi, viewFolds, type ProfileMeta, type ProfileRight,
 } from "../../entities/profile";
-import { createAnywhereRefusal, inTeam } from "../../entities/space";
+import { createAnywhereRefusal, inTeam, teamRefusal } from "../../entities/space";
 import { rowActionIcons } from "../../shared/ui/rowActionIcons";
 import { openProfileForm } from "../profile-form/model/useProfileForm";
+import { saveProfileAsTemplate } from "../profile-form/model/saveTemplate";
 import { changePassword, removePassword, setPassword } from "../profile-lock";
 import { passwordsOn } from "../../entities/settings";
 
@@ -252,6 +253,14 @@ export const PROFILE_COMMANDS: readonly Command[] = [
     // The copy is a new profile in the same folder; a protected one is not copied.
     disabled: (s) => noneMay(metas(s), (p) => cloneRefusal(p) ?? lockedRefusal(p)),
     run: (s) => data().cloneProfile(s.ids[0]),
+  },
+  {
+    // #145: its settings and where its fingerprint came from, under a name; never the fingerprint.
+    ...LIST, id: "profile.saveAsTemplate", scope: "active", group: "open", icon: TemplateIcon,
+    label: () => t("commands.saveAsTemplate"),
+    surfaces: ["rowMenu", "paletteActions", "peekMenu"],
+    disabled: (s) => noneMay(metas(s), (p) => lockedRefusal(p) ?? settingsRefusal(p)) ?? teamRefusal("create"),
+    run: (s) => saveProfileAsTemplate(s.ids[0]),
   },
   {
     ...LIST, id: "profile.pin", scope: "active", group: "open", icon: PinIconApp,

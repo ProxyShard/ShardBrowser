@@ -14,6 +14,7 @@ export * from "./lib/assignment";
 export * from "./lib/selectors";
 export * from "./lib/rights";
 export * from "./lib/lock";
+export * from "./lib/phone";
 export { isSaving, useSaving } from "./lib/saving";
 export { RUN_BUTTON_MIN, setRunButtonWidth } from "./lib/actionsWidth";
 export { editsSettled, isArriving, isPlaceholder, resolveId, rowKey } from "./lib/optimistic";

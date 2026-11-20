@@ -19,7 +19,7 @@ import { ProfilesPage } from "../pages/profiles";
 import { ShellWindowControls } from "../widgets/WindowControls/WindowControls";
 import { AssignProxiesHost, FolderDialog } from "../features/manage-profiles";
 import { ViewDialog } from "../features/manage-views";
-import { ProfileFormDialog } from "../features/profile-form";
+import { ProfileFormDialog, SaveTemplateDialog } from "../features/profile-form";
 import { CommandPalette } from "../features/command-palette";
 import { ShortcutSheet } from "../features/shortcuts";
 import { TourEndCard, TourLayer, WelcomeDialog, usePageTips } from "../features/tour";
@@ -30,6 +30,7 @@ import type { Section } from "../shared/types";
 import { useThemeBridge } from "../shared/model/theme";
 import { reloadFolders, useProfile } from "../entities/profile";
 import { useTags } from "../entities/tag";
+import { useTemplates } from "../entities/template";
 import { useInTeam, wireAccess } from "../entities/space";
 import { useSync } from "../entities/sync";
 import { useExtensionUpdates, watchExtensionUpdates } from "../entities/extension";
@@ -39,6 +40,7 @@ import { useTeamTrash, useTeamTrashShown, wireTeamTrash } from "../features/team
 import { trashList } from "../entities/trash";
 import { useStoreChanged } from "../shared/hooks/useStoreChanged";
 import { useQuitGuard } from "../shared/hooks/useQuitGuard";
+import { useLauncherUpdatePrompt } from "../features/launcher-update";
 import { useLauncherWarning } from "../shared/hooks/useLauncherWarning";
 import { trackSection } from "../shared/lib/analytics";
 import { focusIsLost, focusPageStart, landOnPage } from "../shared/lib/focus";
@@ -102,7 +104,7 @@ const PRELOAD = [loadProxies, loadFingerprints, loadExtensions, loadBookmarks, l
  *  look, cards or rows, at its own width. */
 const LOADING: Partial<Record<Section, { title: (t: ReturnType<typeof useT>) => string; look: "rows" | "cards" | "form"; width?: "form" }>> = {
   proxies: { title: (t) => t("proxies.title"), look: "rows" },
-  proxyshard: { title: () => "ProxyShard", look: "rows" },
+  proxyshard: { title: () => "ShardX", look: "rows" },
   fingerprints: { title: (t) => t("fingerprints.title"), look: "cards" },
   extensions: { title: (t) => t("extensions.title"), look: "cards" },
   bookmarks: { title: (t) => t("bookmarks.heading"), look: "rows" },
@@ -278,6 +280,9 @@ function Shell() {
   useStoreChanged(() => storeBus.emit("trash", "ui"), ["trash", "profiles"]);
   // Tags and folders changed elsewhere (a team's member, the Local API) are read again.
   useStoreChanged(() => void useTags.getState().reload(), ["tags"]);
+  // Profile templates (#145): "New profile" starts from the default one, so they are read early.
+  useEffect(() => { void useTemplates.getState().load(); }, []);
+  useStoreChanged(() => void useTemplates.getState().reload(), ["templates"]);
   useStoreChanged(() => void reloadFolders(), ["folders"]);
   // Web Store updates of extensions: the sidebar's count, Peek and the page read them.
   useEffect(() => watchExtensionUpdates(), []);
@@ -307,6 +312,7 @@ function Shell() {
   useAppKeys();
   // Quit (tray, Cmd+Q) asks about unsaved changes, then names the team and synced profiles it closes.
   useQuitGuard(confirmOpenSessions);
+  useLauncherUpdatePrompt();
   useThemeBridge();
   useWarmPages();
   usePreloadPages();
@@ -351,6 +357,8 @@ function Shell() {
       <AssignProxiesHost />
       <ViewDialog />
       <ProfileFormDialog />
+      {/* Over the profile form: "Save as template" is asked from there too. */}
+      <SaveTemplateDialog />
       {/* After the profile form: a protected profile's password is asked over it. */}
       <PasswordHost />
       <CommandPalette />

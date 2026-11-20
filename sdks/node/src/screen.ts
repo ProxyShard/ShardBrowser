@@ -10,11 +10,13 @@
 // All modes leave DPR / color_depth / orientation / etc. untouched.
 import { platform as osPlatform } from "node:os";
 import { hostScreenSize } from "./host.js";
+import { configClaimsMobile } from "./profile.js";
 
 export type ScreenStrategy = "profile" | "cap_to_host" | "use_host";
 
 export function applyScreenStrategy(cfg: Record<string, unknown>, mode: ScreenStrategy | string): void {
-  if (mode === "profile") return;
+  // A phone keeps the handset's screen in every mode, as in the launcher (#131).
+  if (mode === "profile" || configClaimsMobile(cfg)) return;
   const host = hostScreenSize();
   if (!host) return;
   const [hw, hh] = host;
@@ -75,8 +77,10 @@ function useHost(cfg: Record<string, unknown>, hw: number, hh: number): void {
   win["inner_height"] = Math.max(1, availH - 88);
 }
 
-/** Map `navigator.platform` → the launcher's default screen mode. */
-export function defaultScreenModeFor(platform: string): ScreenStrategy {
+/** Map `navigator.platform` → the launcher's default screen mode. A phone is "profile"
+ *  whatever its platform says: an imported one can say plain "Linux". */
+export function defaultScreenModeFor(platform: string, mobile = false): ScreenStrategy {
+  if (mobile) return "profile";
   if (platform === "macOS") return "cap_to_host";
   if (platform === "Windows" || platform === "Linux") return "use_host";
   return "profile";

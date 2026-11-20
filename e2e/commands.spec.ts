@@ -216,7 +216,7 @@ test("every command has an English and a Chinese label, and no key is taken twic
   const enById = Object.fromEntries(en.labels);
   // Every label is translated (the few words the same in both languages,
   // like "ID", and the ProxyShard brand aside).
-  const same = zh.labels.filter(([id, label]) => label === enById[id] && !/ID|JSON|Cookie|ProxyShard/.test(label));
+  const same = zh.labels.filter(([id, label]) => label === enById[id] && !/ID|JSON|Cookie|ProxyShard|ShardX/.test(label));
   expect(same).toEqual([]);
 });
 

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from .runtime import Runtime
+from .runtime import RETIRED_TEMPLATES, Runtime
 
 _NOISE_VECTORS = ("canvas", "webgl", "audio", "client_rects", "sensors", "fonts")
 # vector -> (soft knob, value applied when the vector is enabled)
@@ -130,6 +130,7 @@ class FingerprintLibrary:
             yield fid
 
     def load(self, fingerprint_id: str) -> Profile:
+        fingerprint_id = RETIRED_TEMPLATES.get(fingerprint_id, fingerprint_id)
         path = self._runtime.fingerprints_dir / f"{fingerprint_id}.json"
         if not path.exists():
             raise FileNotFoundError(

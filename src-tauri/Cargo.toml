@@ -1,6 +1,6 @@
 [package]
 name = "shardbrowser-launcher"
-version = "2.1.5"
+version = "2.1.6"
 description = "ShardBrowser Launcher: profiles, proxies, fingerprints and automation for the ShardBrowser engine."
 authors = ["ProxyShard"]
 edition = "2021"
@@ -115,6 +115,9 @@ png = "0.17"
 tokio-tungstenite = { version = "0.24", default-features = false, features = ["connect"] }
 futures-util = { version = "0.3" }
 wasmtime = { version = "48.0.1", optional = true }
+# Without "system-proxy": it turns on hyper-util's system proxy for every reqwest client
+# here too (macOS/Windows proxy settings read on each Client::new, ~0.5 s each).
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls", "zip"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

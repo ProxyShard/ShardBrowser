@@ -23,6 +23,8 @@ import { TEAM_REFUSALS } from "../../shared/api/teamRefusals";
 import type { ProxyEntry, ProxyTestSnapshot } from "../../entities/proxy/model/types";
 import type { FingerprintEntry } from "../../entities/fingerprint/model/types";
 import type { Project, RunState, ModuleInfo } from "../../entities/automation/model/types";
+import type { ProfileTemplate } from "../../entities/template/model/types";
+import { osOfPlatform, templateSettingsOf } from "../../entities/template/lib/settings";
 
 export type Ctx = {
   state: MockState;
@@ -437,6 +439,18 @@ export const handlers: Record<string, Handler> = {
     return handlers.runtime_status({}, ctx);
   },
   launcher_update_check: () => ({ current: "2.0.3", latest: "2.0.3", update_available: false, release_url: "https://github.com/ProxyShard/ShardBrowser/releases/latest" }),
+  // `window.__shardxMockLauncherOffer = { current, version, installable, release_url }` stands in for a newer
+  // launcher; the download counts up, and Apply leaves `window.__shardxMockLauncherApplied` set.
+  launcher_update_offer: () => (window as { __shardxMockLauncherOffer?: unknown }).__shardxMockLauncherOffer ?? null,
+  launcher_update_download: async (_a, ctx) => {
+    const total = 4e7;
+    for (let received = 1e7; received <= total; received += 1e7) {
+      await sleep(150);
+      ctx.emit("launcher-update://progress", { received, total });
+    }
+    return (window as { __shardxMockLauncherOffer?: { version: string } }).__shardxMockLauncherOffer?.version ?? "";
+  },
+  launcher_update_apply: () => { (window as { __shardxMockLauncherApplied?: boolean }).__shardxMockLauncherApplied = true; return null; },
   host_platform: () => hostPlatform(),
   // `window.__shardxMockHostScreen = [w, h, dpr]` (or null: no monitor) stands in for the real one.
   host_screen: () => {
@@ -782,6 +796,41 @@ export const handlers: Record<string, Handler> = {
     ctx.save();
     return ids.length;
   },
+  // ---- Profile templates (templates.rs, #145) --------------------------------------
+  profile_template_list: (_a, { state }) => [...(state.templates ?? [])]
+    .sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()) || a.id.localeCompare(b.id)),
+  profile_template_save: ({ template }, ctx) => {
+    const list = (ctx.state.templates ??= []);
+    const name = String(template?.name ?? "").split(/\s+/).filter(Boolean).join(" ").slice(0, 64);
+    if (!name) throw "a template needs a name";
+    const id = String(template?.id || `pt-${newId()}`);
+    if (list.some((x) => x.id !== id && x.name.toLowerCase() === name.toLowerCase())) throw `a template named ${name} already exists`;
+    const os = String(template?.source?.os ?? "");
+    const next: ProfileTemplate = {
+      id, name,
+      source: { library: String(template?.source?.library ?? "").trim() || null, os: osOfPlatform(os) || os.trim() },
+      // As templates.rs `cleaned`: only what a template carries, each noise seed left to the profile.
+      settings: templateSettingsOf(template?.settings ?? {}),
+      folder: String(template?.folder ?? "").trim(),
+      tags: [...new Set(((template?.tags ?? []) as string[]).map((x) => String(x).trim()).filter(Boolean))],
+      is_default: template?.is_default === true,
+      updated_at: Math.floor(Date.now() / 1000),
+    };
+    if (next.is_default) for (const x of list) if (x.id !== id) x.is_default = false;
+    const at = list.findIndex((x) => x.id === id);
+    if (at >= 0) list[at] = next; else list.push(next);
+    ctx.save();
+    return next;
+  },
+  profile_template_delete: ({ id }, ctx) => {
+    const list = ctx.state.templates ?? [];
+    const gone = list.find((x) => x.id === id);
+    if (!gone) throw teamInUse(ctx.state) ? `no profile template ${id} in this team` : `no profile template ${id} in your own space`;
+    if (teamInUse(ctx.state)) intoTeamTrash(ctx, "template", gone.id, gone.name, gone);
+    ctx.state.templates = list.filter((x) => x.id !== id);
+    ctx.save();
+    return null;
+  },
   // ---- Tags and folders (tags.rs, folders.rs) ------------------------------------
   tag_list: (_a, { state }) => state.tags ?? { tags: [], by_profile: {} },
   tag_save: ({ tag, at }, ctx) => {
@@ -864,8 +913,9 @@ export const handlers: Record<string, Handler> = {
   cookies_export_to_file: ({ profileId }, { state }) => { refuseLocked(state, profileId); return 42; },
   cookies_import: ({ profileId, cookies }, { state }) => { refuseLocked(state, profileId); return Array.isArray(cookies) ? cookies.length : 0; },
   enrich_picks_for_preset: ({ presetId }, { state }) => {
-    const nav = state.fingerprints.find((f) => f.id === presetId)?.payload?.navigator ?? {};
-    return { hardware_concurrency: nav.hardware_concurrency, device_memory: nav.device_memory, platform_version: nav.platform_version };
+    const payload = state.fingerprints.find((f) => f.id === presetId)?.payload ?? {};
+    const nav = payload.navigator ?? {};
+    return { hardware_concurrency: nav.hardware_concurrency, device_memory: nav.device_memory, platform_version: payload.client_hints?.platform_version ?? nav.platform_version };
   },
 
   // ---- proxies ------------------------------------------------------------------
@@ -904,6 +954,33 @@ export const handlers: Record<string, Handler> = {
     if (stored && snap.country_code && (!stored.country || stored.country === "—")) { stored.country = snap.country_code; ctx.save(); }
     if (snap.geo_error) throw snap.geo_error;
     return snap;
+  },
+  // #162: links live outside the proxy, as in the backend (proxy-rotation.json).
+  proxy_rotation_ids: (_a, { state }) => Object.keys(state.rotation ?? {}),
+  proxy_rotation_get: ({ id }, { state }) => state.rotation?.[id] ?? null,
+  proxy_rotation_set: ({ id, url }, ctx) => {
+    const all = (ctx.state.rotation ??= {});
+    const link = typeof url === "string" ? url.trim() : "";
+    if (link && !/^https?:\/\//i.test(link)) throw "the change-IP link must start with http:// or https://";
+    if (link) all[id] = link; else delete all[id];
+    ctx.save();
+    return null;
+  },
+  proxy_change_ip: async ({ id }, ctx) => {
+    const link = ctx.state.rotation?.[id];
+    if (!link) throw "this proxy has no change-IP link";
+    await sleep(800);
+    if (link.includes("refuse")) throw "the provider refused (429 Too Many Requests): wait a minute";
+    const hist = ctx.state.snapshots[id] ?? [];
+    const before = hist[hist.length - 1]?.ip ?? null;
+    const ip = `203.0.113.${Math.floor(Math.random() * 200) + 20}`;
+    const stored = ctx.state.proxies.find((p) => p.id === id);
+    if (stored) {
+      const snap = { ...testSnapshot(stored, hist[hist.length - 1]), ip };
+      ctx.state.snapshots[id] = [...hist, snap].slice(-20);
+      ctx.save();
+    }
+    return { before, after: { ip, country_code: stored?.country ?? "", city: "" }, changed: true };
   },
   proxy_last_test: ({ id }, { state }) => { const h = state.snapshots[id]; return h?.length ? h[h.length - 1] : null; },
   proxy_history: ({ id }, { state }) => state.snapshots[id] ?? [],

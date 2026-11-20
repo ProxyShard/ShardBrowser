@@ -221,6 +221,7 @@ pub enum TrashKind {
     Extension,
     Automation,
     Tag,
+    Template,
 }
 
 impl TrashKind {
@@ -233,6 +234,7 @@ impl TrashKind {
             TrashKind::Extension => "extension",
             TrashKind::Automation => "automation",
             TrashKind::Tag => "tag",
+            TrashKind::Template => "template",
         }
     }
 
@@ -243,6 +245,7 @@ impl TrashKind {
             "extension" => Some(TrashKind::Extension),
             "automation" => Some(TrashKind::Automation),
             "tag" => Some(TrashKind::Tag),
+            "template" => Some(TrashKind::Template),
             _ => None,
         }
     }
@@ -2568,7 +2571,7 @@ impl Store {
                 Restored::Profile(profile_by_id(&tx, id)?)
             }
             // The trash table holds profiles and proxies only; items wait in their own.
-            TrashKind::Bookmark | TrashKind::Extension | TrashKind::Automation | TrashKind::Tag => {
+            TrashKind::Bookmark | TrashKind::Extension | TrashKind::Automation | TrashKind::Tag | TrashKind::Template => {
                 return Ok(Err(Refusal::Missing))
             }
             TrashKind::Proxy => {

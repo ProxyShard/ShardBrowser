@@ -324,7 +324,7 @@ const staging = (root) => join(root, `.${HTOP}.staging`);
 
 test("an update swaps the engine in and records it at once", async () => {
   const root = installedCache("156.0.0.1");
-  serve(remoteFor("157.0.0.1"), { [KEY]: { etag: "e157.0.0.1", body: zipOf(engineEntries("157.0.0.1")) } });
+  const calls = serve(remoteFor("157.0.0.1"), { [KEY]: { etag: "e157.0.0.1", body: zipOf(engineEntries("157.0.0.1")) } });
   const seen = warnings();
   const rt = new Runtime({ cacheDir: root });
   await rt.install();
@@ -334,9 +334,10 @@ test("an update swaps the engine in and records it at once", async () => {
   const m = record(root);
   assert.equal(m.installed_chromium_version, "157.0.0.1");
   assert.equal(m.browser_etag, "e157.0.0.1");
-  // The CDM failed (404): no reason to fail the run, and not marked as present.
-  assert.equal(m.widevine_etag, undefined);
-  assert.ok(seen.some((w) => /Widevine/.test(w)));
+  // The CDM comes from Google at launch, never from the CDN; the old record stays readable.
+  assert.ok(!calls.some((u) => /Widevine/i.test(u)), calls.join(", "));
+  assert.equal(m.widevine_etag, "w1");
+  assert.deepEqual(seen, []);
   assert.ok(!existsSync(staging(root)) && !existsSync(lockPath(root)));
 });
 

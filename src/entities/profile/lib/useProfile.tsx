@@ -26,6 +26,7 @@ import {
 } from "../model/api";
 import { fromStored, toStored } from "../model/form";
 import { proxyMissing } from "./listing";
+import { pickedPlatformVersion } from "./phone";
 import { forgetChanged, forgetForm, peekForm, rememberForm } from "./formCache";
 import {
   addPlaceholder, applyEdits, beginEdit, dropPlaceholder, endEdit, isArriving, isPlaceholder, keepRowKey, localView,
@@ -1660,7 +1661,7 @@ export const useProfile = create<ProfileStore>((set, get) => ({
           gpu_preset_id: fp.id,
           hardware_concurrency: picks.hardware_concurrency ?? nav.hardware_concurrency ?? form.hardware_concurrency,
           device_memory: picks.device_memory ?? nav.device_memory ?? form.device_memory,
-          platform_version: picks.platform_version ?? form.platform_version,
+          platform_version: pickedPlatformVersion(picks.platform_version, fp.payload),
           user_agent: nav.user_agent ?? form.user_agent,
         }, fp));
         // The fingerprint is not in the row, so the row does not change: Peek's cached form goes by hand.

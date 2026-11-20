@@ -1,4 +1,6 @@
+import { useEffect, useState } from "react";
 import { Switch } from "@proxyshard/shardx-ui-kit";
+import { proxyList, type ProxyEntry } from "../../../entities/proxy";
 import { useT, LANG_OPTIONS, type Lang } from "../../../shared/i18n";
 import { SelectField } from "../../../shared/ui/SelectField";
 import { SettingRow, SettingsGroup, type SettingsProps } from "../SettingRow";
@@ -51,6 +53,39 @@ export function GeneralSection({ s, setS, p, setP }: SettingsProps) {
           <Switch aria-labelledby={labelId} aria-describedby={helpId} checked={s.ext_update_check ?? true} onChange={(on) => setS({ ...s, ext_update_check: on })} />
         )}
       />
+      <StoreProxyRow s={s} setS={setS} />
     </SettingsGroup>
+  );
+}
+
+/// The saved proxy the launcher reaches the Web Store through (#154); none, it does not.
+function StoreProxyRow({ s, setS }: Pick<SettingsProps, "s" | "setS">) {
+  const t = useT();
+  const [proxies, setProxies] = useState<ProxyEntry[]>([]);
+  useEffect(() => { void proxyList().then(setProxies, () => setProxies([])); }, []);
+  const chosen = s.store_proxy ?? "";
+  // A deleted proxy still shows as chosen, so the help can say why nothing is checked.
+  const gone = chosen !== "" && proxies.length > 0 && !proxies.some((p) => p.id === chosen);
+  return (
+    <SettingRow
+      id="store-proxy"
+      title={t("settings.storeProxyTitle")}
+      help={t("settings.storeProxyHelp")}
+      control={({ labelId, helpId }) => (
+        <div className="w-[240px]">
+          <SelectField
+            aria-labelledby={labelId}
+            aria-describedby={helpId}
+            value={chosen}
+            onChange={(v) => setS({ ...s, store_proxy: v === "" ? null : v })}
+            options={[
+              { value: "", label: t("settings.storeProxyNone") },
+              ...(gone ? [{ value: chosen, label: t("settings.storeProxyGone") }] : []),
+              ...proxies.map((p) => ({ value: p.id, label: p.name.trim() || `${p.host}:${p.port}` })),
+            ]}
+          />
+        </div>
+      )}
+    />
   );
 }

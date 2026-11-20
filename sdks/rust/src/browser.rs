@@ -1,6 +1,7 @@
 //! Browser launch + lifecycle. Spawns the ShardX engine with the same
 //! spoofing flags the desktop launcher uses, plus pre-launch auto-resolve,
-//! screen strategy, and UDP probe.
+//! screen strategy, UDP probe, and the Widevine CDM from Google put into the
+//! profile before the engine starts.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -81,7 +82,7 @@ pub struct LaunchOptions {
     pub webrtc_public_ip: Option<String>,
     /// Override the UDP-probe auto-decision for QUIC.
     pub quic: Option<bool>,
-    /// Defaults to `CapToHost` on macOS, `UseHost` on Win/Linux.
+    /// Defaults to `CapToHost` on macOS, `UseHost` on Win/Linux. A phone always keeps its own screen.
     pub screen_mode: Option<ScreenStrategy>,
     pub probe_timeout_ms: Option<u64>,
     /// Custom user-data-dir root. Defaults to `<profiles_root>/<id>/`.
@@ -217,9 +218,12 @@ impl Browser {
             geo = resolve_auto_fields(&mut profile.config, parsed.as_ref()).await;
         }
 
-        let mode = opts
-            .screen_mode
-            .unwrap_or_else(|| default_screen_mode_for(&profile.platform()));
+        // A phone keeps its own screen whatever the option says, as in the launcher (#131).
+        let mode = if profile.claims_mobile() {
+            ScreenStrategy::Profile
+        } else {
+            opts.screen_mode.unwrap_or_else(|| default_screen_mode_for(&profile.platform()))
+        };
         apply_screen_strategy(&mut profile.config, mode);
 
         let mut proxy_udp_ms: Option<u128> = None;
@@ -241,7 +245,7 @@ impl Browser {
         // Keep the spoofed Chrome version coherent with the installed engine,
         // regardless of where the profile config came from (library / file / value).
         let (grease_brand, grease_version) = self.runtime.grease();
-        let android = profile.claims_mobile().then(|| self.runtime.android_chromium_version()).flatten();
+        let android = self.runtime.claimed_chromium_version(&profile.platform(), profile.claims_mobile());
         crate::profile::apply_engine_version(
             &mut profile.config,
             &self.runtime.chromium_version(),
@@ -259,6 +263,18 @@ impl Browser {
         apply_noise_seeds(&mut profile.config, &profile.id);
         let fp_file = udd.join("fingerprint.json");
         std::fs::write(&fp_file, serde_json::to_string(&profile.config)?)?;
+
+        // Widevine from Google before the first start, through this profile's proxy:
+        // Chrome ships with its CDM and this engine does not.
+        let cdm = self.runtime.widevine_cache_dir();
+        crate::widevine::ensure_widevine(&cdm, &self.runtime.chromium_version(), parsed.as_ref()).await;
+        // Keep a newer CDM the engine fetched for itself, then hand the cached one to this profile.
+        if let Err(e) = crate::widevine::harvest_widevine(&cdm, &udd) {
+            eprintln!("[shardx] Widevine harvest skipped: {e:#}");
+        }
+        if let Err(e) = crate::widevine::install_widevine(&cdm, &udd) {
+            eprintln!("[shardx] Widevine not put in place: {e:#}");
+        }
 
         let mut argv: Vec<String> = vec![
             format!("--fingerprint-profile={}", fp_file.display()),

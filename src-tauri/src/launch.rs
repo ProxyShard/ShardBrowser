@@ -213,6 +213,16 @@ fn fill_window_from_screen(
 /// This computer's monitor: width and height in CSS px, and its pixel ratio.
 pub type HostScreen = (i64, i64, f64);
 
+/// Whether the global "Real screen" mode applies: never to a hand-picked
+/// resolution, and never to a phone, which keeps the handset's screen.
+fn wants_real_screen(
+    mode: Option<&str>,
+    picked_by_hand: bool,
+    config: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    mode == Some("real") && !picked_by_hand && !profile::claims_mobile(config)
+}
+
 /// A new Windows or Linux profile claims this computer's screen (`host`, in CSS
 /// px, with its pixel ratio), keeping the fingerprint's taskbar insets; macOS,
 /// phones, a screen picked by hand (`_meta.screen_custom`) and a profile that
@@ -587,6 +597,8 @@ struct Ready<'a> {
     x11: bool,
     /// The engine loads --load-extension under Enhanced Safe Browsing too (patch 0092).
     ext_alone: bool,
+    /// The proxy has a change-IP link and the launch has the bus (#162).
+    change_ip: bool,
 }
 
 async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) -> Result<LaunchOutcome> {
@@ -648,8 +660,11 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
     // left out of it, or the switch would report the host's screen over exactly
     // the one they asked for.
     let s = settings::load()?;
-    let use_real_screen =
-        s.screen_resolution_mode.as_deref() == Some("real") && !input.stored.meta.screen_custom;
+    let use_real_screen = wants_real_screen(
+        s.screen_resolution_mode.as_deref(),
+        input.stored.meta.screen_custom,
+        &input.stored.config,
+    );
 
     // Strip `_meta` wrapper and resolve "auto" sentinels before serialising.
     let mut raw = engine_config(&input.stored);
@@ -697,9 +712,11 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
     let fp_file = input.udd.join("fingerprint.json");
     std::fs::write(&fp_file, &json).context("write fingerprint.json")?;
 
-    // Keep whatever CDM an engine has already fetched for itself, then hand it
-    // to this profile. The first profile to open a DRM page downloads one; every
-    // profile after that starts with it in place.
+    // Widevine from Google before the first start, through this profile's proxy
+    // (widevine.rs): Chrome ships with its CDM and this engine does not.
+    ensure_widevine(input.proxy.as_ref()).await;
+    // Keep whatever CDM an engine has fetched for itself, if newer, then hand
+    // the cached one to this profile: every profile starts with it in place.
     if let Err(e) = harvest_widevine(&input.udd) {
         eprintln!("[launcher] widevine harvest skipped: {e}");
     }
@@ -756,6 +773,7 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
         None => false,
     };
 
+    let change_ip = (opts.bus_port != 0).then(|| change_ip_link(&input)).flatten();
     let args = command_line(
         &input,
         &Ready {
@@ -767,10 +785,15 @@ async fn start_browser(bin: &Path, input: LaunchInput, opts: &LaunchOpts<'_>) ->
             use_real_screen,
             x11: cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some(),
             ext_alone,
+            change_ip: change_ip.is_some(),
         },
         opts,
         &s,
     );
+    match change_ip {
+        Some(proxy_id) => remember_change_ip(&input.profile_id, proxy_id),
+        None => forget_change_ip(&input.profile_id),
+    }
     let LaunchInput { profile_id, udd, exit, cdp: enable_cdp, ext_ids, .. } = input;
     let remote = exit.session();
     // A team's profile has no launch count of its own here.
@@ -848,6 +871,52 @@ fn engine_config(stored: &profile::StoredProfile) -> serde_json::Map<String, ser
 }
 
 /// The engine's command line, in the order the switches have always gone.
+/// The proxy a launch runs on, when it has a change-IP link (#162).
+fn change_ip_link(input: &LaunchInput) -> Option<String> {
+    input.proxy.as_ref().filter(|p| proxy::rotation_get(&p.id).is_some()).map(|p| p.id.clone())
+}
+
+/// The proxy each running profile was started on, with the space's edition then: what its
+/// browser's "Change IP" acts on. A switch of space since makes the ticket refuse.
+static CHANGE_IP: std::sync::Mutex<Option<std::collections::HashMap<String, (String, u64)>>> =
+    std::sync::Mutex::new(None);
+
+fn remember_change_ip(profile_id: &str, proxy_id: String) {
+    let epoch = crate::space::Ticket::now().epoch();
+    let mut g = CHANGE_IP.lock().unwrap();
+    g.get_or_insert_with(Default::default).insert(profile_id.to_string(), (proxy_id, epoch));
+}
+
+fn forget_change_ip(profile_id: &str) {
+    if let Some(m) = CHANGE_IP.lock().unwrap().as_mut() {
+        m.remove(profile_id);
+    }
+}
+
+/// The answer to a browser's {"change_ip":true}, as the line the bus sends back: the same
+/// change the proxy's Change IP button makes, with its permission, then the browser is told
+/// to drop its open connections so the next request leaves through the new IP.
+pub async fn change_ip_from_browser(profile_id: &str) -> serde_json::Value {
+    let target = CHANGE_IP.lock().unwrap().as_ref().and_then(|m| m.get(profile_id).cloned());
+    let outcome: Result<String> = async {
+        let (proxy_id, epoch) =
+            target.ok_or_else(|| anyhow::anyhow!("this profile was not started on a proxy with a Change IP link"))?;
+        let t = crate::space::ticket(Some(epoch)).map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let out = proxy::change_ip(crate::space::Door("proxy_change_ip"), &t, &proxy_id).await?;
+        crate::notify_store_changed("proxies");
+        match (out.changed, out.after) {
+            (true, Some(after)) => Ok(after.ip),
+            (_, Some(after)) => anyhow::bail!("the provider answered, but the IP is still {}", after.ip),
+            (_, None) => anyhow::bail!("the provider answered, but the new IP could not be read"),
+        }
+    }
+    .await;
+    match outcome {
+        Ok(ip) => serde_json::json!({ "reconnect": true, "change_ip_result": { "ok": true, "ip": ip } }),
+        Err(e) => serde_json::json!({ "change_ip_result": { "ok": false, "error": format!("{e:#}") } }),
+    }
+}
+
 fn command_line(
     input: &LaunchInput,
     ready: &Ready,
@@ -980,6 +1049,14 @@ fn command_line(
         // No value — the picture is chosen in the running browser. Without the
         // switch the machine's own camera answers.
         args.push("--shardx-camera".into());
+    }
+    // #162: "Change IP" in the browser, and its shortcut, only when the proxy this profile runs
+    // on has the provider's link. The browser asks over the bus; the launcher does the change.
+    if ready.change_ip {
+        args.push("--shardx-change-ip".into());
+        if let Some(key) = s.change_ip_hotkey.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
+            args.push(format!("--shardx-change-ip-key={key}"));
+        }
     }
 
     if input.cdp {
@@ -1278,6 +1355,57 @@ fn harvest_widevine(udd: &Path) -> Result<()> {
     Ok(())
 }
 
+/// How often the cached CDM is checked against Google's, as Chrome checks its components.
+const WIDEVINE_RECHECK: std::time::Duration = std::time::Duration::from_secs(5 * 3600);
+/// How long a start waits for a first CDM; it starts without one after that.
+const WIDEVINE_FIRST_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+/// A first CDM is waited for (up to `WIDEVINE_FIRST_WAIT`); a cached one is
+/// checked for a newer build in the background, every `WIDEVINE_RECHECK`.
+async fn ensure_widevine(proxy: Option<&proxy::ProxyEntry>) {
+    if cfg!(test) {
+        return;
+    }
+    let (Ok(cache), Some(chrome)) = (crate::store::widevine_cache_dir(), crate::runtime::engine_version()) else {
+        return;
+    };
+    let stamp = cache.with_extension("checked");
+    let have = cdm_version_of(&cache);
+    let checked_lately = std::fs::metadata(&stamp)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < WIDEVINE_RECHECK);
+    if have.is_some() && checked_lately {
+        return;
+    }
+    let proxy = proxy.cloned();
+    let check = async move {
+        // One check at a time, however many profiles start together.
+        static ONE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _one = ONE.lock().await;
+        let have = cdm_version_of(&cache);
+        let fresh = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+        if have.is_some() && fresh.is_some_and(|age| age < WIDEVINE_RECHECK) {
+            return;
+        }
+        match extensions::fetch_widevine(proxy.as_ref(), &chrome, have.as_deref(), &cache, have.is_some()).await {
+            Ok(got) => {
+                if let Some(v) = got {
+                    eprintln!("[launcher] widevine {v} from Google");
+                }
+                let _ = std::fs::write(&stamp, b"");
+            }
+            Err(e) => eprintln!("[launcher] widevine check failed: {e:#}"),
+        }
+    };
+    if have.is_none() {
+        let _ = tokio::time::timeout(WIDEVINE_FIRST_WAIT, check).await;
+    } else {
+        tokio::spawn(check);
+    }
+}
+
 /// Copy cached Widevine CDM into `<udd>/WidevineCdm/<version>/` (versioned layout
 /// required by Chromium's DefaultComponentInstaller). No-op if cache absent.
 fn install_widevine(udd: &Path) -> Result<()> {
@@ -1300,7 +1428,7 @@ fn install_widevine(udd: &Path) -> Result<()> {
     let widevine_root = udd.join("WidevineCdm");
     let versioned = widevine_root.join(version);
     if versioned.exists() {
-        return Ok(());
+        return write_widevine_hint(&widevine_root, &versioned);
     }
     // Clean up any stale flat layout from older launcher versions.
     let flat_manifest = widevine_root.join("manifest.json");
@@ -1317,12 +1445,21 @@ fn install_widevine(udd: &Path) -> Result<()> {
     copy_dir_recursive(&src, &versioned).with_context(|| {
         format!("copy {} → {}", src.display(), versioned.display())
     })?;
-    // Chromium reads this single-line marker on startup.
-    std::fs::write(
-        widevine_root.join("latest-component-updated-version"),
-        version,
-    )?;
+    write_widevine_hint(&widevine_root, &versioned)?;
     eprintln!("[launcher] widevine pre-warmed: {}", versioned.display());
+    Ok(())
+}
+
+/// The hint Chrome on Linux loads its component CDM from at start, before the
+/// sandbox closes (component_widevine_cdm_hint_file_linux.cc): without it a CDM
+/// put in place here is found only by the next start. Other platforms find the
+/// version folder themselves; the file is harmless there.
+fn write_widevine_hint(root: &Path, versioned: &Path) -> Result<()> {
+    let hint = root.join("latest-component-updated-widevine-cdm");
+    let body = serde_json::json!({ "Path": versioned.to_string_lossy() }).to_string();
+    if std::fs::read_to_string(&hint).ok().as_deref() != Some(body.as_str()) {
+        std::fs::write(&hint, body)?;
+    }
     Ok(())
 }
 
@@ -1565,6 +1702,23 @@ mod tests {
         }
     }
 
+    /// The "Real screen" mode leaves a phone the handset's screen (#131).
+    #[test]
+    fn the_real_screen_mode_skips_phones_and_hand_picked_screens() {
+        use super::wants_real_screen;
+        for (platform, ua) in [("Android", PHONE_UA), ("Linux armv81", PHONE_UA), ("Linux", PHONE_UA)] {
+            assert!(!wants_real_screen(Some("real"), false, &template(platform, ua)), "{platform}");
+        }
+        let mut tablet = template("Android", "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36");
+        tablet.insert("client_hints".into(), json!({ "mobile": false, "platform": "Android" }));
+        assert!(!wants_real_screen(Some("real"), false, &tablet), "a tablet is a handset too");
+        let desktop = template("Windows", WIN_UA);
+        assert!(wants_real_screen(Some("real"), false, &desktop));
+        assert!(!wants_real_screen(Some("real"), true, &desktop));
+        assert!(!wants_real_screen(Some("fingerprint"), false, &desktop));
+        assert!(!wants_real_screen(None, false, &desktop));
+    }
+
     #[test]
     fn a_screen_picked_by_hand_an_existing_profile_or_an_unknown_host_keeps_the_screen() {
         let mut raw = template("Windows", WIN_UA);
@@ -1682,8 +1836,37 @@ mod tests {
             use_real_screen: false,
             x11: false,
             ext_alone,
+            change_ip: false,
         };
         command_line(input, &ready, opts, s)
+    }
+
+    /// #162: the in-browser Change IP and its shortcut, only for a proxy with a change-IP link.
+    #[test]
+    fn a_proxy_with_a_change_ip_link_gets_the_button_and_its_shortcut() {
+        let p = input(json!({ "_meta": { "id": "p9", "rev": 1 }, "name": "Rotating" }), None);
+        let raw = p.stored.config.clone();
+        let fp = PathBuf::from("/fp.json");
+        let ready = |change_ip| Ready {
+            fp_file: &fp,
+            icon: None,
+            raw: &raw,
+            proxy_udp_ok: false,
+            proxy_public_ip: None,
+            use_real_screen: false,
+            x11: false,
+            ext_alone: false,
+            change_ip,
+        };
+        let s = crate::settings::Settings { change_ip_hotkey: Some(" Ctrl+Shift+U ".into()), ..settings() };
+        let on = command_line(&p, &ready(true), &UI, &s);
+        assert!(on.contains(&"--shardx-change-ip".to_string()));
+        assert!(on.contains(&"--shardx-change-ip-key=Ctrl+Shift+U".to_string()));
+        let no_key = command_line(&p, &ready(true), &UI, &settings());
+        assert!(no_key.contains(&"--shardx-change-ip".to_string()));
+        assert!(!no_key.iter().any(|a| a.starts_with("--shardx-change-ip-key")));
+        let off = command_line(&p, &ready(false), &UI, &s);
+        assert!(!off.iter().any(|a| a.starts_with("--shardx-change-ip")));
     }
 
     const UI: LaunchOpts = LaunchOpts { enable_cdp: false, headless: false, sync_group: None, bus_port: 4242, bus_token: "tok", space: None, password: None };

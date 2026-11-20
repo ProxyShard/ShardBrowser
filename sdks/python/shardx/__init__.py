@@ -5,8 +5,8 @@ Quickstart:
     from shardx import ShardX
 
     sdk = ShardX()
-    # Engine + Widevine + fingerprint library auto-download from CDN on
-    # first call — no separate install step.
+    # Engine + fingerprint library auto-download from CDN on first call,
+    # the Widevine CDM from Google — no separate install step.
 
     # Launch a specific profile
     sess = sdk.launch("win-rtx4060", proxy="socks5://user:pass@host:port", cdp=True)
@@ -281,4 +281,4 @@ __all__ = [
     "has_auto_fields", "resolve_auto_fields",
     "Motion",
 ]
-__version__ = "2.1.6"
+__version__ = "2.1.7"

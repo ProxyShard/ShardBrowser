@@ -10,6 +10,7 @@ import { useOnboarding } from "../../../features/onboarding";
 import { takeTheTour } from "../../../features/tour";
 import { useT } from "../../../shared/i18n";
 import { DetailRow, DetailsCard } from "../../../shared/ui/DetailsCard";
+import { askLauncherUpdate } from "../../../features/launcher-update";
 
 const ABOUT_SITE = siteUrl("settings_about");
 
@@ -70,7 +71,7 @@ export function AboutSection() {
       </DetailsCard>
       <div className="flex flex-wrap items-center gap-2">
         {releaseUrl && (
-          <Button variant="primary" mode="filled" size="xsmall" onClick={() => void openUrl(releaseUrl).catch(() => {})}>
+          <Button variant="primary" mode="filled" size="xsmall" onClick={() => void askLauncherUpdate()}>
             {t("settings.aboutGetUpdate")}
           </Button>
         )}

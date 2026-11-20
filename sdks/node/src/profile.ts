@@ -4,7 +4,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
-import type { Runtime } from "./runtime.js";
+import { isAndroidRelease } from "./randomize.js";
+import { RETIRED_TEMPLATES, type Runtime } from "./runtime.js";
 
 const NOISE_VECTORS = ["canvas", "webgl", "audio", "client_rects", "sensors", "fonts"] as const;
 export type NoiseVector = (typeof NOISE_VECTORS)[number];
@@ -83,12 +84,7 @@ export class Profile {
 
   /** A device whose primary input is a finger. */
   get claimsMobile(): boolean {
-    const ch = this.config["client_hints"] as Record<string, unknown> | undefined;
-    if (ch?.["mobile"] === true) return true;
-    const chPlatform = String(ch?.["platform"] ?? "").toLowerCase();
-    if (chPlatform.startsWith("android")) return true;
-    const nav = this.config["navigator"] as Record<string, unknown> | undefined;
-    return String(nav?.["user_agent"] ?? "").toLowerCase().includes("android");
+    return configClaimsMobile(this.config);
   }
 
   /** Desktop Linux. Android is excluded: its platform is Linux too, and a phone has WebGPU. */
@@ -104,6 +100,16 @@ export class Profile {
     const limits = wgp["limits"];
     return !!(limits && typeof limits === "object" && Object.keys(limits as object).length > 0);
   }
+}
+
+/** Whether a config claims a phone: the engine's three signals, in its order. */
+export function configClaimsMobile(config: Record<string, unknown>): boolean {
+  const ch = config["client_hints"] as Record<string, unknown> | undefined;
+  if (ch?.["mobile"] === true) return true;
+  const chPlatform = String(ch?.["platform"] ?? "").toLowerCase();
+  if (chPlatform.startsWith("android")) return true;
+  const nav = config["navigator"] as Record<string, unknown> | undefined;
+  return String(nav?.["user_agent"] ?? "").toLowerCase().includes("android");
 }
 
 export class FingerprintLibrary {
@@ -129,6 +135,7 @@ export class FingerprintLibrary {
   }
 
   load(fingerprintId: string): Profile {
+    fingerprintId = RETIRED_TEMPLATES.get(fingerprintId) ?? fingerprintId;
     const path = join(this.runtime.fingerprintsDir, `${fingerprintId}.json`);
     if (!existsSync(path)) {
       const sample = this.ids().slice(0, 10).join(", ");
@@ -158,9 +165,11 @@ export class FingerprintLibrary {
  * version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so a
  * 149-era profile is eleven entries short and reads as a mismatch.
  *
- * `androidVersion` is the Chrome for Android build of the same major, passed
- * for phone profiles: Android ships its own build numbers, and a phone
- * reporting a desktop one claims a build no phone has.
+ * `androidVersion` is the build this profile's OS is shipped, when it is not
+ * `chromiumVersion`: the Chrome for Android build of the same major for a phone
+ * (a phone reporting a desktop build claims one no phone has), or the
+ * manifest's `desktop_chromium_versions` entry for a desktop profile (158 went
+ * out as .37 for macOS and Windows and .36 for Linux).
  */
 export function applyEngineVersion(
   config: Record<string, unknown>,
@@ -238,14 +247,25 @@ export function applyChromeBrand(config: Record<string, unknown>): void {
 export function adoptLibraryFields(config: Record<string, unknown>, fingerprintsDir: string): void {
   const meta = config["_meta"] as Record<string, unknown> | undefined;
   const key = [meta?.["gpu_preset_id"], config["name"]].find((k) => typeof k === "string" && k !== "") as string | undefined;
-  if (!key || !/^[A-Za-z0-9._-]+$/.test(key)) return;
-  const path = join(fingerprintsDir, `${key}.json`);
-  if (!existsSync(path)) return;
-  let src: Record<string, unknown>;
-  try { src = JSON.parse(readFileSync(path, "utf8")); } catch { return; }
+  const successor = key !== undefined ? RETIRED_TEMPLATES.get(key) : undefined;
+  const pick = successor ?? key;
+  const path = pick && /^[A-Za-z0-9._-]+$/.test(pick) ? join(fingerprintsDir, `${pick}.json`) : null;
+  let src: Record<string, unknown> | null = null;
+  if (path && existsSync(path)) {
+    try { src = JSON.parse(readFileSync(path, "utf8")); } catch { /* no template */ }
+  }
+  // A phone's fixes need no template; the version takes the template's when there is one.
+  adoptPhoneAngleWebgl(config);
+  adoptPhonePlatformVersion(config, src, fingerprintsDir);
+  adoptDesktopMinCores(config);
+  if (!src) return;
   for (const k of ["fonts", "fonts_local"]) {
     if (config[k] === undefined && src[k] !== undefined) config[k] = src[k];
   }
+  adoptLaptopBattery(config, src);
+  adoptAir15Screen(config, src);
+  adoptLinuxGlWebgl(config, src, successor);
+  adoptWebglExtensions(config, src);
   const w = config["webgpu"] as Record<string, unknown> | undefined;
   const sw = src["webgpu"] as Record<string, unknown> | undefined;
   if (!w || typeof w !== "object" || !sw || typeof sw !== "object") return;
@@ -256,6 +276,142 @@ export function adoptLibraryFields(config: Record<string, unknown>, fingerprints
   for (const k of ["subgroupMinSize", "subgroupMaxSize"]) {
     if (sameGpu && Number.isInteger(sw[k])) w[k] = sw[k];
   }
+}
+
+type Obj = Record<string, unknown>;
+const isObj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Plugged in and full: what the library pinned on every desktop template until 18.11, and
+ * the one state a machine without a battery reports. */
+function isDesktopBattery(b: unknown): boolean {
+  return isObj(b) && b["charging"] === true && b["level"] === 1 && b["charging_time"] === 0;
+}
+
+/** A laptop profile still carrying that battery takes the template's {"laptop": true}; the
+ * engine then picks its own state from the profile's seed. */
+function adoptLaptopBattery(config: Obj, src: Obj): void {
+  const sb = src["battery"];
+  if (isObj(sb) && sb["laptop"] === true && isDesktopBattery(config["battery"])) config["battery"] = { laptop: true };
+}
+
+/** MacBook Air 15" templates claimed 1680x1050; they now claim 1710x1112. A profile with the
+ * old size moves, its window with it. */
+function adoptAir15Screen(config: Obj, src: Obj): void {
+  const s = config["screen"], w = config["window"], ss = src["screen"];
+  if (!isObj(s) || !isObj(w) || !isObj(ss)) return;
+  if (s["width"] !== 1680 || s["height"] !== 1050 || ss["width"] !== 1710 || ss["height"] !== 1112) return;
+  const [availH, outerH, innerH] = [s["avail_height"], w["outer_height"], w["inner_height"]];
+  if (![availH, outerH, innerH].every(Number.isInteger)) return;
+  const newAvail = 1112 - (1050 - (availH as number));
+  const newOuter = newAvail - ((availH as number) - (outerH as number));
+  Object.assign(s, { width: 1710, height: 1112, avail_width: 1710, avail_height: newAvail });
+  Object.assign(w, { outer_width: 1710, inner_width: 1710, outer_height: newOuter,
+    inner_height: newOuter - ((outerH as number) - (innerH as number)) });
+}
+
+/** Linux templates claimed Vulkan until 20.11, which Chrome on Linux never reports (ANGLE draws
+ * through GLX there): such a profile, or one from a retired template, takes the template's whole
+ * WebGL block. Notes still holding the old renderer take the template's; a retired template's
+ * tablet platform and touch screen take the new one's. An empty list or table stays. */
+function adoptLinuxGlWebgl(config: Obj, src: Obj, successor: string | undefined): void {
+  const g = config["webgl"], sg = src["webgl"], nav = config["navigator"];
+  if (!isObj(g) || !isObj(sg) || !isObj(nav)) return;
+  const have = typeof g["renderer"] === "string" ? g["renderer"] : "";
+  const want = typeof sg["renderer"] === "string" ? sg["renderer"] : "";
+  const ua = typeof nav["user_agent"] === "string" ? nav["user_agent"] : "";
+  const glx = want.startsWith("ANGLE (") && want.includes(", OpenGL ") && !want.includes("OpenGL ES");
+  if (!ua.includes("X11; Linux") || !glx || have === want || !(successor !== undefined || have.includes(", Vulkan "))) return;
+  for (const [k, v] of Object.entries(sg)) {
+    const cur = g[k];
+    const hostOwn = (Array.isArray(cur) && cur.length === 0) || (isObj(cur) && Object.keys(cur).length === 0);
+    if (!hostOwn) g[k] = v;
+  }
+  if (config["notes"] === have && src["notes"] !== undefined) config["notes"] = src["notes"];
+  if (successor === undefined) return;
+  const snav = src["navigator"];
+  if (isObj(snav)) for (const k of ["platform_value", "max_touch_points"]) if (snav[k] !== undefined) nav[k] = snav[k];
+  const meta = config["_meta"];
+  if (isObj(meta) && "gpu_preset_id" in meta) meta["gpu_preset_id"] = successor;
+}
+
+/** WebGL extensions and getParameter answers the template gained for the same GPU (Chrome 158
+ * added WEBGL_shader_pixel_local_storage and its two limits): added, never removed or changed.
+ * An empty list or table means "the host's own" and stays. */
+function adoptWebglExtensions(config: Obj, src: Obj): void {
+  const g = config["webgl"], sg = src["webgl"];
+  if (!isObj(g) || !isObj(sg) || !g["renderer"] || g["renderer"] !== sg["renderer"]) return;
+  for (const k of ["extensions", "extensions_v2"]) {
+    const have = g[k], want = sg[k];
+    if (!Array.isArray(have) || have.length === 0 || !Array.isArray(want)) continue;
+    for (const e of want) if (typeof e === "string" && !have.includes(e)) have.push(e);
+  }
+  const have = g["parameters"], want = sg["parameters"];
+  if (isObj(have) && Object.keys(have).length > 0 && isObj(want)) {
+    for (const [k, v] of Object.entries(want)) if (!(k in have)) have[k] = v;
+  }
+}
+
+/** A desktop profile claiming 1-3 logical cores claims 4: a page can time workers on the real
+ * machine, and anti.bot flags a claim under 8 whose workers scale past twice it. */
+function adoptDesktopMinCores(config: Obj): void {
+  const nav = config["navigator"];
+  if (configClaimsMobile(config) || !isObj(nav)) return;
+  const n = nav["hardware_concurrency"];
+  if (Number.isInteger(n) && (n as number) >= 1 && (n as number) <= 3) nav["hardware_concurrency"] = 4;
+}
+
+/** GPU makers whose bare driver strings the Android templates carried before 19.11. */
+const PHONE_GL_MAKERS = ["Qualcomm", "ARM"];
+
+/** A phone's bare WebGL vendor/renderer in the ANGLE form Chrome on Android reports (#131):
+ * "Qualcomm" / "Adreno (TM) 619" become "Google Inc. (Qualcomm)" / "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)". */
+function adoptPhoneAngleWebgl(config: Obj): void {
+  const g = config["webgl"];
+  if (!configClaimsMobile(config) || !isObj(g)) return;
+  const maker = PHONE_GL_MAKERS.find((m) => g["vendor"] === m || g["vendor"] === `Google Inc. (${m})`);
+  if (!maker) return;
+  g["vendor"] = `Google Inc. (${maker})`;
+  const r = g["renderer"];
+  if (typeof r === "string" && r !== "" && !r.startsWith("ANGLE (")) g["renderer"] = `ANGLE (${maker}, ${r}, OpenGL ES 3.2)`;
+}
+
+/** A phone's platform_version that is no Android release (a desktop's, carried over by a template
+ * pick before #131) becomes its template's, else that of a template of the same model; else it
+ * stays. Never the user agent's: Chrome 158 on Android always says "Android 10" there. */
+function adoptPhonePlatformVersion(config: Obj, src: Obj | null, fingerprintsDir: string): void {
+  if (!configClaimsMobile(config)) return;
+  const read = (o: Obj | null, block: string): string => {
+    const b = o?.[block];
+    const v = isObj(b) ? b["platform_version"] : undefined;
+    return typeof v === "string" ? v : "";
+  };
+  // The engine reads client_hints over navigator.
+  const current = read(config, "client_hints") || read(config, "navigator");
+  if (current === "" || isAndroidRelease(current)) return;
+  const release = (t: Obj | null) => (isAndroidRelease(read(t, "client_hints")) ? read(t, "client_hints") : "");
+  const want = release(src) || newestOfModel(config, fingerprintsDir, release);
+  if (!want) return;
+  for (const b of ["client_hints", "navigator"]) {
+    const v = read(config, b);
+    if (v !== "" && !isAndroidRelease(v)) (config[b] as Obj)["platform_version"] = want;
+  }
+}
+
+/** The newest release a library template of the profile's model carries: two can differ. */
+function newestOfModel(config: Obj, fingerprintsDir: string, release: (t: Obj | null) => string): string {
+  const ch = config["client_hints"];
+  const model = isObj(ch) && typeof ch["model"] === "string" ? ch["model"] : "";
+  if (!model || !existsSync(fingerprintsDir)) return "";
+  let best = "";
+  for (const f of readdirSync(fingerprintsDir).filter((n) => n.endsWith(".json"))) {
+    let t: Obj;
+    try { t = JSON.parse(readFileSync(join(fingerprintsDir, f), "utf8")); } catch { continue; }
+    const tch = t["client_hints"];
+    if (!isObj(tch) || tch["model"] !== model) continue;
+    const v = release(t);
+    if (v && parseInt(v, 10) > parseInt(best || "0", 10)) best = v;
+  }
+  return best;
 }
 
 /** WebGPU features Chrome 156 reports on Apple M-series that older templates lack. */

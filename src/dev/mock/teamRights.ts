@@ -70,6 +70,13 @@ export function teamRow(state: MockState, meta: ProfileMeta): ProfileMeta {
   };
 }
 
+/** Whether these rules let a member make a profile somewhere: in the team, or a folder a grant names. */
+function createsSomewhere(g: Grant[] | "all" | null): boolean {
+  if (g === null || g === "all") return true;
+  return g.some((x) => x.allow && x.action === "create" && (x.scope.kind === "team" ? decide(g, "create", {}).kind === "allowed"
+    : x.scope.kind === "folder" ? decide(g, "create", { folder: x.scope.name }).kind === "allowed" : false));
+}
+
 /** Whether a row is listed for this member at all (See). */
 const sees = (state: MockState, p: StoredProfile) => may(state, "see", ofProfile(p));
 
@@ -110,6 +117,9 @@ export function teamView(state: MockState, cmd: string, out: unknown): unknown {
     }
     case "bookmark_list": case "extension_list": case "automation_list":
       return g === "all" || may(state, "see", {}) ? out : [];
+    // A team's templates: its See, or a place they may make a profile in (team-model `reads_items`).
+    case "profile_template_list":
+      return g === "all" || may(state, "see", {}) || createsSomewhere(g) ? out : [];
     // Without See on the team its tags are none (the server lists no items).
     case "tag_list":
       return g === "all" || may(state, "see", {}) ? out : { tags: [], by_profile: {} };
@@ -228,7 +238,12 @@ export function teamDoor(state: MockState, cmd: string, args: Record<string, unk
       return onTeam(id && state.tags?.tags.some((t) => t.id === id) ? "edit" : "create");
     }
     case "tag_delete": case "bookmark_delete": case "bookmark_delete_many": case "extension_delete": case "automation_delete":
+    case "profile_template_delete":
       return onTeam("delete");
+    case "profile_template_save": {
+      const id = (args.template as { id?: string } | undefined)?.id;
+      return onTeam(id && (state.templates ?? []).some((x) => x.id === id) ? "edit" : "create");
+    }
     case "tag_assign":
       return Object.keys((args.byProfile ?? {}) as Record<string, unknown>).map((id) => onProfile(id, "edit")).find((r) => r) ?? null;
     case "bookmark_save": {
@@ -254,6 +269,9 @@ export function teamDoor(state: MockState, cmd: string, args: Record<string, unk
     }
     case "proxy_delete":
       return onProxy(String(args.id), "delete");
+    // Change IP (#162): Edit on that proxy, as doors.rs has it.
+    case "proxy_change_ip":
+      return onProxy(String(args.id), "edit");
     default:
       return null;
   }

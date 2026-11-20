@@ -186,6 +186,8 @@ impl Bus {
         let group = hello.hello;
 
         let (tx, mut rx) = mpsc::unbounded_channel::<String>();
+        // This window's own line back, for answers meant for it alone.
+        let own = tx.clone();
         let id = {
             let mut st = self.state.lock().unwrap();
             st.next_id += 1;
@@ -231,6 +233,20 @@ impl Bus {
         while let Ok(Some(line)) = lines.next_line().await {
             if line.is_empty() {
                 continue;
+            }
+            // "Change IP" in the browser (#162): done here, answered to that window alone.
+            if line.contains("\"change_ip\"") {
+                if serde_json::from_str::<serde_json::Value>(&line)
+                    .is_ok_and(|v| v.get("change_ip").and_then(|c| c.as_bool()) == Some(true))
+                {
+                    let profile = hello.profile.clone();
+                    let own = own.clone();
+                    tokio::spawn(async move {
+                        let answer = crate::launch::change_ip_from_browser(&profile).await;
+                        let _ = own.send(format!("{answer}\n"));
+                    });
+                    continue;
+                }
             }
             // A helper report is for the launcher, not for the group: it
             // describes one page in one window.

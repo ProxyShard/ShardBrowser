@@ -211,7 +211,7 @@ test("without history a card shows the No data ghost, never a line", async ({ pa
   // Requests and Failed requests: no number row, one line saying when.
   for (const id of ["requests", "failed"]) {
     await expect(card(page, id).locator("[data-stat]")).toHaveCount(0);
-    await expect(card(page, id).locator("[data-not-reported]")).toHaveText("Shows up when ProxyShard reports it");
+    await expect(card(page, id).locator("[data-not-reported]")).toHaveText("Shows up when ShardX reports it");
     await expect(card(page, id).locator("[data-no-data]")).toBeVisible();
   }
   expect(await usage(page).innerText()).not.toContain("—");

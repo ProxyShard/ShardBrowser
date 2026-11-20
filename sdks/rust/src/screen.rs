@@ -18,7 +18,8 @@ pub enum ScreenStrategy {
     UseHost,
 }
 
-/// Default screen mode for a `navigator.platform`, matching the launcher.
+/// Default screen mode for a `navigator.platform`, matching the launcher. A phone
+/// keeps its own screen whatever its platform says: [`apply_screen_strategy`] leaves it.
 pub fn default_screen_mode_for(platform: &str) -> ScreenStrategy {
     match platform {
         "macOS" => ScreenStrategy::CapToHost,
@@ -33,9 +34,9 @@ fn as_int(v: Option<&Value>) -> i64 {
 }
 
 /// Apply `mode` to `cfg` in place. No-op for `Profile` or when the host size
-/// can't be probed.
+/// can't be probed, and for a phone in every mode, as in the launcher (#131).
 pub fn apply_screen_strategy(cfg: &mut Value, mode: ScreenStrategy) {
-    if mode == ScreenStrategy::Profile {
+    if mode == ScreenStrategy::Profile || crate::profile::config_claims_mobile(cfg) {
         return;
     }
     let Some((hw, hh)) = host_screen_size() else {

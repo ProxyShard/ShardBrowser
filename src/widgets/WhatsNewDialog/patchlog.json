@@ -3,6 +3,328 @@
   "repoUrl": "https://github.com/ProxyShard/ShardBrowser",
   "releases": [
     {
+      "version": "2.1.6",
+      "date": "2026-11-19",
+      "entries": [
+        {
+          "id": "chrome-158",
+          "title": "Chrome 158",
+          "lead": "The browser is now based on Chrome 158.",
+          "tag": "new",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Profiles report the Chrome 158 build Google ships for their system: 158.0.8127.37 on Windows and macOS, 158.0.8127.36 on Linux. Profiles you already have are moved to it the next time the launcher starts."
+            }
+          ]
+        },
+        {
+          "id": "speech-voices",
+          "title": "Speech voices",
+          "lead": "Mac profiles listed all their voices at once, which Chrome on a Mac does not.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Chrome on a Mac lists Google’s online voices first and adds the Mac’s own voices about a second later, so a site that reads the list right away sees only Google’s. Mac profiles now do the same. Windows profiles list every voice at once, as Chrome on Windows does."
+            }
+          ]
+        },
+        {
+          "id": "windows-voices",
+          "title": "Windows voices by language",
+          "lead": "Windows profiles for many languages and regions had the US English voices.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "A Windows profile set to, for example, English (UK), German (Austria), French (Canada) or Hindi now has the voices Windows installs for that language, with the right one as the default."
+            }
+          ]
+        },
+        {
+          "id": "built-in-ai",
+          "title": "Built-in AI",
+          "lead": "Sites asking whether Chrome’s built-in AI is available got “unavailable”.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Chrome answers that the model can be downloaded, and sites can tell the two answers apart. Profiles now answer as Chrome does. The browser never downloads the model: it is several gigabytes and would go through your proxy, so a site that asks for it waits as if the download were slow."
+            }
+          ]
+        },
+        {
+          "id": "laptop-battery",
+          "title": "Laptop battery",
+          "lead": "Laptop profiles reported a battery that was always plugged in and full.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "That is what a computer without a battery reports, and sites can count it against a laptop. Each laptop profile now has its own battery level, charging or not, which changes slowly while the browser runs. Desktop profiles still report no battery, and a profile with no battery settings shows this computer’s battery, as Chrome does. Profiles you already have are corrected the next time the launcher starts."
+            }
+          ]
+        },
+        {
+          "id": "air-15-screen",
+          "title": "MacBook Air 15 screen",
+          "lead": "MacBook Air 15 profiles had a screen size this model does not use by default.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now have 1710 × 1112, the size the model starts with. Profiles you already have are changed the next time the launcher starts."
+            }
+          ]
+        },
+        {
+          "id": "webgl-features",
+          "title": "WebGL features",
+          "lead": "A profile’s WebGL features did not match the graphics card it claims.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Sites could turn on features of this computer’s card that the claimed card does not have, and saw features listed that could not be turned on. Now a profile offers the claimed card’s features that this computer can provide, and every listed feature works."
+            }
+          ]
+        },
+        {
+          "id": "webgl-limits",
+          "title": "WebGL limits",
+          "lead": "The WebGL limits a profile claims were reported but not kept to.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "A site could find this computer’s real limits by drawing. The browser now keeps to the claimed limits for drawing area, multisampling and buffer alignment, as far as this computer allows."
+            }
+          ]
+        },
+        {
+          "id": "linux-graphics",
+          "title": "Linux graphics cards",
+          "lead": "Linux profiles named their graphics card the way Chrome on Linux never does.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Chrome on Linux draws WebGL through OpenGL, but Linux profiles reported Vulkan, along with the WebGL features of an older Chrome. Each Linux profile now reports its card, features and limits as Chrome 158 does. The AMD Cedar fingerprint, taken from a tablet, is replaced by an AMD Radeon RX 6800. Profiles you already have are moved the next time the launcher starts."
+            }
+          ]
+        },
+        {
+          "id": "webgpu-limits",
+          "title": "WebGPU limits",
+          "lead": "Profiles showed this computer’s WebGPU limits instead of the claimed card’s.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "They now show the claimed card’s limits, as far as this computer can provide them, and a request above them is refused with the error Chrome gives."
+            }
+          ]
+        },
+        {
+          "id": "site-file-storage",
+          "title": "Site file storage",
+          "lead": "Sites could not open their private file storage in any profile.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The request failed at once with an empty error, which Chrome never gives, and sites that keep files there did not work. It now opens as in Chrome."
+            }
+          ]
+        },
+        {
+          "id": "memory-network-color",
+          "title": "Memory, network and color",
+          "lead": "Three values sites read differed from what Chrome reports.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The JavaScript memory limit now follows the profile’s memory, as Chrome’s does. The network round-trip time no longer differs between a page and its workers. Color depth is 24, or 30 on HDR screens; some Windows profiles reported 32, which Chrome never does."
+            }
+          ]
+        },
+        {
+          "id": "features-by-system",
+          "title": "Features by system",
+          "lead": "Profiles for another system showed four features the way this computer has them.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Barcode scanning, images in notifications, Bluetooth and screen capture resolution now follow the system the profile claims, as Chrome on that system has them."
+            }
+          ]
+        },
+        {
+          "id": "android-profiles",
+          "title": "Android profiles",
+          "lead": "Several values on Android profiles differed from what a real phone reports.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Phone screens are no longer cut to fit this computer’s monitor, and pages get the whole screen. Every phone reports at least five touch points and names its graphics card as Chrome on Android does. Tablets no longer report this computer’s processor type, and a phone without a system version no longer takes this computer’s. Each phone’s battery drains at its own rate. Picking an Android template no longer keeps the previous template’s system version. Profiles you already have are corrected the next time the launcher starts."
+            }
+          ]
+        },
+        {
+          "id": "widevine",
+          "title": "Widevine",
+          "lead": "Protected video now plays in a new profile from its first start.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The launcher gets the current Widevine module from Google before a profile first starts, through that profile’s proxy, and checks for a newer one every few hours. Before, a new profile had none until the browser fetched it itself, and some sites took such a browser for an anti-detect one. The SDKs now do the same."
+            }
+          ]
+        },
+        {
+          "id": "window-position",
+          "title": "Window position",
+          "lead": "A window larger than the profile’s screen no longer reaches past it.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "On a monitor bigger than the screen a profile claims, pages see the window inside that screen, and mouse positions follow it."
+            }
+          ]
+        },
+        {
+          "id": "browser-speed",
+          "title": "Browser speed",
+          "lead": "On Windows, the browser answered some page questions slower than Chrome.",
+          "tag": "fix",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Some answers about the screen and the browser took two to three times longer than in Chrome, and a site that measures this can tell the two apart. The browser is now built with the same optimizations Google uses for Chrome, on every system, and on Windows and macOS these answers take as long as in Chrome."
+            }
+          ]
+        },
+        {
+          "id": "shardx-name",
+          "title": "ShardX name",
+          "lead": "The launcher and the browser’s start page now say ShardX instead of ProxyShard.",
+          "tag": "fix",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The name changed in the window title, the pages, the menus and the start page. Your account, proxies and orders stay as they are."
+            }
+          ]
+        },
+        {
+          "id": "launcher-updates",
+          "title": "Launcher updates",
+          "lead": "The launcher now offers its own updates and installs them.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "When a new version is out, a window asks whether to update. Update downloads it, closes the running profiles and restarts the launcher on the new version; Not now asks again at the next start. The portable Windows build can’t replace itself and opens the download page instead. Versions after 2.1.6 arrive this way; 2.1.6 itself is installed by hand."
+            }
+          ]
+        },
+        {
+          "id": "web-store-proxy",
+          "title": "Web Store through a proxy",
+          "lead": "Extensions from the Chrome Web Store can now be downloaded through a proxy.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Choose one in Settings under “Proxy for the Web Store”. Extensions are then downloaded and checked for updates through it, never from this computer’s IP. Without one, the launcher does not reach the store, and extension updates are not checked."
+            }
+          ]
+        },
+        {
+          "id": "change-ip",
+          "title": "Change IP",
+          "lead": "A profile can now get a new IP from its browser window, if its proxy has a change IP link.",
+          "tag": "new",
+          "scope": "browser",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Add the provider’s link in the proxy’s settings under “Change IP link”; it is kept on this computer only. A profile running on that proxy then has a Change IP button in the browser’s toolbar, and the shortcut you set in Settings under “Change IP shortcut” does the same. The button shows the new IP, and the pages you open next go through it. The proxy’s details in the launcher have the button too."
+            }
+          ]
+        },
+        {
+          "id": "profile-templates",
+          "title": "Profile templates",
+          "lead": "Profile settings can now be saved as a template for new profiles.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "Save one from a profile’s menu or the profile form, then start a new profile from it. Proxy, WebRTC, noise, extensions, tags, folder and the other settings are copied; the name, notes, cookies and fingerprint are not, and each new profile gets a fingerprint of its own. Templates work for personal and team profiles."
+            },
+            {
+              "type": "note",
+              "text": "Update the team server to 2.1.6 to use templates in a team."
+            }
+          ]
+        },
+        {
+          "id": "proxy-test-settings",
+          "title": "Proxy test settings",
+          "lead": "You can now choose the services a proxy test uses.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "In Settings: your own geo service, asked first when a proxy is tested; the site the test connects to through the proxy; and the STUN server for the UDP test. Useful where the default services are blocked."
+            }
+          ]
+        },
+        {
+          "id": "api-tags",
+          "title": "Tags in the API",
+          "lead": "Scripts and AI agents can now read and set profile tags.",
+          "tag": "new",
+          "scope": "launcher",
+          "blocks": [
+            {
+              "type": "p",
+              "text": "The local API and the MCP server list, add, rename, recolor and delete tags, and set a profile’s tags by id or by name. The profile list shows each profile’s tags. A tag that doesn’t exist is refused, and the profile is left as it was."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "version": "2.1.5",
       "date": "2026-11-11",
       "entries": [

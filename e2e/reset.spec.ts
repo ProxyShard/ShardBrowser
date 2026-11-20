@@ -56,7 +56,7 @@ test("Delete all data counts what goes, asks twice, keeps a backup and starts ov
   // The counts come from the plan the reset will be held to.
   for (const item of [
     `${n.profiles} profiles, with their cookies and browser data`, `${n.proxies} proxies`, `${n.extensions} extensions`,
-    `${n.bookmarks} bookmarks`, `${n.projects} automation projects`, "Settings and your ProxyShard API key",
+    `${n.bookmarks} bookmarks`, `${n.projects} automation projects`, "Settings and your ShardX API key",
   ]) {
     await expect(warn.getByRole("listitem").filter({ hasText: item })).toHaveCount(1);
   }

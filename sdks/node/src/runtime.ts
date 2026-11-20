@@ -1,7 +1,7 @@
-// Runtime cache: download ShardX engine + Widevine CDM + fingerprint
-// library from the ProxyShard CDN, extract into a per-user cache dir,
-// place Widevine inside the engine bundle, remember etags so subsequent
-// runs are zero-network. Mirrors src-tauri/src/runtime.rs in the launcher.
+// Runtime cache: download ShardX engine + fingerprint library from the
+// ProxyShard CDN, extract into a per-user cache dir, remember etags so
+// subsequent runs are zero-network. Mirrors src-tauri/src/runtime.rs in the
+// launcher. The Widevine CDM comes from Google at launch (widevine.ts).
 import { closeSync, createWriteStream, existsSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, realpathSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync, chmodSync, copyFileSync, lstatSync } from "node:fs";
 import * as nodeFs from "node:fs";
 import { mkdir } from "node:fs/promises";
@@ -14,9 +14,9 @@ import { randomBytes } from "node:crypto";
 import AdmZip from "adm-zip";
 
 export const PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
-export const CHROMIUM_VERSION = "157.0.8103.50";
+export const CHROMIUM_VERSION = "158.0.8127.36";
 /** This SDK's own version, compared against the manifest's `min_sdk_version`. */
-export const SDK_VERSION = "2.1.6";
+export const SDK_VERSION = "2.1.7";
 // Version manifest (GitHub raw) — one tiny GET yields every archive's current
 // etag, so we never poll R2/S3 (no per-archive HEAD). Changed archives are then
 // pulled from PUB_BASE.
@@ -33,9 +33,7 @@ export interface Archive { key: string; label: string; }
 
 export interface HostSpec {
   browser: Archive;
-  widevine: Archive | null;
   binarySubpath: string[];
-  widevineSubpath: string[];
 }
 
 export function hostSpec(): HostSpec {
@@ -43,28 +41,20 @@ export function hostSpec(): HostSpec {
   const arch = osArch();
   if (plat === "darwin" && arch === "arm64") {
     return {
-      browser:  { key: "ShardX-Mac-arm64.zip",          label: "ShardX browser (macOS arm64)" },
-      widevine: { key: "ShardX-Widevine-Mac-arm64.zip", label: "Widevine CDM" },
-      binarySubpath:   ["ShardX-Mac-arm64", "ShardX.app", "Contents", "MacOS", "ShardX"],
-      widevineSubpath: ["ShardX-Mac-arm64", "ShardX.app", "Contents", "Frameworks",
-                        "ShardX Framework.framework", "Versions", CHROMIUM_VERSION,
-                        "Libraries", "WidevineCdm"],
+      browser:  { key: "ShardX-Mac-arm64.zip", label: "ShardX browser (macOS arm64)" },
+      binarySubpath: ["ShardX-Mac-arm64", "ShardX.app", "Contents", "MacOS", "ShardX"],
     };
   }
   if (plat === "win32" && arch === "x64") {
     return {
-      browser:  { key: "ShardX-Windows.zip",     label: "ShardX browser (Windows x64)" },
-      widevine: { key: "ShardX-Widevine-Win.zip", label: "Widevine CDM" },
-      binarySubpath:   ["ShardX-Windows", "chrome.exe"],
-      widevineSubpath: ["ShardX-Windows", "WidevineCdm"],
+      browser:  { key: "ShardX-Windows.zip", label: "ShardX browser (Windows x64)" },
+      binarySubpath: ["ShardX-Windows", "chrome.exe"],
     };
   }
   if (plat === "linux" && arch === "x64") {
     return {
-      browser:  { key: "ShardX-Linux.zip",         label: "ShardX browser (Linux x64)" },
-      widevine: { key: "ShardX-Widevine-Linux.zip", label: "Widevine CDM" },
-      binarySubpath:   ["ShardX-Linux", "chrome"],
-      widevineSubpath: ["ShardX-Linux", "WidevineCdm"],
+      browser:  { key: "ShardX-Linux.zip", label: "ShardX browser (Linux x64)" },
+      binarySubpath: ["ShardX-Linux", "chrome"],
     };
   }
   throw new Error(`Unsupported host: ${plat}/${arch}. ShardX ships mac-arm64, win-x64, linux-x64.`);
@@ -76,10 +66,15 @@ export const FINGERPRINTS_ARCHIVE: Archive = {
 };
 const FINGERPRINTS_TOP_DIR = "shardx-fingerprints";
 
+/** Library ids dropped for another GPU: the Cedar capture (a PrimeOS tablet's bare driver
+ * string) became an RX 6800 on 20.11. A retired id loads its successor, and its file goes. */
+export const RETIRED_TEMPLATES: ReadonlyMap<string, string> = new Map([["linux-unknown-amdcedardr", "linux-navi21"]]);
+
 export type ProgressCb = (label: string, received: number, total: number) => void;
 
 interface Manifest {
   browser_etag?: string;
+  /** Left by SDKs that took the CDM from the CDN; read, never used. */
   widevine_etag?: string;
   fingerprints_etag?: string;
   /** Chromium version of the engine binary last extracted on disk. The update
@@ -94,6 +89,7 @@ interface Manifest {
   installed_grease_brand?: string;
   installed_grease_version?: string;
   installed_android_chromium_version?: string;
+  installed_desktop_chromium_versions?: Record<string, string>;
   installed_tls?: Record<string, unknown>;
 }
 
@@ -115,6 +111,10 @@ export class Runtime {
   private _greaseVersion?: string;
   /** Chrome for Android build of the engine's major, for phone profiles. */
   private _androidVersion?: string;
+  /** The build each desktop OS is shipped, keyed as navigator.platform names it ("macOS",
+   *  "Windows", "Linux"), when it is not the engine's own: 158 went out as .37 for macOS and
+   *  Windows and .36 for Linux. */
+  private _desktopVersions?: Record<string, string>;
   /** TLS block from the manifest (signature_algorithms / cipher_suites).
    *  Applied to profiles on launch so the JA4 hash keeps matching the Chrome
    *  version the profile claims — 152 added the ML-DSA signature schemes, and
@@ -131,6 +131,8 @@ export class Runtime {
 
   get manifestPath(): string  { return join(this.root, "manifest.json"); }
   get binaryPath(): string    { return join(this.root, ...this.spec.binarySubpath); }
+  /** The Widevine CDM fetched from Google, copied into each profile at launch. */
+  get widevineCacheDir(): string { return join(this.root, "widevine-cdm"); }
   get fingerprintsDir(): string {
     const d = join(this.root, "fingerprints");
     mkdirSync(d, { recursive: true });
@@ -153,6 +155,14 @@ export class Runtime {
   get greaseVersion(): string | undefined { return this._greaseVersion; }
   /** Chrome for Android build phone profiles report; set on install(). */
   get androidChromiumVersion(): string | undefined { return this._androidVersion; }
+  /** The build each desktop OS reports, keyed as navigator.platform names it; set on install(). */
+  get desktopChromiumVersions(): Record<string, string> | undefined { return this._desktopVersions; }
+  /** The build a profile of this platform reports instead of `chromiumVersion`, if any. */
+  claimedChromiumVersion(platform: string, mobile: boolean): string | undefined {
+    if (mobile) return this._androidVersion;
+    const v = this._desktopVersions?.[platform];
+    return typeof v === "string" && v ? v : undefined;
+  }
   /** TLS overrides from the manifest; set on install(). */
   get tls(): Record<string, unknown> | undefined { return this._tls; }
 
@@ -265,6 +275,7 @@ export class Runtime {
     this._greaseBrand = local.installed_grease_brand;
     this._greaseVersion = local.installed_grease_version;
     this._androidVersion = local.installed_android_chromium_version;
+    this._desktopVersions = local.installed_desktop_chromium_versions;
     this._tls = local.installed_tls;
   }
 
@@ -299,6 +310,7 @@ export class Runtime {
     this._greaseBrand = offered?.greaseBrand ?? local.installed_grease_brand;
     this._greaseVersion = offered?.greaseVersion ?? local.installed_grease_version;
     this._androidVersion = offered?.androidChromiumVersion ?? local.installed_android_chromium_version;
+    this._desktopVersions = offered?.desktopChromiumVersions ?? local.installed_desktop_chromium_versions;
     this._tls = offered?.tls ?? local.installed_tls;
     if (tooOld) {
       console.warn(
@@ -335,6 +347,7 @@ export class Runtime {
         this._greaseBrand = local.installed_grease_brand;
         this._greaseVersion = local.installed_grease_version;
         this._androidVersion = local.installed_android_chromium_version;
+        this._desktopVersions = local.installed_desktop_chromium_versions;
         this._tls = local.installed_tls;
         console.warn(
           `[shardx] the engine update was not installed: ${(e as Error).message}. Staying on the `
@@ -345,23 +358,13 @@ export class Runtime {
     if (swapped) {
       if (remote.engineBuild) local.installed_engine_build = remote.engineBuild;
       // Saved at once: the engine on disk is the new one, whatever fails next.
-      // The new tree has no CDM yet, so the old one's etag must not say it has.
       local.installed_chromium_version = this._chromiumVersion;
       if (remote.greaseBrand) local.installed_grease_brand = remote.greaseBrand;
       if (remote.greaseVersion) local.installed_grease_version = remote.greaseVersion;
       if (remote.androidChromiumVersion) local.installed_android_chromium_version = remote.androidChromiumVersion;
+      if (remote.desktopChromiumVersions) local.installed_desktop_chromium_versions = remote.desktopChromiumVersions;
       if (remote.tls) local.installed_tls = remote.tls;
-      delete local.widevine_etag;
       this.saveManifest(local);
-    }
-    if (this.spec.widevine && (swapped || !local.widevine_etag)) {
-      // The CDM is no reason to fail a run whose engine is in: tried again next time.
-      try {
-        local.widevine_etag = await this.downloadAndExtract(this.spec.widevine, this.root);
-        this.placeWidevine();
-      } catch (e) {
-        console.warn(`[shardx] Widevine CDM not installed (${(e as Error).message}); tried again on the next run.`);
-      }
     }
     const remoteFp = remote.archives[FINGERPRINTS_ARCHIVE.key];
     const fpDirHasJson = readdirSync(this.fingerprintsDir).some((f) => f.endsWith(".json"));
@@ -377,6 +380,7 @@ export class Runtime {
       if (remote.greaseBrand) local.installed_grease_brand = remote.greaseBrand;
       if (remote.greaseVersion) local.installed_grease_version = remote.greaseVersion;
       if (remote.androidChromiumVersion) local.installed_android_chromium_version = remote.androidChromiumVersion;
+      if (remote.desktopChromiumVersions) local.installed_desktop_chromium_versions = remote.desktopChromiumVersions;
       if (remote.tls) local.installed_tls = remote.tls;
     }
     this.saveManifest(local);
@@ -396,12 +400,17 @@ export class Runtime {
   /** Fetch the version manifest (GitHub raw) — one request that yields every
    *  archive's current etag + the chromium version, replacing per-archive HEADs
    *  against R2/S3. Empty archives / undefined version when unreachable. */
-  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; engineBuild?: string; minSdkVersion?: string; greaseBrand?: string; greaseVersion?: string; androidChromiumVersion?: string; tls?: Record<string, unknown> }> {
+  private async fetchManifest(): Promise<{ archives: Record<string, string>; chromiumVersion?: string; engineBuild?: string; minSdkVersion?: string; greaseBrand?: string; greaseVersion?: string; androidChromiumVersion?: string; desktopChromiumVersions?: Record<string, string>; tls?: Record<string, unknown> }> {
     try {
       const r = await fetch(MANIFEST_URL);
       if (!r.ok) return { archives: {} };
-      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; engine_build?: string | number; min_sdk_version?: string; grease_brand?: string; grease_version?: string; android_chromium_version?: string; tls?: Record<string, unknown> };
+      const data = await r.json() as { archives?: Record<string, string>; chromium_version?: string; engine_build?: string | number; min_sdk_version?: string; grease_brand?: string; grease_version?: string; android_chromium_version?: string; desktop_chromium_versions?: Record<string, unknown>; tls?: Record<string, unknown> };
       const str = (v: unknown) => (typeof v === "string" ? v : undefined);
+      const desktopVersions = (v: unknown): Record<string, string> | undefined => {
+        if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+        const out = Object.fromEntries(Object.entries(v).filter(([, b]) => typeof b === "string" && b)) as Record<string, string>;
+        return Object.keys(out).length ? out : undefined;
+      };
       return {
         archives: (data && typeof data.archives === "object" && data.archives) || {},
         chromiumVersion: str(data?.chromium_version),
@@ -413,6 +422,7 @@ export class Runtime {
         greaseBrand: str(data?.grease_brand),
         greaseVersion: str(data?.grease_version),
         androidChromiumVersion: str(data?.android_chromium_version),
+        desktopChromiumVersions: desktopVersions(data?.desktop_chromium_versions),
         tls: (data?.tls && typeof data.tls === "object" && !Array.isArray(data.tls))
           ? data.tls as Record<string, unknown>
           : undefined,
@@ -569,30 +579,6 @@ export class Runtime {
     rmQuiet(staging);
   }
 
-  /** Downloads and unpacks in one step, for everything that has nothing to lose. */
-  private async downloadAndExtract(arch: Archive, dest: string): Promise<string> {
-    const { tmp, etag } = await this.download(arch, dest);
-    this.extractArchive(tmp, dest);
-    return etag;
-  }
-
-  private placeWidevine(): void {
-    if (!this.spec.widevine) return;
-    const wrapper = this.spec.widevine.key.replace(/\.zip$/, "");
-    const src = join(this.root, wrapper, "WidevineCdm");
-    if (!existsSync(src)) return;
-    // On macOS the CDM sits inside the framework's versioned folder. That is
-    // the version of the engine on disk, not the one this SDK was published
-    // with: the constant put it in a folder the engine never reads.
-    const onDisk = this.installedEngineVersion() ?? CHROMIUM_VERSION;
-    const dst = join(this.root,
-      ...this.spec.widevineSubpath.map((seg) => (seg === CHROMIUM_VERSION ? onDisk : seg)));
-    if (existsSync(dst)) rmSync(dst, { recursive: true, force: true });
-    mkdirSync(dirname(dst), { recursive: true });
-    renameSync(src, dst);
-    rmSync(join(this.root, wrapper), { recursive: true, force: true });
-  }
-
   private async installFingerprints(): Promise<void> {
     const url = `${PUB_BASE}/${FINGERPRINTS_ARCHIVE.key}`;
     const staging = join(this.fingerprintsDir, ".staging");
@@ -633,6 +619,7 @@ export class Runtime {
       // existing libraries; user-added files (other names) are never iterated.
       copyFileSync(join(walk, name), dst);
     }
+    for (const old of RETIRED_TEMPLATES.keys()) rmSync(join(this.fingerprintsDir, `${old}.json`), { force: true });
     rmSync(staging, { recursive: true, force: true });
   }
 }
@@ -818,7 +805,8 @@ function assertRoom(dir: string, need: number): void {
 }
 
 /** How many processes run from `dir`. On macOS and Linux a swap would pull
- *  the files from under them; Windows refuses the rename itself. */
+ *  the files from under them; on Windows the files a running browser holds
+ *  open make the rename fail. */
 export function processesUnder(dir: string): number {
   // As given and as resolved: a process names the path it was started by.
   let roots: string[];

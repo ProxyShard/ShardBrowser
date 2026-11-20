@@ -12,17 +12,17 @@ test("ProxyShard: no key says what a key gives", async ({ page }) => {
   await page.evaluate(() => { const m = (window as unknown as { __shardxMock: Mock }).__shardxMock; m.state.psKey = ""; m.save(); });
   await page.reload();
   // The key card is the page, and says what the key is for (F32).
-  await expect(page.locator("[data-ps-key-setup]").getByRole("heading", { name: "Connect your ProxyShard account" })).toBeVisible();
+  await expect(page.locator("[data-ps-key-setup]").getByRole("heading", { name: "Connect your ShardX account" })).toBeVisible();
 });
 
 test("ProxyShard: a key that fails says why, and Check again fixes it", async ({ page }) => {
   await fail(page, { ps_me: 1 });
   await openApp(page, { section: "proxyshard" });
   // The injected failure is not a rejection: ProxyShard was out of reach (PC-127).
-  await expect(page.getByText("Couldn’t reach ProxyShard")).toBeVisible();
+  await expect(page.getByText("Couldn’t reach ShardX")).toBeVisible();
   await expect(page.locator("[data-ps-key-state]").getByText("Mock failure: ps_me")).toBeVisible();
   await page.getByRole("button", { name: "Check again" }).click();
-  await expect(page.getByText("Couldn’t reach ProxyShard")).toHaveCount(0);
+  await expect(page.getByText("Couldn’t reach ShardX")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
 });
 
@@ -114,7 +114,7 @@ test("in Chinese", async ({ page }) => {
   await fail(page, { ps_me: 1 });
   await page.addInitScript(() => localStorage.setItem("shardx.lang", "zh"));
   await openApp(page, { section: "proxyshard" });
-  await expect(page.getByText("无法连接 ProxyShard")).toBeVisible();
+  await expect(page.getByText("无法连接 ShardX")).toBeVisible();
 });
 
 test("ProxyShard: a residential-only account isn't told it has no orders", async ({ page }) => {
@@ -160,10 +160,10 @@ test("ProxyShard: switching the status straight from an orders error loads again
 test("ProxyShard: saving a new key after a failure clears the failure", async ({ page }) => {
   await fail(page, { ps_me: 1 });
   await openApp(page, { section: "proxyshard" });
-  await expect(page.getByText("Couldn’t reach ProxyShard")).toBeVisible();
+  await expect(page.getByText("Couldn’t reach ShardX")).toBeVisible();
   const key = page.getByLabel(/API key/).first();
   await key.fill("psk_live_new_key_0000000000000000");
   await key.press("Enter");
-  await expect(page.getByText("Couldn’t reach ProxyShard")).toHaveCount(0);
+  await expect(page.getByText("Couldn’t reach ShardX")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Orders" })).toBeVisible();
 });

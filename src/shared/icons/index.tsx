@@ -101,6 +101,7 @@ import {
   CloudSyncIcon,
   CloudOffIcon,
   CloudAlertIcon,
+  Layout01Icon,
 } from "@hugeicons/core-free-icons";
 import type { ComponentProps } from "react";
 
@@ -222,6 +223,8 @@ export const CloseIcon = make(Cancel01Icon);
 /** The tick of a Save button that sits beside a field (a cell edit). */
 export const TickIcon = make(Tick02Icon);
 export const TagIcon = make(Tag01Icon);
+/** A profile template (#145): a layout a new profile starts from. */
+export const TemplateIcon = make(Layout01Icon);
 export const DisplayIcon = make(SlidersHorizontalIcon);
 /** The list header's columns button (owner feature 2026-09-26). */
 export const ColumnsIcon = make(ColumnsThreeCogIcon);

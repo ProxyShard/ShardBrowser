@@ -2,14 +2,15 @@
 //!
 //! Self-contained SDK for the [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 //! anti-detect browser. Mirrors the Python (`shardx`) and Node
-//! (`@proxyshard/shardx`) SDKs: on first use it downloads the engine,
-//! Widevine CDM, and the bundled fingerprint library from the ProxyShard
-//! CDN into a per-user cache dir, then launches isolated profiles with the
-//! same spoofing flags the desktop launcher uses.
+//! (`@proxyshard/shardx`) SDKs: on first use it downloads the engine and the
+//! bundled fingerprint library from the ProxyShard CDN into a per-user cache
+//! dir (the Widevine CDM from Google), then launches isolated profiles with
+//! the same spoofing flags the desktop launcher uses.
 //!
 //! ```no_run
 //! use shardx::{ShardX, ShardXOptions, LaunchOptions};
 //!
+//! # #[cfg(feature = "control")]
 //! # async fn run() -> anyhow::Result<()> {
 //! let sdk = ShardX::new(ShardXOptions::default())?;
 //!
@@ -42,6 +43,7 @@ mod proxy;
 mod randomize;
 mod runtime;
 mod screen;
+mod widevine;
 
 use std::fs;
 use std::path::PathBuf;

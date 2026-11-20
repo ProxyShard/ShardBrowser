@@ -11,7 +11,7 @@ const info = (page: Page) => page.locator("main header").getByRole("button", { n
 const HELP: Record<(typeof SECTIONS)[number], { title: string; body: RegExp }> = {
   profiles: { title: "About profiles", body: /one browser identity/ },
   proxies: { title: "About proxies", body: /address a profile connects through/ },
-  proxyshard: { title: "About ProxyShard", body: /proxy service/ },
+  proxyshard: { title: "About ShardX", body: /proxy service/ },
   automation: { title: "About automation", body: /runs a list of steps/ },
   fingerprints: { title: "About the fingerprint library", body: /hardware identity/ },
   extensions: { title: "About extensions", body: /turn it on for each profile in its details panel/ },

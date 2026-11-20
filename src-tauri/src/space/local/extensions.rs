@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 pub(in crate::space) mod chrome_id;
 #[allow(dead_code)]
 pub(in crate::space) mod crx;
+pub(in crate::space) mod widevine;
 #[allow(dead_code)]
 pub(in crate::space) mod manifest_edit;
 pub(in crate::space) mod source;
@@ -478,6 +479,36 @@ pub(in crate::space) async fn download(raw: &str, to: &Path) -> Result<()> {
     fetch(&url, to, &ua, DOWNLOAD_MAX, &|_| {}).await
 }
 
+/// What every Web Store call says while no proxy is chosen for it (#154).
+pub(crate) const NO_STORE_PROXY: &str =
+    "choose a proxy for the Web Store in Settings: the launcher does not reach the store from this computer's IP";
+
+/// Whether a proxy for the Web Store is chosen in Settings.
+pub(crate) fn store_proxy_chosen() -> bool {
+    crate::settings::load().ok().and_then(|s| s.store_proxy).is_some_and(|id| !id.trim().is_empty())
+}
+
+/// A client for `url` through the proxy chosen for the Web Store (#154), never
+/// straight from this computer. A loopback address (tests, a local mirror) goes direct.
+fn store_client(url: &str, ua: &str) -> std::result::Result<reqwest::ClientBuilder, String> {
+    let builder = reqwest::Client::builder().user_agent(ua);
+    let loopback = url::Url::parse(url).ok().and_then(|u| u.host_str().map(str::to_string)).is_some_and(|h| {
+        h == "localhost" || h.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    });
+    if loopback {
+        return Ok(builder.no_proxy());
+    }
+    let id = crate::settings::load().ok().and_then(|s| s.store_proxy).filter(|id| !id.trim().is_empty());
+    let id = id.ok_or_else(|| NO_STORE_PROXY.to_string())?;
+    // The space's own list: a team's proxy when one was chosen in a team.
+    let entry = crate::space::proxy::get(&id)
+        .map_err(|e| e.to_string())?
+        .filter(|p| !p.host.is_empty())
+        .ok_or_else(|| "the proxy chosen for the Web Store in Settings was deleted; choose another".to_string())?;
+    let proxy = super::proxy::reqwest_proxy(&entry).map_err(|e| e.to_string())?;
+    Ok(builder.proxy(proxy))
+}
+
 /// `url` streamed into `to`: at most `cap` bytes, given up after `STALL` without
 /// any; `progress` hears the bytes received so far.
 pub(in crate::space) async fn fetch(
@@ -488,8 +519,8 @@ pub(in crate::space) async fn fetch(
     progress: &(dyn Fn(u64) + Send + Sync),
 ) -> Result<()> {
     use tokio::io::AsyncWriteExt;
-    let client = reqwest::Client::builder()
-        .user_agent(ua)
+    let client = store_client(url, ua)
+        .map_err(|e| anyhow::anyhow!(e))?
         .connect_timeout(std::time::Duration::from_secs(10))
         .build()?;
     let resp = tokio::time::timeout(STALL, client.get(url).send())
@@ -537,7 +568,7 @@ pub(in crate::space) async fn fetch(
 const SMALL_MAX: usize = 1 << 20;
 
 /// A small GET to the Web Store (the update check): its body, within `timeout`
-/// start to end and `SMALL_MAX` bytes. Straight from this computer, no cookies.
+/// start to end and `SMALL_MAX` bytes. Through the store's proxy, no cookies.
 pub(in crate::space) async fn get_small(url: &str, ua: &str, timeout: std::time::Duration) -> std::result::Result<Vec<u8>, String> {
     let said = |e: reqwest::Error| {
         if e.is_timeout() {
@@ -546,8 +577,7 @@ pub(in crate::space) async fn get_small(url: &str, ua: &str, timeout: std::time:
             format!("could not reach the Web Store: {e}")
         }
     };
-    let client = reqwest::Client::builder()
-        .user_agent(ua)
+    let client = store_client(url, ua)?
         .connect_timeout(std::time::Duration::from_secs(10).min(timeout))
         .timeout(timeout)
         .build()

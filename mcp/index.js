@@ -339,7 +339,7 @@ server.tool(
 
 server.tool(
   "edit_profile",
-  "Edit a profile. Only provided fields change; `fingerprint` replaces it verbatim; folder:'' unfiles; proxy_id:'' unbinds; color:'' goes back to the name-derived one; `extensions` replaces the whole list.",
+  "Edit a profile. Only provided fields change; `fingerprint` replaces it verbatim; folder:'' unfiles; proxy_id:'' unbinds; color:'' goes back to the name-derived one; `extensions` replaces the whole list; `tags` (ids or names from list_tags) replaces the profile's tags.",
   {
     id: z.string(),
     name: z.string().optional(),
@@ -349,6 +349,7 @@ server.tool(
     proxy: z.string().optional(),
     color: z.string().optional(),
     extensions: z.array(z.string()).optional(),
+    tags: z.array(z.string()).optional(),
     // Claimed display refresh rate in Hz; applied after `fingerprint`.
     refresh_rate: z.number().int().min(24).max(480).optional(),
     fingerprint: z.any().optional(),
@@ -494,6 +495,77 @@ server.tool(
   "Delete a bookmark; it leaves its profiles on their next launch.",
   { id: z.string() },
   async ({ id }) => text(await api(`/bookmarks/${id}`, { method: "DELETE" })),
+);
+
+// ---- tags ----
+
+server.tool(
+  "list_tags",
+  "Tags in their order (id, name, color) and by_profile: tag ids by profile id. list_profiles shows each profile's tag ids too.",
+  {},
+  async () => text(await api("/tags")),
+);
+
+server.tool(
+  "save_tag",
+  "Add a tag (no id) or rename/recolor one (id). Names are unique, case aside. color is one of blue, violet, magenta, red, orange, yellow, green, sky; a new tag without one takes the next.",
+  {
+    id: z.string().optional(),
+    name: z.string(),
+    color: z.enum(["blue", "violet", "magenta", "red", "orange", "yellow", "green", "sky"]).optional(),
+  },
+  async (args) => text(await api("/tags", { method: "POST", body: args })),
+);
+
+server.tool(
+  "delete_tag",
+  "Delete a tag; the profiles that carried it stay, without it.",
+  { id: z.string() },
+  async ({ id }) => text(await api(`/tags/${encodeURIComponent(id)}`, { method: "DELETE" })),
+);
+
+server.tool(
+  "set_profile_tags",
+  "Give a profile exactly these tags: ids or names from list_tags. [] clears. An unknown tag changes nothing; make it with save_tag first.",
+  { id: z.string(), tags: z.array(z.string()) },
+  async ({ id, tags }) => text(await api(`/profiles/${encodeURIComponent(id)}/tags`, { method: "PUT", body: { tags } })),
+);
+
+// ---- profile templates (#145) ----
+
+server.tool(
+  "list_templates",
+  "Profile templates: a profile's settings kept under a name, and where each new profile's fingerprint comes from.",
+  {},
+  async () => text(await api("/templates")),
+);
+
+server.tool(
+  "save_template",
+  "Add or update a profile template. profile_id takes that profile's settings, folder, tags and fingerprint source; never its fingerprint, name, notes or cookies.",
+  {
+    id: z.string().optional(),
+    name: z.string(),
+    profile_id: z.string().optional(),
+    folder: z.string().optional(),
+    tags: z.array(z.string()).optional(),
+    is_default: z.boolean().optional(),
+  },
+  async (args) => text(await api("/templates", { method: "POST", body: args })),
+);
+
+server.tool(
+  "delete_template",
+  "Delete a profile template; profiles made from it stay as they are.",
+  { id: z.string() },
+  async ({ id }) => text(await api(`/templates/${encodeURIComponent(id)}`, { method: "DELETE" })),
+);
+
+server.tool(
+  "create_profile_from_template",
+  "Create a profile from a template: its settings, and a fresh fingerprint of its own from the template's source.",
+  { id: z.string(), name: z.string().optional(), notes: z.string().optional(), folder: z.string().optional() },
+  async ({ id, ...body }) => text(await api(`/templates/${encodeURIComponent(id)}/profiles`, { method: "POST", body })),
 );
 
 // ---- trash ----

@@ -399,6 +399,9 @@ async fn what_syncs_is_the_same_on_both_and_secrets_stay_where_they_were_typed()
     };
     let tag = local::tags::save(local::tags::Tag { id: String::new(), name: "VIP".into(), color: "violet".into() }, None).unwrap();
     local::tags::assign(std::collections::BTreeMap::from([(x.clone(), vec![tag.id.clone()])])).unwrap();
+    // A profile template (#145) goes with the folders and tags it names.
+    let settings = json!({ "webrtc": "tcp_only" }).as_object().cloned().unwrap();
+    let tpl = local::templates::save(local::templates::ProfileTemplate { name: "Ads base".into(), settings, tags: vec![tag.id.clone()], ..Default::default() }).unwrap();
     let mut p = local::automation::new_project("Warm up");
     p.blocks = vec![serde_json::from_value(json!({
         "id": "b1", "kind": "type", "params": { "text": "hunter2", "selector": "#pw" }, "secrets": ["text"]
@@ -413,6 +416,9 @@ async fn what_syncs_is_the_same_on_both_and_secrets_stay_where_they_were_typed()
     assert_eq!(state().kinds, kinds, "B follows the space's choice");
     assert!(local::profile::exists(&x));
     assert_eq!(local::tags::list().unwrap().by_profile[&x], std::slice::from_ref(&tag.id));
+    let got = local::templates::list().unwrap();
+    assert_eq!((got.len(), got[0].id.as_str(), got[0].settings["webrtc"].as_str()), (1, tpl.id.as_str(), Some("tcp_only")));
+    assert_eq!(got[0].tags, [tag.id.clone()]);
     let there = local::automation::list().unwrap().into_iter().find(|q| q.id == p.id).unwrap();
     assert_eq!(there.blocks[0].params["text"], "", "a secret does not leave A");
     assert_eq!(there.blocks[0].params["selector"], "#pw");

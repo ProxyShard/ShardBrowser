@@ -15,11 +15,13 @@ from __future__ import annotations
 from typing import Any, Optional, Tuple
 
 from .host import host_screen_size
+from .runtime import config_claims_mobile
 
 
 def apply_screen_strategy(config: dict, mode: str) -> None:
-    """Mutate `config` in place per `mode`. Unknown modes are no-ops."""
-    if mode == "profile":
+    """Mutate `config` in place per `mode`. Unknown modes are no-ops. A phone keeps
+    the handset's screen in every mode, as in the launcher (#131)."""
+    if mode == "profile" or config_claims_mobile(config):
         return
     host = host_screen_size()
     if host is None:
@@ -106,8 +108,11 @@ def _use_host(config: dict, host_w: int, host_h: int) -> None:
     win["inner_height"] = max(1, avail_h - 88)
 
 
-def default_mode_for(platform: str) -> str:
-    """Map `navigator.platform` to the launcher's default screen mode."""
+def default_mode_for(platform: str, mobile: bool = False) -> str:
+    """Map `navigator.platform` to the launcher's default screen mode. A phone is
+    "profile" whatever its platform says: an imported one can say plain "Linux"."""
+    if mobile:
+        return "profile"
     if platform == "macOS":
         return "cap_to_host"
     if platform in ("Windows", "Linux"):

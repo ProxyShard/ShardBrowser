@@ -11,4 +11,5 @@ pub(in crate::space) mod protect;
 pub(in crate::space) mod proxy;
 pub(in crate::space) mod seal;
 pub(in crate::space) mod tags;
+pub(in crate::space) mod templates;
 pub(in crate::space) mod trash;

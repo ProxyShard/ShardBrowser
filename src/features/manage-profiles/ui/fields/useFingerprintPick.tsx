@@ -3,7 +3,7 @@ import { useLatched } from "@proxyshard/shardx-ui-kit";
 import { HOST_OS } from "../../../../shared/lib/utils";
 import { useDialogLife } from "../../../../shared/lib/useDialogLife";
 import { matchesOs, osIdFor } from "../../../../shared/constants";
-import { enrichPicksForPreset, type ProfileForm } from "../../../../entities/profile";
+import { enrichPicksForPreset, pickedPlatformVersion, type ProfileForm } from "../../../../entities/profile";
 import type { FingerprintEntry } from "../../../../entities/fingerprint";
 import { useGpuCompat, verdictsLoaded } from "../../../../shared/model/gpuCompat";
 import { IncompatibleWarningModal } from "../../../gpu-compat";
@@ -71,7 +71,8 @@ export function useFingerprintPick(
       gpu_preset_id: id,
       hardware_concurrency: picks.hardware_concurrency ?? nav.hardware_concurrency ?? f.hardware_concurrency,
       device_memory: picks.device_memory ?? nav.device_memory ?? f.device_memory,
-      platform_version: picks.platform_version ?? f.platform_version,
+      // The template's own when the backend draws none, never the previous OS's (#131).
+      platform_version: pickedPlatformVersion(picks.platform_version, fp.payload),
       user_agent: nav.user_agent ?? f.user_agent,
     });
     // A pick of another OS (From template) moves the OS control with it.

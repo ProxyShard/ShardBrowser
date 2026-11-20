@@ -13,11 +13,11 @@ import { openSessions, sessionEnded } from "./teamSessions";
 export const NOT_IN_TEAM = TEAM_REFUSALS.notInTeam;
 
 /** The lists each space has of its own. */
-const OWN = ["profiles", "order", "proxies", "snapshots", "extensions", "bookmarks", "automation", "tags", "folders"] as const;
+const OWN = ["profiles", "order", "proxies", "snapshots", "extensions", "bookmarks", "automation", "tags", "folders", "templates"] as const;
 export type SpaceData = Pick<MockState, (typeof OWN)[number]>;
 
 /** Every list a switch tells the pages to read again (cache.rs TOPICS), in its order. */
-const TOPICS = ["profiles", "proxies", "folders", "bookmarks", "extensions", "automation", "tags"];
+const TOPICS = ["profiles", "proxies", "folders", "bookmarks", "extensions", "automation", "tags", "templates"];
 
 type Space = NonNullable<MockState["space"]>;
 const PERSONAL: Space = { kind: "personal" };
@@ -103,12 +103,12 @@ function teamSeed(state: MockState, team: string): SpaceData {
   });
   return {
     profiles, order: rows.map((r) => r.id), proxies: [], snapshots: {}, extensions: [], bookmarks: [], automation: [],
-    tags: { tags: [], by_profile: {} }, folders: undefined,
+    tags: { tags: [], by_profile: {} }, folders: undefined, templates: [],
   };
 }
 
 const emptyData = (): SpaceData => ({
-  profiles: {}, order: [], proxies: [], snapshots: {}, extensions: [], bookmarks: [], automation: [], tags: undefined, folders: undefined,
+  profiles: {}, order: [], proxies: [], snapshots: {}, extensions: [], bookmarks: [], automation: [], tags: undefined, folders: undefined, templates: undefined,
 });
 const takeOwn = (state: MockState): SpaceData => Object.fromEntries(OWN.map((k) => [k, state[k]])) as SpaceData;
 

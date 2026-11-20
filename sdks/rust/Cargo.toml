@@ -1,13 +1,13 @@
 [package]
 name = "shardx"
-version = "2.1.6"
+version = "2.1.7"
 edition = "2021"
 rust-version = "1.74"
 description = "Self-contained Rust SDK for the ShardBrowser anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
 authors = ["ProxyShard"]
 license = "MIT"
 readme = "README.md"
-homepage = "https://github.com/ProxyShard/ShardBrowser"
+homepage = "https://shardbrowser.com/sdk/rust"
 repository = "https://github.com/ProxyShard/ShardBrowser"
 documentation = "https://docs.shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher"
 keywords = ["anti-detect", "browser", "fingerprint", "chromium", "automation"]
@@ -25,11 +25,13 @@ anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "socks"] }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "time", "process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "fs", "io-util", "net", "time", "process", "sync"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 dirs = "5"
 url = "2"
 rand = "0.8"
+# The Widevine package's CRX3 signatures and hashes; already in the build through rustls.
+ring = "0.17"
 chromiumoxide = { version = "0.7", default-features = false, features = ["tokio-runtime"], optional = true }
 futures-util = { version = "0.3", optional = true }
 chromiumoxide_types = { version = "0.7", optional = true }
@@ -42,9 +44,15 @@ libc = "0.2"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Storage_FileSystem",
+  "Win32_System_Registry",
   "Win32_System_SystemInformation",
   "Win32_System_Threading",
 ] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
+
+# The quickstart drives the browser, which needs the "control" feature.
+[[example]]
+name = "quickstart"
+required-features = ["control"]

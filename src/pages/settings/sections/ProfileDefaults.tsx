@@ -1,4 +1,4 @@
-import { Switch, Textarea } from "@proxyshard/shardx-ui-kit";
+import { Input, Switch, Textarea } from "@proxyshard/shardx-ui-kit";
 import { useT } from "../../../shared/i18n";
 import { riskyLaunchArgs, type LaunchArgRisk } from "../../../shared/lib/launchArgs";
 import { SelectField } from "../../../shared/ui/SelectField";
@@ -30,6 +30,10 @@ export function ProfileDefaultsSection({ s, setS, p, setP }: SettingsProps) {
           </div>
         )}
       />
+      <ProbeField id="geo-custom" field="geo_custom_url" kind="url" title={t("settings.geoCustomTitle")} help={t("settings.geoCustomHelp")} placeholder="https://ipinfo.io/json" s={s} setS={setS} />
+      <ProbeField id="probe-host" field="probe_host" kind="host" title={t("settings.probeHostTitle")} help={t("settings.probeHostHelp")} placeholder="example.com:443" s={s} setS={setS} />
+      <ProbeField id="stun-server" field="stun_server" kind="host" title={t("settings.stunServerTitle")} help={t("settings.stunServerHelp")} placeholder="stun.l.google.com:19302" s={s} setS={setS} />
+      <ChangeIpKeyField s={s} setS={setS} />
       <SettingRow
         id="screen"
         title={t("settings.screenModeLabel")}
@@ -105,6 +109,91 @@ export function ProfileDefaultsSection({ s, setS, p, setP }: SettingsProps) {
         }
       />
     </SettingsGroup>
+  );
+}
+
+const HOST_PORT = /^(?:[a-z][a-z0-9+.-]*:\/\/)?[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?(?::\d{1,5})?\/?$/i;
+
+/// What a proxy test reaches (#157): empty keeps the built-in target.
+function ProbeField({ id, field, kind, title, help, placeholder, s, setS }: {
+  id: string;
+  field: "geo_custom_url" | "probe_host" | "stun_server";
+  kind: "url" | "host";
+  title: string;
+  help: string;
+  placeholder: string;
+} & Pick<SettingsProps, "s" | "setS">) {
+  const t = useT();
+  const value = s[field] ?? "";
+  const bad = value.trim() !== "" && (kind === "url" ? !/^https?:\/\/\S+$/i.test(value.trim()) : !HOST_PORT.test(value.trim()));
+  return (
+    <SettingRow
+      id={id}
+      title={title}
+      help={help}
+      control={({ labelId, helpId }) => (
+        <div className="w-[240px]">
+          <Input
+            aria-label={title}
+            aria-labelledby={labelId}
+            aria-describedby={helpId}
+            inputSize="xsmall"
+            className="mono"
+            spellCheck={false}
+            value={value}
+            placeholder={placeholder}
+            error={!bad ? undefined : kind === "url" ? t("settings.probeBadUrl") : t("settings.probeBadHost")}
+            onChange={(e) => setS({ ...s, [field]: e.target.value.trim() === "" ? null : e.target.value })}
+          />
+        </div>
+      )}
+    />
+  );
+}
+
+/// A key and its modifiers as the browser reads them (#162), or null for no key yet.
+export function shortcutOf(e: Pick<KeyboardEvent, "code" | "ctrlKey" | "altKey" | "shiftKey" | "metaKey">): string | null {
+  const key = /^Key([A-Z])$/.exec(e.code)?.[1] ?? /^Digit(\d)$/.exec(e.code)?.[1] ?? /^(F(?:[1-9]|1\d|2[0-4]))$/.exec(e.code)?.[1];
+  if (!key) return null;
+  const mods = [e.ctrlKey && "Ctrl", e.altKey && "Alt", e.shiftKey && "Shift", e.metaKey && "Cmd"].filter(Boolean);
+  // A bare letter or digit would fire while typing; a bare F key is fine.
+  if (mods.length === 0 && !key.startsWith("F")) return null;
+  return [...mods, key].join("+");
+}
+
+/// The in-browser "Change IP" shortcut (#162): pressed, not typed. Backspace clears it.
+function ChangeIpKeyField({ s, setS }: Pick<SettingsProps, "s" | "setS">) {
+  const t = useT();
+  return (
+    <SettingRow
+      id="change-ip-key"
+      title={t("settings.changeIpKeyTitle")}
+      help={t("settings.changeIpKeyHelp")}
+      control={({ labelId, helpId }) => (
+        <div className="w-[240px]">
+          <Input
+            aria-label={t("settings.changeIpKeyTitle")}
+            aria-labelledby={labelId}
+            aria-describedby={helpId}
+            inputSize="xsmall"
+            className="mono"
+            readOnly
+            value={s.change_ip_hotkey ?? ""}
+            placeholder={t("settings.changeIpKeyPlaceholder")}
+            onKeyDown={(e) => {
+              if (e.key === "Tab") return;
+              e.preventDefault();
+              if ((e.key === "Backspace" || e.key === "Delete") && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                setS({ ...s, change_ip_hotkey: null });
+                return;
+              }
+              const key = shortcutOf(e.nativeEvent);
+              if (key) setS({ ...s, change_ip_hotkey: key });
+            }}
+          />
+        </div>
+      )}
+    />
   );
 }
 

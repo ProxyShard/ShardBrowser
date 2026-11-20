@@ -262,6 +262,12 @@ pub fn allows(team_id: &str, action: Action, target: &Target<'_>) -> bool {
         .is_some_and(|p| !p.expired(&SystemClock) && decide(&p.claims.grants, action, target).is_allowed())
 }
 
+/// Whether the held permission lists the team's items of `kind` (team_model `reads_items`).
+pub fn reads_items(team_id: &str, kind: &str) -> bool {
+    let held = held().read().unwrap_or_else(|e| e.into_inner());
+    held.get(team_id).is_some_and(|p| !p.expired(&SystemClock) && team_model::reads_items(&p.claims.grants, kind))
+}
+
 /// Whether the server hands this member a team proxy's login: See, and a use for it.
 pub fn may_use_proxy(team_id: &str, proxy_id: &str) -> bool {
     // A proxy is in no folder, as the server judges it.

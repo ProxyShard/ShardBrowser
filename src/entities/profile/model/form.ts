@@ -2,6 +2,7 @@ import type { ProfileForm, NoiseMode } from "./types";
 import type { FingerprintEntry } from "../../fingerprint/model/types";
 import { AUTO_TZ, AUTO_LANG, DEFAULT_BLOCKED_PORTS, WEBGL_NOISE_INTENSITY, CLIENT_RECTS_MAX_OFFSET } from "../../../shared/constants";
 import { deriveAcceptLanguage, deriveLanguagesArray } from "../../../shared/lib/utils";
+import { claimsMobile, isAndroidRelease } from "../lib/phone";
 
 export const defaultForm = (): ProfileForm => ({
   id: "",
@@ -162,6 +163,9 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
   else delete base.ui_language;
   base.webrtc = f.webrtc;
 
+  // A phone takes only an Android release; anything else keeps the template's (#131).
+  const phone = claimsMobile({ user_agent: f.user_agent, client_hints: base.client_hints });
+  const pv = f.platform_version && (!phone || isAndroidRelease(f.platform_version)) ? f.platform_version : "";
   base.navigator = {
     ...(base.navigator || {}),
     language: f.language,
@@ -171,13 +175,13 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
     hardware_concurrency: f.hardware_concurrency,
     device_memory: f.device_memory,
     // Empty → inherit donor; set → write to both navigator + client_hints.
-    ...(f.platform_version ? { platform_version: f.platform_version } : {}),
+    ...(pv ? { platform_version: pv } : {}),
     do_not_track: f.do_not_track ? "1" : null,
   };
-  if (f.platform_version) {
+  if (pv) {
     base.client_hints = {
       ...(base.client_hints || {}),
-      platform_version: f.platform_version,
+      platform_version: pv,
     };
   }
 
@@ -291,10 +295,4 @@ export function toStored(f: ProfileForm, lib: FingerprintEntry | null, prev?: an
   base.blocked_ports = [...f.blocked_ports].sort((a, b) => a - b);
 
   return base;
-}
-
-/** Whether a form describes a phone. By the user agent: the OS control offers no
- *  phone, and navigator.platform on Chrome for Android says "Linux armv8l". */
-export function claimsMobile(f: { user_agent?: string }): boolean {
-  return (f.user_agent || "").toLowerCase().includes("android");
 }

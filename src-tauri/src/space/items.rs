@@ -1,4 +1,4 @@
-//! Writes to a team's bookmarks, extensions, projects and tags: the door's
+//! Writes to a team's bookmarks, extensions, projects, tags and profile templates: the door's
 //! rule, a pass on the team from `perm`, the server from the revision held,
 //! then the copy held here. An extension's files go up as a package of their
 //! own, and come down only into an open team profile's copy.
@@ -17,6 +17,7 @@ use super::local;
 use super::local::extensions::source::SourceRef;
 use super::perm::{self, Create, Delete, Edit, On};
 use super::remote::{self, ItemRow, Package};
+use super::local::templates::{ProfileTemplate, TemplateState};
 use super::tags::Tag;
 use super::write::client;
 use super::{cache, secrets, Ticket};
@@ -125,6 +126,41 @@ pub async fn save_tag(door: Door, t: &Ticket, team: &str, tag: Tag) -> Result<Ta
 /// The tag goes; the profiles that carried it show it no more.
 pub async fn delete_tag(door: Door, t: &Ticket, team: &str, id: &str) -> Result<()> {
     Ok(remove(door, t, team, "tag", "tag", id).await?)
+}
+
+// ---- profile templates: by name, one of them the team's default ----
+
+async fn put_template(door: Door, t: &Ticket, team: &str, tpl: &ProfileTemplate) -> Result<ItemRow, CmdError> {
+    put(door, t, team, "template", "profile template", &tpl.id, &tpl.name, remote::item_data(tpl), None).await
+}
+
+/// A deleted template's id stays taken in the team's trash: one put back gets a new id.
+/// Made the default, it takes the mark from the others this member may change.
+pub async fn save_template(door: Door, t: &Ticket, team: &str, tpl: ProfileTemplate) -> Result<ProfileTemplate> {
+    let mut held = TemplateState { templates: cache::templates(team) };
+    let tpl = held.upsert(tpl)?;
+    let tpl = match put_template(door, t, team, &tpl).await {
+        Ok(_) => tpl,
+        Err(e) if in_trash(&e) && cache::item(team, "template", &tpl.id).is_none() => {
+            let tpl = ProfileTemplate { id: format!("pt-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]), ..tpl };
+            put_template(door, t, team, &tpl).await?;
+            tpl
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if tpl.is_default {
+        for other in cache::templates(team).into_iter().filter(|o| o.is_default && o.id != tpl.id) {
+            let other = ProfileTemplate { is_default: false, ..other };
+            if let Err(e) = put_template(door, t, team, &other).await {
+                eprintln!("[launcher] template {} kept its default mark: {e}", other.id);
+            }
+        }
+    }
+    Ok(tpl)
+}
+
+pub async fn delete_template(door: Door, t: &Ticket, team: &str, id: &str) -> Result<()> {
+    Ok(remove(door, t, team, "template", "profile template", id).await?)
 }
 
 // ---- automation projects: their secret values stay on this machine ----

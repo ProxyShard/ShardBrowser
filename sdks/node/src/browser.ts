@@ -8,6 +8,8 @@
 //     `clamp_screen_to_real_display` / `--shardx-real-screen` switch.
 //   • probeUdp             — decide QUIC + WebRTC policy from a live
 //     SOCKS5 UDP_ASSOCIATE probe.
+//   • ensureWidevine       — the Widevine CDM from Google, put into the
+//     profile's user-data-dir before the engine starts.
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { connect } from "node:net";
@@ -21,6 +23,7 @@ import { parseProxy, probeUdp, proxyToArg, type ParsedProxy } from "./proxy.js";
 import { settlePlatformVersion } from "./randomize.js";
 import type { Runtime } from "./runtime.js";
 import { applyScreenStrategy, defaultScreenModeFor, type ScreenStrategy } from "./screen.js";
+import { ensureWidevine, harvestWidevine, installWidevine } from "./widevine.js";
 
 export type WebRtcMode   = "auto" | "block" | "tcp_only";
 /** Legacy alias retained for back-compat; prefer `ScreenStrategy`. */
@@ -75,7 +78,7 @@ export interface LaunchOptions {
   webrtcPublicIp?: string;
   /** Override the UDP-probe auto-decision. */
   quic?: boolean;
-  /** Defaults to "cap_to_host" on macOS, "use_host" on Win/Linux. */
+  /** Defaults to "cap_to_host" on macOS, "use_host" on Win/Linux. A phone always keeps its own screen. */
   screenMode?: ScreenStrategy;
   probeTimeoutMs?: number;
   /** Custom user-data-dir root. Defaults to ./shardx-profiles/<id>/. */
@@ -167,7 +170,8 @@ export class Browser {
       geo = await resolveAutoFields(profile.config, parsed);
     }
 
-    const mode: ScreenStrategy = opts.screenMode ?? defaultScreenModeFor(profile.platform);
+    // A phone keeps its own screen whatever the option says, as in the launcher (#131).
+    const mode: ScreenStrategy = profile.claimsMobile ? "profile" : opts.screenMode ?? defaultScreenModeFor(profile.platform);
     applyScreenStrategy(profile.config, mode);
 
     let proxyUdpMs: number | null = null;
@@ -186,7 +190,7 @@ export class Browser {
     // regardless of where the profile config came from (library / file / dict).
     applyEngineVersion(profile.config, this.runtime.chromiumVersion, this.runtime.greaseBrand,
                        this.runtime.greaseVersion, this.runtime.tls,
-                       profile.claimsMobile ? this.runtime.androidChromiumVersion : undefined);
+                       this.runtime.claimedChromiumVersion(profile.platform, profile.claimsMobile));
     adoptLibraryFields(profile.config, this.runtime.fingerprintsDir);
     applyAppleWebGpuFeatures(profile.config);
     settlePlatformVersion(profile.config);
@@ -194,6 +198,14 @@ export class Browser {
     applyNoiseSeeds(profile.config, profile.id);
     const fpFile = join(udd, "fingerprint.json");
     writeFileSync(fpFile, JSON.stringify(profile.config));
+
+    // Widevine from Google before the first start, through this profile's proxy:
+    // Chrome ships with its CDM and this engine does not.
+    const cdm = this.runtime.widevineCacheDir;
+    await ensureWidevine(cdm, this.runtime.chromiumVersion, parsed);
+    // Keep a newer CDM the engine fetched for itself, then hand the cached one to this profile.
+    try { harvestWidevine(cdm, udd); } catch (e) { console.warn(`[shardx] Widevine harvest skipped: ${(e as Error).message}`); }
+    try { installWidevine(cdm, udd); } catch (e) { console.warn(`[shardx] Widevine not put in place: ${(e as Error).message}`); }
 
     const argv: string[] = [
       `--fingerprint-profile=${fpFile}`,

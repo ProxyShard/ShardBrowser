@@ -15,6 +15,7 @@ import { GeneralSection } from "./sections/General";
 import { AppearanceSection } from "./sections/Appearance";
 import { ProfileDefaultsSection } from "./sections/ProfileDefaults";
 import { TagsSection } from "./sections/Tags";
+import { TemplatesSection } from "./sections/Templates";
 import { ViewsSection } from "./sections/Views";
 import { ApiSection } from "./sections/Api";
 import { HelperSection } from "./sections/Helper";
@@ -40,6 +41,7 @@ const SECTIONS: Record<SettingsTab, ComponentType<SectionProps>> = {
   general: GeneralSection,
   appearance: AppearanceSection,
   profiles: ProfileDefaultsSection,
+  templates: TemplatesSection,
   tags: TagsSection,
   views: ViewsSection,
   api: ApiSection,
@@ -56,6 +58,7 @@ const TAB_LABEL: Record<SettingsTab, string> = {
   general: "settings.tabGeneral",
   appearance: "settings.tabAppearance",
   profiles: "settings.tabProfiles",
+  templates: "settings.tabTemplates",
   tags: "settings.tabTags",
   views: "settings.tabViews",
   api: "settings.tabApi",
@@ -152,6 +155,7 @@ export function SettingsPage() {
               { value: "general", label: t("settings.tabGeneral") },
               { value: "appearance", label: t("settings.tabAppearance") },
               { value: "profiles", label: t("settings.tabProfiles") },
+              { value: "templates", label: t("settings.tabTemplates") },
               { value: "tags", label: t("settings.tabTags") },
               { value: "views", label: t("settings.tabViews") },
               { value: "api", label: t("settings.tabApi") },

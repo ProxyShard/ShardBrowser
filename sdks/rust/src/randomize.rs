@@ -84,6 +84,19 @@ fn mac_first_major(cfg: &Value) -> u32 {
     }
 }
 
+/// Android majors Chrome 158 runs on (10 and up); raise the top when a new Android ships.
+const ANDROID_MAJORS: std::ops::RangeInclusive<u32> = 10..=17;
+
+/// A version Chrome on Android reports: the release as "<major>.0.0".
+pub(crate) fn is_android_release(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok());
+    major.is_some_and(|m| ANDROID_MAJORS.contains(&m))
+        && parts.next() == Some("0")
+        && parts.next() == Some("0")
+        && parts.next().is_none()
+}
+
 fn major_of(version: &str) -> Option<u32> {
     version.split('.').next()?.parse().ok()
 }
@@ -180,22 +193,7 @@ pub fn randomize_hardware(cfg: &mut Value, profile_id: Option<&str>) {
             None => return,
         }
     } else if plat == "Windows" || plat == "Linux" {
-        let c = host_logical_cores() as i64;
-        let lo = (c - 4).max(0);
-        let hi = c + 2;
-        let candidates: Vec<u64> = X86_CORES
-            .iter()
-            .copied()
-            .filter(|&n| (n as i64) >= lo && (n as i64) <= hi)
-            .collect();
-        let cores = if let Some(&v) = candidates.choose(&mut rng) {
-            v
-        } else {
-            *X86_CORES
-                .iter()
-                .min_by_key(|&&n| (n as i64 - c).abs())
-                .unwrap()
-        };
+        let cores = x86_cores_for(host_logical_cores() as i64, &mut rng);
         let real = host_ram_bucket_gb();
         let floor = if cores >= 12 { 16 } else { 8 };
         let mem_cand: Vec<u64> = [8u64, 16, 32]
@@ -211,6 +209,39 @@ pub fn randomize_hardware(cfg: &mut Value, profile_id: Option<&str>) {
     let nav = ensure_obj(cfg, "navigator");
     nav.insert("hardware_concurrency".into(), json!(cores));
     nav.insert("device_memory".into(), json!(mem));
+}
+
+/// A count from [`X86_CORES`] within `[host-4, host+2]`, else the nearest one: never under 4.
+fn x86_cores_for(host: i64, rng: &mut impl rand::Rng) -> u64 {
+    let (lo, hi) = ((host - 4).max(0), host + 2);
+    let candidates: Vec<u64> = X86_CORES.iter().copied().filter(|&n| (n as i64) >= lo && (n as i64) <= hi).collect();
+    match candidates.choose(rng) {
+        Some(&v) => v,
+        None => *X86_CORES.iter().min_by_key(|&&n| (n as i64 - host).abs()).unwrap(),
+    }
+}
+
+#[cfg(test)]
+mod hardware_tests {
+    use super::*;
+
+    #[test]
+    fn the_randomizer_never_picks_under_four_cores_for_a_desktop() {
+        let mut rng = rand::thread_rng();
+        for host in [1, 2, 3, 4, 6, 16, 64] {
+            for _ in 0..100 {
+                assert!(x86_cores_for(host, &mut rng) >= 4, "host {host}");
+            }
+        }
+        for id in ["mac-m1-air13", "mac-m4-pro-mbp16", "mac-m5-mbp14"] {
+            assert!(mac_hw_configs(id).unwrap().iter().all(|&(c, _)| c >= 4));
+        }
+        for (platform, id) in [("Windows", "win-x"), ("Linux", "linux-x"), ("macOS", "mac-m1-air13")] {
+            let mut cfg = json!({ "navigator": { "platform": platform, "hardware_concurrency": 2 } });
+            randomize_hardware(&mut cfg, Some(id));
+            assert!(cfg["navigator"]["hardware_concurrency"].as_u64().unwrap() >= 4, "{platform}");
+        }
+    }
 }
 
 #[cfg(test)]

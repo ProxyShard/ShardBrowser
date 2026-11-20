@@ -4,9 +4,11 @@ Self-contained Python SDK for the **ShardBrowser anti-detect browser** by the
 [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
 
 This package does **not** depend on the desktop launcher. On first use
-it downloads the patched Chromium 157 engine, Widevine CDM, and the
-220-profile fingerprint library from our CDN into a local cache, then
-launches isolated browser sessions on demand.
+it downloads the patched Chromium 158 engine and the 220-profile
+fingerprint library from our CDN into a local cache, then launches isolated
+browser sessions on demand. The Widevine CDM comes from Google's component
+update server, as Chrome gets it, and is put into each profile before it
+starts.
 
 Driven by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python)
 (stealth-patched Playwright) — `sdk.session()` returns a ready-to-use
@@ -48,7 +50,7 @@ from shardx import ShardX
 
 async def main():
     sdk = ShardX()
-    # Engine + Widevine + fingerprint library auto-download from CDN on
+    # Engine + fingerprint library auto-download from CDN (Widevine from Google) on
     # the first `session`/`launch`/`list_profiles` call (~200 MB once,
     # etag-cached afterward).  No separate install step.
 
@@ -237,7 +239,8 @@ pipeline the desktop launcher uses:
   the real monitor (minus a 40 px Windows taskbar) and recompute
   `window.outer_*` / `window.inner_*` accordingly.
 
-Default mode is picked from `navigator.platform`. Override per launch:
+Default mode is picked from `navigator.platform`. A phone profile keeps its
+own screen in every mode. Override per launch:
 
 ```python
 async with sdk.session(profile, screen_mode="profile") as browser:
@@ -321,7 +324,8 @@ with `cdp_url`, `geo`, `proxy_udp_ms`, `quic_enabled`, `webrtc_mode`,
 ~/Library/Application Support/shardx-sdk/    (mac)
 %LOCALAPPDATA%\shardx-sdk\                   (win)
 ~/.cache/shardx-sdk/                         (linux)
-├── manifest.json             ← etag cache for browser/widevine/fingerprints
+├── manifest.json             ← etag cache for browser/fingerprints
+├── widevine-cdm/             ← Widevine CDM from Google, rechecked every 5 h
 ├── ShardX-Mac-arm64/         ← extracted engine
 │   └── ShardX.app/…
 ├── fingerprints/             ← 220 bundled .json profiles

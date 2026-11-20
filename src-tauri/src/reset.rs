@@ -48,6 +48,8 @@ const CONFIG_ENTRIES: &[&str] = &[
     "bookmarks.json",
     "tags.json",
     "tags.json.tmp",
+    "templates.json",
+    "templates.json.tmp",
     "folders.json",
     "folders.json.tmp",
     "automation.json",
@@ -1568,7 +1570,7 @@ mod tests {
         put(&config.join("proxies.json"), r#"{"proxies":[{},{}]}"#);
         put(&config.join("bookmarks.json"), r#"{"bookmarks":[{}]}"#);
         put(&config.join("automation.json"), r#"{"projects":[{},{},{}]}"#);
-        for name in ["proxies-history.json", "psapi.json", "host-gl-caps.json", "tags.json", "folders.json"] {
+        for name in ["proxies-history.json", "psapi.json", "host-gl-caps.json", "tags.json", "templates.json", "folders.json"] {
             put(&config.join(name), "{}");
         }
         put(&config.join("automation-modules/m.wasm"), "wasm");
@@ -1675,7 +1677,7 @@ mod tests {
         let c = &fx.config;
         for gone in [
             "settings.json", "proxies.json", "proxies-history.json", "bookmarks.json",
-            "tags.json", "folders.json",
+            "tags.json", "templates.json", "folders.json",
             "automation.json", "psapi.json", "host-gl-caps.json", "automation-modules",
             "automation-runs", "profiles", "user-data", "extensions", "trash",
             "fingerprints/mine.json", "fingerprints/.staging", "runtime/profile-icons",

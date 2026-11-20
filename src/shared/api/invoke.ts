@@ -10,7 +10,7 @@ export { onSpaceMoved, setSpaceEpoch, spaceEpoch, withEpoch } from "./edition";
 /** The lists each space has: one asked while the space moved is asked again. */
 const SPACE_READS: ReadonlySet<string> = new Set([
   "profile_list", "profile_get", "proxy_list", "tag_list", "folder_list",
-  "bookmark_list", "extension_list", "extension_updates", "automation_list", "trash_list",
+  "bookmark_list", "extension_list", "extension_updates", "automation_list", "trash_list", "profile_template_list",
 ]);
 
 let reading: Promise<number | undefined> | null = null;

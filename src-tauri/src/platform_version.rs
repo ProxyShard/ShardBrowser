@@ -32,6 +32,19 @@ pub(crate) const LINUX_PLATFORM_VERSIONS: &[&str] = &[
 const MACOS_SETTLED: &str = "26.7.2";
 const MACOS_SETTLED_M4: &str = "15.8.2";
 
+/// Android majors Chrome 158 runs on (10 and up); raise the top when a new Android ships.
+const ANDROID_MAJORS: std::ops::RangeInclusive<u32> = 10..=17;
+
+/// A version Chrome on Android reports: the release as "<major>.0.0".
+pub(crate) fn is_android_release(version: &str) -> bool {
+    let mut parts = version.split('.');
+    let major = parts.next().and_then(|p| p.parse::<u32>().ok());
+    major.is_some_and(|m| ANDROID_MAJORS.contains(&m))
+        && parts.next() == Some("0")
+        && parts.next() == Some("0")
+        && parts.next().is_none()
+}
+
 fn platform_of(payload: &Map<String, Value>) -> &str {
     payload
         .get("navigator")
@@ -213,6 +226,17 @@ mod tests {
             randomize_platform_version(&mut p);
             assert!(major_of(&pv(&p).0).unwrap() >= 26, "{:?}", pv(&p));
             assert!(!settle_platform_version(&mut p));
+        }
+    }
+
+    #[test]
+    fn android_releases_are_major_dot_zero_dot_zero() {
+        for v in ["10.0.0", "14.0.0", "16.0.0", "17.0.0"] {
+            assert!(is_android_release(v), "{v}");
+        }
+        // A Mac's, a Linux kernel's, an Android older than Chrome supports, other shapes.
+        for v in ["15.7.1", "26.1.0", "6.8.0", "9.0.0", "19.0.0", "16.0", "16", "", "16.0.0.0"] {
+            assert!(!is_android_release(v), "{v}");
         }
     }
 }

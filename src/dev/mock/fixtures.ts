@@ -5,6 +5,7 @@
 // profile.rs writes them (a FingerprintConfig with a `_meta` block), because
 // the editor reads them back through `fromStored`.
 import type { MockTeamServer } from "./teamServer";
+import type { ProfileTemplate } from "../../entities/template/model/types";
 import type { MockSync } from "./syncServer";
 import type { SpaceData } from "./spaces";
 import type { ProfileSync } from "../../entities/sync/model/types";
@@ -90,6 +91,8 @@ export type MockState = {
   order: string[];
   proxies: ProxyEntry[];
   snapshots: Record<string, ProxyTestSnapshot[]>;
+  /** #162: change-IP links by proxy id, outside the proxies as in the backend. */
+  rotation?: Record<string, string>;
   fingerprints: FingerprintEntry[];
   extensions: ExtensionEntry[];
   /** Web Store update records by entry id (extUpdates.ts); made on first read. */
@@ -111,6 +114,8 @@ export type MockState = {
   tags?: MockTags;
   /** As folders.rs keeps them; absent until the first write or import. */
   folders?: MockFolders;
+  /** Profile templates (#145), as templates.rs keeps them; absent until the first save. */
+  templates?: ProfileTemplate[];
   /** The space the launcher works in and the teams joined (team.rs). */
   space?: { kind: "personal" } | { kind: "team"; team_id: string };
   /** `needs_invite`: the admin replaced the token (live.rs token_replaced); a new join clears it. */

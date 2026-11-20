@@ -92,7 +92,7 @@ use crate::auth::{self, PermissionKey, PERMISSION_TTL_SECS};
 use crate::live::{Event, Hub, Seat, MAX_SOCKETS};
 use crate::view::{self, proxy_target};
 use crate::model::{
-    admin_grants, decide, Action, Card, Grant, Member, Target, TeamProfile, ADMIN_ID, ITEM_KINDS,
+    admin_grants, decide, reads_items, Action, Card, Grant, Member, Target, TeamProfile, ADMIN_ID, ITEM_KINDS,
 };
 use crate::store::{
     personal_space, BlobMeta, BodyRef, Folder, FolderDelete, FolderRename, Item, Lease, Listed,
@@ -2296,8 +2296,8 @@ fn trash_target(t: &TrashItem) -> Target<'_> {
     }
 }
 
-/// `?kind=` on a trash route. Needed for a bookmark, extension, automation or
-/// tag, whose id is only one of its kind; absent means a profile or a proxy.
+/// `?kind=` on a trash route. Needed for a bookmark, extension, automation, tag
+/// or profile template, whose id is only one of its kind; absent means a profile or a proxy.
 #[derive(Deserialize, Default)]
 struct TrashQuery {
     kind: Option<String>,
@@ -2698,12 +2698,13 @@ async fn my_folder_delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ---- bookmarks, extensions, automations and tags ----
+// ---- bookmarks, extensions, automations, tags and profile templates ----
 //
 // Each kind is its own list, in the team and in each member's own space. They
 // live in no folder, so the team's rights on them are team-wide: See to read,
-// Create, Edit and Delete as for a profile. An extension's package is a blob of
-// its own beside it.
+// Create, Edit and Delete as for a profile. A profile template is read too by
+// whoever may make a profile somewhere (`reads_items`). An extension's package
+// is a blob of its own beside it.
 
 /// Kept only in a member's own space: how their own devices sync it.
 const MY_ONLY_KINDS: [&str; 1] = ["sync"];
@@ -2771,10 +2772,10 @@ impl From<StoredItem> for ItemWithData {
     }
 }
 
-/// An item changed: the team hears it if they may See items, a personal one its owner.
+/// An item changed: the team hears it if they may read items of its kind, a personal one its owner.
 async fn tell_item(st: &AppState, c: &Caller, space: &str, what: &'static str, id: &str) {
     if space == TEAM {
-        tell_team(st, what, id, sees_items).await;
+        tell_team(st, what, id, |g| reads_items(g, what)).await;
     } else {
         tell_owner(st, &c.member.id, what, id.to_owned()).await;
     }
@@ -2842,7 +2843,7 @@ async fn list_items(
 ) -> Result<Json<Vec<ItemWithData>>, ApiError> {
     let kind = kind_arg(kind, space != TEAM)?;
     // Items are seen all together or not at all, but what a start needs comes with Start.
-    if space == TEAM && !c.may(Action::See, &team_wide()) {
+    if space == TEAM && !reads_items(&c.grants, kind) {
         let Some(b) = for_profile.map(|id| Brought::of(st, c, id)).transpose()?.flatten() else {
             return Ok(Json(Vec::new()));
         };
@@ -2854,7 +2855,7 @@ async fn list_items(
 
 async fn get_item(st: &AppState, c: &Caller, space: &str, kind: &str, id: &str) -> Result<Json<ItemWithData>, ApiError> {
     let kind = kind_arg(kind, space != TEAM)?;
-    if space == TEAM && !c.may(Action::See, &team_wide()) {
+    if space == TEAM && !reads_items(&c.grants, kind) {
         return Err(ApiError::missing());
     }
     let found = st.store.item_get(space, kind, id)?.ok_or_else(ApiError::missing)?;
@@ -6006,7 +6007,9 @@ mod tests {
             assert_eq!(STANDARD.decode(rows[0]["data"].as_str().unwrap()).unwrap(), format!("{kind} data").as_bytes());
             let (code, one) = answer(&st, ask("GET", &uri, &looker), None).await;
             assert_eq!((code, one["name"].clone()), (StatusCode::OK, json!(format!("A {kind}"))));
-            for who in [&ads, &nobody] {
+            // A profile template is read by whoever may make a profile somewhere.
+            let blind = if kind == "template" { vec![&nobody] } else { vec![&ads, &nobody] };
+            for who in blind {
                 assert_eq!(answer(&st, ask("GET", &list, who), None).await.1, json!([]), "{kind}");
                 assert_eq!(answer(&st, ask("GET", &uri, who), None).await.0, StatusCode::NOT_FOUND, "{kind}");
             }
@@ -6056,6 +6059,29 @@ mod tests {
         let long = format!("/items/tag/{}", "i".repeat(129));
         let (code, _) = answer(&st, ask("PUT", &long, &vera), Some(json!({ "data": "" }))).await;
         assert_eq!(code, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn a_folder_maker_reads_the_teams_templates_but_does_not_write_them() {
+        let st = state();
+        let (_, vera) = member(&st, "Vera", everything()).await;
+        let (ads_id, ads) = member(&st, "Ads", vec![allow(folder("Ads"), Action::Create)]).await;
+        let (_, looker) = member(&st, "Looker", vec![allow(folder("Ads"), Action::See)]).await;
+        let mut ads_live = st.hub.subscribe(&ads_id).await;
+        let body = json!({ "name": "Baseline", "data": STANDARD.encode(b"{}") });
+        assert_eq!(answer(&st, ask("PUT", "/items/template/tp1", &vera), Some(body.clone())).await.0, StatusCode::CREATED);
+        assert_eq!(answer(&st, ask("PUT", "/items/bookmark/b1", &vera), Some(body.clone())).await.0, StatusCode::CREATED);
+        assert_eq!(heard(&mut ads_live), vec![Event::TeamChanged { what: "template", id: "tp1".into() }], "a bookmark is not theirs to hear of");
+
+        let (_, rows) = answer(&st, ask("GET", "/items/template", &ads), None).await;
+        assert_eq!((rows.as_array().map(Vec::len), rows[0]["id"].as_str()), (Some(1), Some("tp1")));
+        assert_eq!(answer(&st, ask("GET", "/items/template/tp1", &ads), None).await.0, StatusCode::OK);
+        assert_eq!(answer(&st, ask("GET", "/items/bookmark", &ads), None).await.1, json!([]));
+        assert_eq!(answer(&st, ask("GET", "/items/template", &looker), None).await.1, json!([]), "seeing a folder makes nothing");
+        // Writing one still asks the team's own rights.
+        assert_eq!(answer(&st, ask("PUT", "/items/template/tp2", &ads), Some(body.clone())).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(answer(&st, ask("PUT", "/items/template/tp1", &ads), Some(based_on(body, 1))).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(answer(&st, ask("DELETE", "/items/template/tp1", &ads), None).await.0, StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

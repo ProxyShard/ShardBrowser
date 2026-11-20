@@ -3,7 +3,7 @@
 
 use super::super::client::{Method, TeamClient};
 use super::super::error::{find, Need};
-use super::super::{automation, bookmarks, cache, extensions, tags, CmdError, Door, Ticket};
+use super::super::{automation, bookmarks, cache, extensions, tags, templates, CmdError, Door, Ticket};
 use super::*;
 use crate::team;
 use base64::Engine as _;
@@ -142,6 +142,56 @@ async fn bookmarks_and_tags_go_to_the_team_and_come_back() {
     assert_ne!(again.id, vip.id);
     assert!(t.stored("tag", &again.id).await.is_some());
     assert!(!crate::store::tags_path().unwrap().exists(), "nothing in this machine's own tags");
+    drop(t.srv);
+}
+
+#[tokio::test]
+async fn profile_templates_go_to_the_team_with_one_default_and_reach_whoever_may_make_a_profile() {
+    let t = Team::new(&writer()).await;
+    let tk = Ticket::now();
+    let tpl = |name: &str, default: bool| templates::ProfileTemplate {
+        name: name.into(),
+        is_default: default,
+        source: templates::Source { library: Some("win-rtx".into()), os: "Win32".into() },
+        settings: json!({ "name": "not kept", "webrtc": "tcp_only", "noise": { "canvas": { "enabled": true, "seed": 7 } } })
+            .as_object()
+            .cloned()
+            .unwrap(),
+        folder: "Ads".into(),
+        ..Default::default()
+    };
+    let a = templates::save(Door("profile_template_save"), &tk, tpl("Ads base", true)).await.unwrap();
+    let b = templates::save(Door("profile_template_save"), &tk, tpl("Shops base", true)).await.unwrap();
+    assert!(a.id.starts_with("pt-"));
+    let (row, data) = t.stored("template", &a.id).await.unwrap();
+    assert_eq!(row["name"], "Ads base");
+    assert_eq!(data["settings"], json!({ "webrtc": "tcp_only", "noise": { "canvas": { "enabled": true, "seed": 0 } } }));
+    assert_eq!(data["source"], json!({ "library": "win-rtx", "os": "Windows" }));
+    // The newer default took the mark from the other, on the server too.
+    assert_eq!(t.stored("template", &a.id).await.unwrap().1["is_default"], false);
+    let clash = templates::save(Door("profile_template_save"), &tk, tpl("ads BASE", false)).await.unwrap_err();
+    assert!(clash.to_string().contains("already exists"), "{clash}");
+    t.read_again().await;
+    let held = templates::list().unwrap();
+    assert_eq!(held.iter().map(|x| (x.name.as_str(), x.is_default)).collect::<Vec<_>>(), [("Ads base", false), ("Shops base", true)]);
+    assert!(!crate::store::templates_path().unwrap().exists(), "nothing in this machine's own templates");
+
+    // A member who may only make profiles in one folder reads them, and changes none.
+    t.set_grants(&[Grant { scope: Scope::Folder { name: "Ads".into() }, action: Action::Create, allow: true }]).await;
+    t.read_again().await;
+    assert_eq!(templates::list().unwrap().len(), 2);
+    let edit = templates::save(Door("profile_template_save"), &Ticket::now(), ProfileTemplate { name: "Mine".into(), ..b.clone() }).await;
+    assert_eq!(refusal(edit.unwrap_err()), forbidden("edit"));
+    // Without a place to make one, there are none to read.
+    t.set_grants(&[Grant { scope: Scope::Folder { name: "Ads".into() }, action: Action::See, allow: true }]).await;
+    t.read_again().await;
+    assert!(templates::list().unwrap().is_empty());
+
+    t.set_grants(&writer()).await;
+    t.read_again().await;
+    templates::delete(Door("profile_template_delete"), &Ticket::now(), &b.id).await.unwrap();
+    assert!(t.stored("template", &b.id).await.is_none());
+    assert_eq!(templates::list().unwrap().len(), 1);
     drop(t.srv);
 }
 

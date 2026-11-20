@@ -23,3 +23,14 @@ export const proxyHistory = (id: string) => invoke<ProxyTestSnapshot[]>("proxy_h
 export const proxyBulkParse = (text: string, kind: ProxyEntry["kind"]) => invoke<ProxyEntry[]>("proxy_bulk_parse", { text, kind });
 export const proxyBulkSave = (entries: any[]) => invoke<number>("proxy_bulk_save", { entries });
 export const proxyBulkImport = (text: string, kind: string) => invoke<number>("proxy_bulk_import", { text, kind });
+
+/** #162: the proxies with a change-IP link; the link itself stays on this computer. */
+export const proxyRotationIds = () => invoke<string[]>("proxy_rotation_ids");
+export const proxyRotationGet = (id: string) => invoke<string | null>("proxy_rotation_get", { id });
+export const proxyRotationSet = (id: string, url: string | null) => invoke<void>("proxy_rotation_set", { id, url });
+export type ChangeIpResult = {
+  before: string | null;
+  after: { ip: string; country_code: string; city: string } | null;
+  changed: boolean;
+};
+export const proxyChangeIp = (id: string) => invoke<ChangeIpResult>("proxy_change_ip", { id });

@@ -16,6 +16,7 @@ use super::perm::{self, Create, Delete, Edit, Granted, On};
 use super::profile::{claims_mobile, OpenOn, Origin, ProfileMeta, StoredProfile};
 use super::proxy::{ProxyEntry, ProxyKind};
 use super::tags::{Tag, TagState};
+use super::templates::ProfileTemplate;
 
 /// A row of `GET /profiles`: never the settings or the session.
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -260,6 +261,7 @@ pub fn unreadable(kind: &str, rows: &[ItemRow]) -> usize {
             "extension" => bad(extension(r).is_some()),
             "automation" => bad(project(r).is_some()),
             "tag" => bad(tag(r).is_some()),
+            "template" => bad(template(r).is_some()),
             _ => 0,
         })
         .sum()
@@ -267,6 +269,10 @@ pub fn unreadable(kind: &str, rows: &[ItemRow]) -> usize {
 
 fn tag(r: &ItemRow) -> Option<Tag> {
     item(r, json!({ "name": r.name, "color": "" }))
+}
+
+fn template(r: &ItemRow) -> Option<ProfileTemplate> {
+    item(r, json!({ "name": r.name, "updated_at": r.updated_at }))
 }
 
 fn bookmark(r: &ItemRow) -> Option<Bookmark> {
@@ -299,6 +305,10 @@ pub fn tags(rows: &[ItemRow], profiles: &[ProfileRow]) -> TagState {
         .filter(|(_, ids)| !ids.is_empty())
         .collect();
     TagState { tags, by_profile }
+}
+
+pub fn templates(rows: &[ItemRow]) -> Vec<ProfileTemplate> {
+    rows.iter().filter_map(template).collect()
 }
 
 pub fn bookmarks(rows: &[ItemRow]) -> Vec<Bookmark> {

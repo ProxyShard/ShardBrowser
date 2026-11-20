@@ -167,7 +167,26 @@ pub fn decide(grants: &[Grant], action: Action, target: &Target<'_>) -> Decision
 
 /// The kinds of the team's other items, each under `/items/<kind>`. They live
 /// in no folder: their rights are the team's own (See, Create, Edit, Delete).
-pub const ITEM_KINDS: [&str; 4] = ["bookmark", "extension", "automation", "tag"];
+pub const ITEM_KINDS: [&str; 5] = ["bookmark", "extension", "automation", "tag", "template"];
+
+/// Whether a member may make a profile somewhere: in the team, or in a folder a grant names.
+pub fn creates_somewhere(grants: &[Grant]) -> bool {
+    grants.iter().any(|g| {
+        g.allow
+            && g.action == Action::Create
+            && match &g.scope {
+                Scope::Team => decide(grants, Action::Create, &Target::team()).is_allowed(),
+                Scope::Folder { name } => decide(grants, Action::Create, &Target::folder(name)).is_allowed(),
+                Scope::Profile { .. } => false,
+            }
+    })
+}
+
+/// Whether a member reads the team's items of `kind`: the team's See, or, for a
+/// profile template, any place they may make a profile in from it.
+pub fn reads_items(grants: &[Grant], kind: &str) -> bool {
+    decide(grants, Action::See, &Target::team()).is_allowed() || (kind == "template" && creates_somewhere(grants))
+}
 
 /// The short part of a profile that lists show beside its name. Not secret:
 /// whoever may See the profile reads it. Sent beside the profile's sealed data.
@@ -354,6 +373,20 @@ mod tests {
         );
         let back: Vec<Grant> = serde_json::from_value(wire).unwrap();
         assert_eq!(back, g);
+    }
+
+    #[test]
+    fn templates_are_read_by_whoever_may_make_a_profile_somewhere() {
+        let folder_maker = vec![allow(folder("Ads"), Action::Create)];
+        assert!(reads_items(&folder_maker, "template"));
+        assert!(!reads_items(&folder_maker, "bookmark"), "other items still need the team's See");
+        // A folder grant taken back at the same width makes nothing anywhere.
+        let undone = vec![allow(folder("Ads"), Action::Create), refuse(folder("Ads"), Action::Create)];
+        assert!(!reads_items(&undone, "template"));
+        // A grant on one profile carries no Create.
+        assert!(!reads_items(&[allow(profile("p1"), Action::Create)], "template"));
+        assert!(reads_items(&[allow(Scope::Team, Action::See)], "template"));
+        assert!(!reads_items(&[], "template"));
     }
 
     #[test]

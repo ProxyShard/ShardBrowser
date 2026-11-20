@@ -3,9 +3,11 @@
 Self-contained Rust SDK for the **ShardBrowser anti-detect browser** by the
 [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
 team (formerly ProxyShard). Same surface as the [Python](../python) and [Node](../node) SDKs: on
-first use it downloads the engine, Widevine CDM, and the bundled fingerprint
-library from the ProxyShard CDN into a per-user cache dir, then launches
-isolated profiles with the exact spoofing flags the desktop launcher uses.
+first use it downloads the engine and the bundled fingerprint library from
+the ProxyShard CDN into a per-user cache dir, then launches isolated profiles
+with the exact spoofing flags the desktop launcher uses. The Widevine CDM comes
+from Google's component update server, as Chrome gets it, and is put into each
+profile before it starts.
 
 Supported hosts: **macOS arm64**, **Windows x64**, **Linux x64**.
 On macOS/Linux the system `unzip` is used for extraction (preserves symlinks
@@ -206,7 +208,8 @@ Before spawning the engine the SDK reproduces the launcher's pre-flight:
 * **auto-resolve** — fills `"auto"` timezone / language / geolocation from a
   live geo lookup *through the bound proxy* ([`resolve_auto_fields`]).
 * **screen strategy** — `CapToHost` on macOS, `UseHost` on Win/Linux
-  ([`apply_screen_strategy`]); override via `LaunchOptions::screen_mode`.
+  ([`apply_screen_strategy`]); override via `LaunchOptions::screen_mode`. A phone
+  keeps its own screen in every mode.
 * **UDP probe** — decides QUIC + WebRTC policy from a live relay probe.
 
 ## Lower-level building blocks

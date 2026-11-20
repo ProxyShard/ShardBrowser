@@ -30,6 +30,7 @@ function kindWord(kind: TeamTrashKind): string {
     case "extension": return t("team.trashKindExtension");
     case "automation": return t("team.trashKindAutomation");
     case "tag": return t("team.trashKindTag");
+    case "template": return t("team.trashKindTemplate");
   }
 }
 

@@ -966,7 +966,7 @@ async fn folders(c: &TeamClient, p: &mut Patch, told: &mut Told) -> Result<(), S
     Ok(())
 }
 
-// ---- bookmarks, extensions, projects and tags ----
+// ---- bookmarks, extensions, projects, tags and profile templates ----
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ItemKind {
@@ -974,9 +974,12 @@ enum ItemKind {
     Bookmark,
     Automation,
     Extension,
+    /// Profile templates (#145): they name folders and tags, so they go with those.
+    Template,
 }
 
-const ITEM_KINDS: [ItemKind; 4] = [ItemKind::Tag, ItemKind::Bookmark, ItemKind::Automation, ItemKind::Extension];
+const ITEM_KINDS: [ItemKind; 5] =
+    [ItemKind::Tag, ItemKind::Bookmark, ItemKind::Automation, ItemKind::Extension, ItemKind::Template];
 
 impl ItemKind {
     fn key(self) -> &'static str {
@@ -985,6 +988,7 @@ impl ItemKind {
             ItemKind::Bookmark => "bookmark",
             ItemKind::Automation => "automation",
             ItemKind::Extension => "extension",
+            ItemKind::Template => "template",
         }
     }
 
@@ -994,12 +998,13 @@ impl ItemKind {
             ItemKind::Bookmark => "bookmarks",
             ItemKind::Automation => "automation",
             ItemKind::Extension => "extensions",
+            ItemKind::Template => "templates",
         }
     }
 
     fn on(self, k: &Kinds) -> bool {
         match self {
-            ItemKind::Tag => k.folders_tags,
+            ItemKind::Tag | ItemKind::Template => k.folders_tags,
             ItemKind::Bookmark => k.bookmarks,
             ItemKind::Automation => k.automation,
             ItemKind::Extension => k.extensions,
@@ -1017,6 +1022,9 @@ impl ItemKind {
                 ItemKind::Extension => {
                     m.insert("path".into(), json!(""));
                     m.insert("added_at".into(), json!(""));
+                }
+                ItemKind::Template => {
+                    m.insert("updated_at".into(), json!(0));
                 }
                 _ => {}
             }
@@ -1043,6 +1051,7 @@ impl ItemKind {
                     .collect()
             }),
             ItemKind::Extension => local::extensions::list().map(|l| l.iter().map(|x| row(&x.id, &x.name, x)).collect()),
+            ItemKind::Template => local::templates::list().map(|l| l.iter().map(|x| row(&x.id, &x.name, x)).collect()),
         };
         let rows = rows.map_err(|e| unread(self.topic(), e))?;
         Ok(rows.into_iter().map(|(id, name, v)| (id, (name, self.norm(v)))).collect())
@@ -1054,6 +1063,7 @@ impl ItemKind {
             ItemKind::Bookmark => local::bookmarks::delete(id),
             ItemKind::Automation => local::automation::delete(id),
             ItemKind::Extension => local::extensions::delete(id),
+            ItemKind::Template => local::templates::delete(id),
         }
     }
 }
@@ -1078,6 +1088,7 @@ async fn write_item(c: &TeamClient, kind: ItemKind, row: &ItemRow, r: Option<&Re
                 local::automation::save(x).map(|_| ())
             }),
         ItemKind::Extension => return Ok(extension::write(c, row, r, told).await? != extension::Wrote::No),
+        ItemKind::Template => serde_json::from_value(v).map_err(anyhow::Error::from).and_then(|x| local::templates::save(x).map(|_| ())),
     };
     match r {
         Ok(()) => Ok(true),
@@ -1136,8 +1147,12 @@ async fn items(c: &TeamClient, kind: ItemKind, p: &mut Patch, told: &mut Told) -
         return Ok(());
     }
     let b = book::read();
-    let server: BTreeMap<String, ItemRow> =
-        c.get::<Vec<ItemRow>>(&format!("/me/items/{key}")).await?.into_iter().map(|r| (r.id.clone(), r)).collect();
+    let rows = match c.get::<Vec<ItemRow>>(&format!("/me/items/{key}")).await {
+        // A server from before profile templates keeps none: nothing to sync yet.
+        Err(e) if kind == ItemKind::Template && e.status() == Some(404) => return Ok(()),
+        r => r?,
+    };
+    let server: BTreeMap<String, ItemRow> = rows.into_iter().map(|r| (r.id.clone(), r)).collect();
     let here = kind.here()?;
     let none = BTreeMap::new();
     let recs = b.records.get(key).unwrap_or(&none);
@@ -1402,7 +1417,11 @@ pub(super) async fn remove_all(c: &TeamClient) -> Net<()> {
     }
     for kind in ITEM_KINDS {
         let key = kind.key();
-        for row in c.get::<Vec<Named>>(&format!("/me/items/{key}")).await? {
+        let rows = match c.get::<Vec<Named>>(&format!("/me/items/{key}")).await {
+            Err(e) if kind == ItemKind::Template && e.status() == Some(404) => Vec::new(),
+            r => r?,
+        };
+        for row in rows {
             gone(delete_at(c, &me_path(&format!("items/{key}"), &row.id)?, row.revision).await)?;
         }
     }

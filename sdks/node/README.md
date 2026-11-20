@@ -4,9 +4,10 @@ Self-contained Node/TypeScript SDK for the **ShardBrowser anti-detect
 browser** by the [ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
 
 Does **not** depend on the desktop launcher. On first use it downloads
-the patched Chromium 157 engine, Widevine CDM, and the 220-profile
-fingerprint library from our CDN into a local cache, then launches
-isolated browser sessions on demand.
+the patched Chromium 158 engine and the 220-profile fingerprint library
+from our CDN into a local cache, then launches isolated browser sessions on
+demand. The Widevine CDM comes from Google's component update server, as
+Chrome gets it, and is put into each profile before it starts.
 
 Driven by [patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchright)
 (stealth-patched Playwright) — `sdk.session()` returns a ready-to-use
@@ -46,7 +47,7 @@ await sdk.session(profile, { extraArgs: ["--no-sandbox", "--disable-dev-shm-usag
 import { ShardX } from "@proxyshard/shardx";
 
 const sdk = new ShardX();
-// Engine + Widevine + fingerprint library auto-download from CDN on
+// Engine + fingerprint library auto-download from CDN (Widevine from Google) on
 // the first session/launch/listProfiles call (~200 MB once, etag-cached
 // afterward).  No separate install step.
 
@@ -243,7 +244,8 @@ pipeline the desktop launcher uses:
   with the real monitor (minus a 40 px Windows taskbar) and recompute
   `window.outer*` / `window.inner*`.
 
-Default mode is picked from `navigator.platform`. Override per launch:
+Default mode is picked from `navigator.platform`. A phone profile keeps its
+own screen in every mode. Override per launch:
 
 ```ts
 await sdk.session(profile, { screenMode: "profile" });
@@ -341,6 +343,7 @@ with `cdpUrl`, `geo`, `proxyUdpMs`, `quicEnabled`, `webrtcMode`,
 %LOCALAPPDATA%\shardx-sdk\                   (win)
 ~/.cache/shardx-sdk/                         (linux)
 ├── manifest.json             ← etag cache
+├── widevine-cdm/             ← Widevine CDM from Google, rechecked every 5 h
 ├── ShardX-Mac-arm64/         ← extracted engine
 ├── fingerprints/             ← 220 bundled .json templates (read-only)
 └── profiles/<id>/            ← saved profile (createProfile) + its state

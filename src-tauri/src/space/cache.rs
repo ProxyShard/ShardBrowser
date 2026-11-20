@@ -22,6 +22,7 @@ use super::profile::{ProfileMeta, StoredProfile};
 use super::proxy::{ProxyEntry, TestSnapshot};
 use super::remote::{self, FolderRow, ItemRow, ProfileRow, ProfileWithData, ProxyRow, ProxyWithData};
 use super::tags::TagState;
+use super::templates::ProfileTemplate;
 
 /// Events closer together than this are one refetch.
 const COALESCE: Duration = Duration::from_millis(500);
@@ -45,7 +46,8 @@ impl Kinds {
     pub const EXTENSIONS: Kinds = Kinds(16);
     pub const AUTOMATION: Kinds = Kinds(32);
     pub const TAGS: Kinds = Kinds(64);
-    pub const ALL: Kinds = Kinds(127);
+    pub const TEMPLATES: Kinds = Kinds(128);
+    pub const ALL: Kinds = Kinds(255);
 
     fn has(self, k: Kinds) -> bool {
         self.0 & k.0 == k.0
@@ -66,6 +68,7 @@ impl Kinds {
             "extension" | "package" => Kinds::EXTENSIONS,
             "automation" => Kinds::AUTOMATION,
             "tag" => Kinds::TAGS,
+            "template" => Kinds::TEMPLATES,
             // No trash in a team here; a rename is the live channel's.
             "trash" | "team" => Kinds::NONE,
             _ => Kinds::ALL,
@@ -74,7 +77,7 @@ impl Kinds {
 }
 
 /// The `store-changed` topic for each list.
-const TOPICS: [(Kinds, &str); 7] = [
+const TOPICS: [(Kinds, &str); 8] = [
     (Kinds::PROFILES, "profiles"),
     (Kinds::PROXIES, "proxies"),
     (Kinds::FOLDERS, "folders"),
@@ -82,6 +85,7 @@ const TOPICS: [(Kinds, &str); 7] = [
     (Kinds::EXTENSIONS, "extensions"),
     (Kinds::AUTOMATION, "automation"),
     (Kinds::TAGS, "tags"),
+    (Kinds::TEMPLATES, "templates"),
 ];
 
 /// Every topic, for a switch: each page reads again.
@@ -89,11 +93,12 @@ pub fn all_topics() -> impl Iterator<Item = &'static str> {
     TOPICS.iter().map(|(_, t)| *t)
 }
 
-const ITEMS: [(&str, Kinds); 4] = [
+const ITEMS: [(&str, Kinds); 5] = [
     ("bookmark", Kinds::BOOKMARKS),
     ("extension", Kinds::EXTENSIONS),
     ("automation", Kinds::AUTOMATION),
     ("tag", Kinds::TAGS),
+    ("template", Kinds::TEMPLATES),
 ];
 
 /// How the team's lists stand.
@@ -237,6 +242,10 @@ pub fn folders(team: &str) -> FolderState {
 
 pub fn tags(team: &str) -> TagState {
     with(team, |s| remote::tags(s.items("tag"), &s.profiles)).unwrap_or_default()
+}
+
+pub fn templates(team: &str) -> Vec<ProfileTemplate> {
+    with(team, |s| remote::templates(s.items("template"))).unwrap_or_default()
 }
 
 pub fn bookmarks(team: &str) -> Vec<Bookmark> {
@@ -417,10 +426,10 @@ pub fn item(team: &str, kind: &str, id: &str) -> Option<ItemRow> {
     with(team, |s| s.items(kind).iter().find(|r| r.id == id).cloned()).flatten()
 }
 
-/// An item as written from here, in the list's order; out of sight without the team's See.
+/// An item as written from here, in the list's order; out of sight when this member does not read its kind.
 pub fn wrote_item(team: &str, kind: &str, row: ItemRow) {
     let Some(&(kind, _)) = ITEMS.iter().find(|(k, _)| *k == kind) else { return };
-    if !perm::allows(team, team_model::Action::See, &team_model::Target::team()) {
+    if !perm::reads_items(team, kind) {
         return dropped_item(team, kind, &row.id);
     }
     change(team, |s| {
@@ -585,7 +594,7 @@ async fn fetch(team: &str, kinds: Kinds) -> Result<Got, Failed> {
         perm::accept(team, &issued.permission).map_err(|e| Failed { offline: false, why: e.to_string() })?;
     }
     let c = &client;
-    let (profiles, proxies, folders, bookmarks, extensions, automation, tags) = tokio::try_join!(
+    let (profiles, proxies, folders, bookmarks, extensions, automation, tags, templates) = tokio::try_join!(
         maybe(kinds.has(Kinds::PROFILES), c.get::<Vec<ProfileRow>>("/profiles")),
         maybe(kinds.has(Kinds::PROXIES), c.get::<Vec<ProxyRow>>("/proxies")),
         maybe(kinds.has(Kinds::FOLDERS), c.get::<Vec<FolderRow>>("/folders")),
@@ -593,16 +602,25 @@ async fn fetch(team: &str, kinds: Kinds) -> Result<Got, Failed> {
         maybe(kinds.has(Kinds::EXTENSIONS), c.get::<Vec<ItemRow>>("/items/extension")),
         maybe(kinds.has(Kinds::AUTOMATION), c.get::<Vec<ItemRow>>("/items/automation")),
         maybe(kinds.has(Kinds::TAGS), c.get::<Vec<ItemRow>>("/items/tag")),
+        maybe(kinds.has(Kinds::TEMPLATES), templates_of(c)),
     )?;
     let logins = match &proxies {
         Some(rows) => logins(c, team, rows).await,
         None => Vec::new(),
     };
-    let items = [("bookmark", bookmarks), ("extension", extensions), ("automation", automation), ("tag", tags)]
+    let items = [("bookmark", bookmarks), ("extension", extensions), ("automation", automation), ("tag", tags), ("template", templates)]
         .into_iter()
         .filter_map(|(k, rows)| rows.map(|r| (k, r)))
         .collect();
     Ok(Got { profiles, proxies, logins, folders, items })
+}
+
+/// A server from before profile templates has no such list: it holds none.
+async fn templates_of(c: &TeamClient) -> Result<Vec<ItemRow>, TeamError> {
+    match c.get::<Vec<ItemRow>>("/items/template").await {
+        Err(e) if e.status() == Some(404) => Ok(Vec::new()),
+        r => r,
+    }
 }
 
 /// The logins this member may read and has not read at this revision.

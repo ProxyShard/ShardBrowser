@@ -24,6 +24,7 @@ mod reset;
 mod team;
 mod space;
 mod ext_updates;
+mod launcher_update;
 // A live end-to-end check against a real team server and engine, run by hand (macOS, Linux).
 #[cfg(all(test, unix))]
 mod live_e2e;
@@ -309,7 +310,17 @@ pub fn clamp_screen_to_real_display(
         "[launcher] display: name={:?} physical={}x{} scale={} -> logical={}x{}",
         monitor.name(), phys.width, phys.height, scale, real_w, real_h
     );
+    clamp_screen_to(payload, real_w, real_h, scale);
+}
+
+/// The clamp itself, for a display of `real_w`x`real_h` CSS px at `scale`.
+fn clamp_screen_to(payload: &mut serde_json::Map<String, Value>, real_w: i64, real_h: i64, scale: f64) {
     if real_w <= 0 || real_h <= 0 {
+        return;
+    }
+    // A phone keeps the handset's screen: the host monitor on it is a pair no phone reports.
+    if space::profile::claims_mobile(payload) {
+        eprintln!("[launcher] display: phone profile — keeping its own screen");
         return;
     }
 
@@ -1166,6 +1177,30 @@ fn tag_import(state: space::tags::TagState, epoch: Option<u64>) -> Result<bool, 
 
 // ---- Folders kept while empty, and their looks ----
 
+// ---- Profile templates (#145) ----
+
+#[tauri::command]
+async fn profile_template_list() -> Result<Vec<space::templates::ProfileTemplate>, String> {
+    space::ready().await;
+    space::templates::list().map_err(|e| e.to_string())
+}
+
+/// Adds the template or changes the one with its id; its settings are cut to what a template carries.
+#[tauri::command]
+async fn profile_template_save(
+    template: space::templates::ProfileTemplate,
+    epoch: Option<u64>,
+) -> Result<space::templates::ProfileTemplate, String> {
+    let t = ticket(epoch)?;
+    space::templates::save(space::Door("profile_template_save"), &t, template).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn profile_template_delete(id: String, epoch: Option<u64>) -> Result<(), String> {
+    let t = ticket(epoch)?;
+    space::templates::delete(space::Door("profile_template_delete"), &t, &id).await.map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn folder_list() -> Result<space::folders::FolderState, String> {
     space::ready().await;
@@ -1343,10 +1378,43 @@ async fn profile_create_from_template(
         .map_err(|e| e.to_string())
 }
 
+/// The library fingerprint a profile from a template is drawn from: the
+/// template's own while this computer has it, else one of its OS at random.
+pub fn template_fingerprint(source: &space::templates::Source) -> Result<String, String> {
+    let all = fingerprints::list_all().map_err(|e| e.to_string())?;
+    let library = source.library.as_deref().map(|id| runtime::retired_successor(id).unwrap_or(id));
+    if let Some(id) = library.filter(|id| all.iter().any(|e| e.id == *id)) {
+        return Ok(id.to_string());
+    }
+    if all.is_empty() {
+        return Err("the fingerprint library is empty".into());
+    }
+    let os = match source.os.trim() {
+        "" => space::templates::os_of(&host_platform()),
+        os => os.to_string(),
+    };
+    let same: Vec<&fingerprints::LibraryEntry> = all.iter().filter(|e| space::templates::os_of(&e.platform) == os).collect();
+    let pool: Vec<&fingerprints::LibraryEntry> = if same.is_empty() { all.iter().collect() } else { same };
+    Ok(pool[uuid::Uuid::new_v4().as_bytes()[0] as usize % pool.len()].id.clone())
+}
+
+/// A new profile's config from a profile template (#145): a fresh fingerprint
+/// from its source, then its settings. Answers the library fingerprint used.
+pub fn profile_from_template(
+    window: Option<&tauri::WebviewWindow>,
+    tpl: &space::templates::ProfileTemplate,
+) -> Result<(serde_json::Map<String, Value>, String), String> {
+    let fid = template_fingerprint(&tpl.source)?;
+    let mut cfg = build_fingerprint_config(window, &fid)?;
+    space::templates::apply(&mut cfg, &tpl.settings);
+    Ok((cfg, fid))
+}
+
 /// Merge library fingerprint into fresh profile map; tz/lang/geo set to "auto" sentinel.
 pub fn merge_library_fingerprint(
     template_id: &str,
 ) -> Result<serde_json::Map<String, Value>, String> {
+    let template_id = runtime::retired_successor(template_id).unwrap_or(template_id);
     let entry = fingerprints::get(template_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown fingerprint id: {template_id}"))?;
@@ -1434,10 +1502,11 @@ pub fn ensure_default_noise(cfg: &mut serde_json::Map<String, Value>) {
     );
 }
 
-#[derive(serde::Serialize)]
+#[derive(serde::Serialize, Debug, PartialEq)]
 pub struct PresetEnrichPicks {
     pub hardware_concurrency: u32,
-    pub device_memory: u32,
+    /// A phone's bucket can be below 1 GB, so not an integer.
+    pub device_memory: f64,
     pub platform_version: Option<String>,
 }
 
@@ -1447,8 +1516,25 @@ fn enrich_picks_for_preset(preset_id: String) -> Result<PresetEnrichPicks, Strin
     let entry = fingerprints::get(&preset_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("unknown fingerprint id: {preset_id}"))?;
-    let platform = entry
-        .payload
+    picks_for_template(&preset_id, &entry.payload)
+}
+
+/// The triple for one library template. A phone keeps its own: the tables are desktop ones (#131).
+fn picks_for_template(preset_id: &str, template: &Value) -> Result<PresetEnrichPicks, String> {
+    if template.as_object().is_some_and(space::profile::claims_mobile) {
+        let num = |k: &str| template.get("navigator").and_then(|n| n.get(k)).and_then(|v| v.as_f64());
+        let pv = ["client_hints", "navigator"]
+            .iter()
+            .filter_map(|k| template.get(*k)?.get("platform_version")?.as_str())
+            .find(|v| !v.is_empty())
+            .map(String::from);
+        return Ok(PresetEnrichPicks {
+            hardware_concurrency: num("hardware_concurrency").ok_or("template has no hardware_concurrency")? as u32,
+            device_memory: num("device_memory").ok_or("template has no device_memory")?,
+            platform_version: pv,
+        });
+    }
+    let platform = template
         .get("navigator")
         .and_then(|n| n.get("platform"))
         .and_then(|v| v.as_str())
@@ -1464,7 +1550,7 @@ fn enrich_picks_for_preset(preset_id: String) -> Result<PresetEnrichPicks, Strin
         serde_json::json!({ "platform": platform }),
     );
     // The claimed Apple chip bounds the macOS it can report.
-    if let Some(webgl) = entry.payload.get("webgl") {
+    if let Some(webgl) = template.get("webgl") {
         payload.insert("webgl".into(), webgl.clone());
     }
     // Mirror enrich_new_config order: platform_version first, then hardware.
@@ -1480,8 +1566,8 @@ fn enrich_picks_for_preset(preset_id: String) -> Result<PresetEnrichPicks, Strin
         .ok_or("internal: hardware_concurrency missing")? as u32;
     let mem = nav
         .get("device_memory")
-        .and_then(|v| v.as_u64())
-        .ok_or("internal: device_memory missing")? as u32;
+        .and_then(|v| v.as_f64())
+        .ok_or("internal: device_memory missing")?;
     let pv = nav
         .get("platform_version")
         .and_then(|v| v.as_str())
@@ -1588,6 +1674,28 @@ async fn proxy_save(entry: space::proxy::ProxyEntry, epoch: Option<u64>) -> Resu
 async fn proxy_delete(id: String, epoch: Option<u64>) -> Result<(), String> {
     let t = ticket(epoch)?;
     space::proxy::delete(space::Door("proxy_delete"), &t, &id).await.map_err(|e| e.to_string())
+}
+
+/// The proxies with a change-IP link (#162).
+#[tauri::command]
+fn proxy_rotation_ids() -> Vec<String> {
+    space::proxy::rotation_ids()
+}
+
+#[tauri::command]
+fn proxy_rotation_get(id: String) -> Option<String> {
+    space::proxy::rotation_get(&id)
+}
+
+#[tauri::command]
+fn proxy_rotation_set(id: String, url: Option<String>) -> Result<(), String> {
+    space::proxy::rotation_set(&id, url.as_deref()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn proxy_change_ip(id: String, epoch: Option<u64>) -> Result<space::proxy::ChangeIp, String> {
+    let t = ticket(epoch)?;
+    space::proxy::change_ip(space::Door("proxy_change_ip"), &t, &id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2643,6 +2751,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_menu_event(|app, e| {
             if e.id.as_ref() == "app_quit" {
                 quit(app);
@@ -2742,6 +2851,9 @@ pub fn run() {
             tag_delete,
             tag_assign,
             tag_import,
+            profile_template_list,
+            profile_template_save,
+            profile_template_delete,
             folder_list,
             folder_add,
             folder_meta_set,
@@ -2773,6 +2885,10 @@ pub fn run() {
             proxy_list,
             proxy_save,
             proxy_delete,
+            proxy_rotation_ids,
+            proxy_rotation_get,
+            proxy_rotation_set,
+            proxy_change_ip,
             proxy_check,
             proxy_check_udp,
             proxy_geo,
@@ -2848,6 +2964,9 @@ pub fn run() {
             runtime::runtime_status,
             runtime::runtime_install,
             runtime::launcher_update_check,
+            launcher_update::launcher_update_offer,
+            launcher_update::launcher_update_download,
+            launcher_update::launcher_update_apply,
             reset::app_reset_plan,
             reset::app_reset,
             reset::app_reset_backup,
@@ -3132,4 +3251,75 @@ fn app_menu(app: &tauri::AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wr
         first.append(&MenuItem::with_id(app, "app_quit", label, true, Some("CmdOrCtrl+Q"))?)?;
     }
     Ok(menu)
+}
+
+#[cfg(test)]
+mod phone_tests {
+    use super::{clamp_screen_to, picks_for_template};
+    use serde_json::{json, Value};
+
+    const PHONE_UA: &str = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36";
+
+    fn phone() -> Value {
+        json!({
+            "navigator": { "user_agent": PHONE_UA, "platform": "Android", "platform_value": "Linux armv81",
+                           "hardware_concurrency": 8, "device_memory": 4.0 },
+            "client_hints": { "platform_version": "16.0.0", "mobile": true },
+            "screen": { "width": 412, "height": 892, "avail_width": 412, "avail_height": 892, "device_pixel_ratio": 3.5 },
+            "window": { "outer_width": 412, "outer_height": 892, "inner_width": 412, "inner_height": 806 },
+            "webgl": { "renderer": "ANGLE (Qualcomm, Adreno (TM) 750, OpenGL ES 3.2)" }
+        })
+    }
+
+    /// #131: a phone taller than the monitor kept the host's screen and pixel ratio.
+    #[test]
+    fn the_clamp_leaves_a_phone_its_own_screen() {
+        let mut p = phone().as_object().cloned().unwrap();
+        let before = p.clone();
+        clamp_screen_to(&mut p, 1440, 852, 2.0);
+        assert_eq!(p, before);
+        // A tablet says mobile=false, but its UA still names Android.
+        let mut tablet = before.clone();
+        tablet["client_hints"]["mobile"] = json!(false);
+        tablet["screen"]["height"] = json!(1280);
+        let before = tablet.clone();
+        clamp_screen_to(&mut tablet, 1440, 852, 2.0);
+        assert_eq!(tablet, before);
+    }
+
+    #[test]
+    fn the_clamp_still_fits_a_desktop_to_a_smaller_monitor() {
+        let mut p = json!({
+            "navigator": { "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)", "platform": "Windows" },
+            "screen": { "width": 1920, "height": 1080, "avail_width": 1920, "avail_height": 1032, "device_pixel_ratio": 1 }
+        }).as_object().cloned().unwrap();
+        clamp_screen_to(&mut p, 1440, 900, 2.0);
+        assert_eq!((p["screen"]["width"].as_i64(), p["screen"]["avail_height"].as_i64()), (Some(1440), Some(852)));
+        assert_eq!(p["window"]["outer_height"].as_i64(), Some(851));
+        let before = p.clone();
+        clamp_screen_to(&mut p, 2560, 1440, 1.0);
+        assert_eq!(p, before, "a display that holds the claim leaves it");
+    }
+
+    /// #131: the pick failed on a phone and the form kept the previous OS's version.
+    #[test]
+    fn a_phone_template_picks_its_own_hardware_and_android_release() {
+        let picks = picks_for_template("android-s24", &phone()).unwrap();
+        assert_eq!(picks.hardware_concurrency, 8);
+        assert_eq!(picks.device_memory, 4.0);
+        assert_eq!(picks.platform_version.as_deref(), Some("16.0.0"));
+        // A phone with no version of its own leaves it to the template's empty one.
+        let mut bare = phone();
+        bare["client_hints"].as_object_mut().unwrap().remove("platform_version");
+        assert_eq!(picks_for_template("x", &bare).unwrap().platform_version, None);
+    }
+
+    #[test]
+    fn a_windows_template_still_draws_from_the_desktop_tables() {
+        let win = json!({ "navigator": { "platform": "Windows", "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } });
+        let picks = picks_for_template("win-x", &win).unwrap();
+        let pv = picks.platform_version.unwrap();
+        assert!(crate::platform_version::WINDOWS_PLATFORM_VERSIONS.contains(&pv.as_str()), "{pv}");
+        assert!([8.0, 16.0, 32.0].contains(&picks.device_memory), "{}", picks.device_memory);
+    }
 }

@@ -23,6 +23,11 @@ test("us-spelling and banned words", () => {
   assert.deepEqual(rules({ "a.b": "Distribute {n} proxies" }), ["en:a.b banned-word"]);
   assert.deepEqual(rules({ "a.b": "on their next launch" }), ["en:a.b banned-word"]);
   assert.deepEqual(rules({ "a.b": "From template" }), ["en:a.b banned-word"]);
+  // A profile template's own keys may say it; never of a fingerprint.
+  assert.deepEqual(rules({ "templates.save": "Save template", "commands.saveAsTemplate": "Save as template" }), []);
+  assert.deepEqual(rules({ "templates.x": "Pick a fingerprint template" }), ["en:templates.x banned-word"]);
+  const notes = [{ where: "2.2.0/e1", text: "Profile templates; the library template" }];
+  assert.deepEqual(rules({}, {}, notes), ["notes:2.2.0/e1 banned-word"]);
   assert.deepEqual(rules({ "a.b": "the patched core" }), ["en:a.b banned-word"]);
   assert.deepEqual(rules({ "a.b": "This machine can run it." }), ["en:a.b banned-word"]);
   assert.deepEqual(rules({ "a.b": "the automation API stays up" }), ["en:a.b banned-word"]);

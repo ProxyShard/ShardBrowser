@@ -11,12 +11,16 @@ import { useGpuCompat, verdictsLoaded } from "../../../shared/model/gpuCompat";
 import { inFolder, teamRefusal } from "../../../entities/space";
 import {
   cookiesImport, editsSettled, forgetForm, isProtected, passwordProblem, profileProtect, profileRefusal, enrichPicksForPreset, fromStored, resolveId,
-  selectVisible, useProfile, useProfileUi, type ProfileForm,
+  pickedPlatformVersion, selectVisible, useProfile, useProfileUi, type ProfileForm,
 } from "../../../entities/profile";
 import { askPassword } from "../../../shared/model/passwordAsk";
 import type { FingerprintEntry } from "../../../entities/fingerprint";
 import { proxyBulkParse, proxySave } from "../../../entities/proxy";
 import { clean, useTags } from "../../../entities/tag";
+import { useExtensions } from "../../../entities/extension";
+import { cleanTemplateName, defaultTemplate, templateNameTaken, useTemplates, type ProfileTemplate } from "../../../entities/template";
+import { confirmModal } from "../../../shared/model/confirm";
+import { formOfTemplate, settingsOfForm, sourceOfForm, type SourceKind } from "./template";
 
 /// The profile form (manual save, owner 2026-10-07): one dialog creates a
 /// profile and edits one. Nothing is written until Create profile or Save;
@@ -33,13 +37,19 @@ export type ProfileFormDraft = {
   form: ProfileForm; folder: string; tagIds: string[]; newTags: string[]; newProxyLine: string;
   /** A cookies file picked in the form, imported once the profile is saved. */
   cookies: { name: string; items: unknown[] } | null;
+  /** A template's form (#145): where its profiles get their fingerprints. */
+  sourceKind?: SourceKind;
 };
 
 export type ProfileFormStatus = "idle" | "saving" | "error" | "conflict";
 
 type ProfileFormState = {
   open: boolean;
-  mode: "edit" | "create";
+  /** "template" edits a profile template (#145): its Save writes the template, no profile. */
+  mode: "edit" | "create" | "template";
+  /** The template a new profile's form started from (null: blank), or the one a
+   *  template's form edits (null: a new one). */
+  template: string | null;
   /** The profile edited; null while creating. */
   id: string | null;
   tab: ProfileFormTab;
@@ -77,7 +87,7 @@ type ProfileFormState = {
 };
 
 export const useProfileForm = create<ProfileFormState>(() => ({
-  open: false, mode: "edit", id: null, tab: "basics", draft: null, saved: null,
+  open: false, mode: "edit", template: null, id: null, tab: "basics", draft: null, saved: null,
   status: "idle", error: null, errorDetail: null, session: 0, theirs: null, tried: false, badFields: [], host: null, screenPicked: false,
   password: "", passwordRepeat: "", unlocked: null,
 }));
@@ -115,6 +125,7 @@ export function changedTabs(s: Pick<ProfileFormState, "draft" | "saved"> & Parti
   if (!d || !o) return out;
   if (d.folder !== o.folder || !sameTags(d, o) || (d.cookies?.name ?? null) !== (o.cookies?.name ?? null) || s.password || s.passwordRepeat) out.add("basics");
   if (d.newProxyLine !== o.newProxyLine) out.add("proxy");
+  if (d.sourceKind !== o.sourceKind) out.add("fingerprint");
   for (const k of Object.keys(d.form) as (keyof ProfileForm)[]) {
     if (OWN.has(k) || JSON.stringify(d.form[k]) === JSON.stringify(o.form[k])) continue;
     out.add(tabOf(k));
@@ -122,10 +133,14 @@ export function changedTabs(s: Pick<ProfileFormState, "draft" | "saved"> & Parti
   return out;
 }
 
-/** Why the form cannot be saved as it is, per field; empty when it can. */
-export function problemsOf(d: ProfileFormDraft | null): { name?: string } {
+/** Why the form cannot be saved as it is, per field; empty when it can. A
+ *  template's name is its own, and no two templates share one. */
+export function problemsOf(d: ProfileFormDraft | null, s: Pick<ProfileFormState, "mode" | "template"> = get()): { name?: string } {
   if (!d) return {};
-  return d.form.name.trim() ? {} : { name: t("profileForm.nameRequired") };
+  if (s.mode !== "template") return d.form.name.trim() ? {} : { name: t("profileForm.nameRequired") };
+  if (!cleanTemplateName(d.form.name)) return { name: t("templates.nameRequired") };
+  return templateNameTaken(useTemplates.getState().templates, d.form.name, s.template ?? undefined)
+    ? { name: t("templates.nameTaken", { name: cleanTemplateName(d.form.name) }) } : {};
 }
 
 /** Why the new password is not taken yet, in words; null when there is none or it is fine. */
@@ -142,10 +157,10 @@ function nextName(): string {
   return t("useProfile.instantName", { n });
 }
 
-/** A new profile's fingerprint: one of this machine's OS that its GPU can back, at random. */
-function pickFingerprint(fingerprints: FingerprintEntry[]): FingerprintEntry | undefined {
+/** A new profile's fingerprint: one of `os` (this machine's) that its GPU can back, at random. */
+function pickFingerprint(fingerprints: FingerprintEntry[], os: string = HOST_OS): FingerprintEntry | undefined {
   const compat = useGpuCompat.getState().byId;
-  const hostOs = fingerprints.filter((f) => matchesOs(f.platform, HOST_OS));
+  const hostOs = fingerprints.filter((f) => matchesOs(f.platform, os));
   const base = hostOs.length > 0 ? hostOs : fingerprints;
   const fitting = base.filter((f) => compat[f.id]?.compatible !== false);
   const pool = fitting.length > 0 ? fitting : base;
@@ -198,19 +213,46 @@ async function loadEdit(session: number, id: string) {
   }
 }
 
-async function loadCreate(session: number, proxyId: string | null, preset?: Partial<ProfileForm>) {
+/** The template's own library fingerprint while this computer has it, else none. */
+const ownFingerprint = (tpl: ProfileTemplate | null) =>
+  tpl?.source.library ? useProfile.getState().fingerprints.find((f) => f.id === tpl.source.library) : undefined;
+
+/** What a template brings beside its settings: its Folder, the tags this space still has,
+ *  its proxy and extensions while they are here. */
+function fromTemplate(tpl: ProfileTemplate): { form: Partial<ProfileForm>; folder: string; tagIds: string[] } {
+  const form = formOfTemplate(tpl.settings);
+  if (form.proxy_id && !useProfile.getState().proxies.some((p) => p.id === form.proxy_id)) form.proxy_id = null;
+  const ext = useExtensions.getState();
+  if (form.extensions && ext.status === "ready") form.extensions = form.extensions.filter((id) => ext.items.some((e) => e.id === id));
+  const known = new Set(useTags.getState().tags.map((x) => x.id));
+  return { form, folder: tpl.folder, tagIds: tpl.tags.filter((id) => known.has(id)) };
+}
+
+/** The lowest "Template N" no template has yet. */
+function nextTemplateName(): string {
+  const list = useTemplates.getState().templates;
+  let n = 1;
+  while (templateNameTaken(list, t("templates.newName", { n }))) n++;
+  return t("templates.newName", { n });
+}
+
+/** A new profile's draft, or a template's: a fingerprint drawn fresh (the caller's
+ *  pick, the template's source, else one for this computer), then the template's
+ *  settings over it. Null when the form moved on meanwhile or there is none to draw. */
+async function freshDraft(session: number, opts: { proxyId: string | null; preset?: Partial<ProfileForm>; tpl: ProfileTemplate | null; name: string }): Promise<ProfileFormDraft | null> {
+  const { preset, tpl } = opts;
   const { fingerprints } = useProfile.getState();
-  if (fingerprints.length === 0) { set({ status: "error", error: t("useProfile.noFingerprints") }); return; }
-  // A fingerprint the caller chose (the library's "New profile"), else one at random.
-  const chosen = preset?.gpu_preset_id ? useProfile.getState().fingerprints.find((f) => f.id === preset.gpu_preset_id) : undefined;
+  if (fingerprints.length === 0) { set({ status: "error", error: t("useProfile.noFingerprints") }); return null; }
+  // A fingerprint the caller chose (the library's "New profile"), the template's own, else one at random.
+  const chosen = preset?.gpu_preset_id ? fingerprints.find((f) => f.id === preset.gpu_preset_id) : ownFingerprint(tpl);
   if (!chosen) {
     // The random pick waits up to a second for this machine's GPU verdicts, then
     // goes on without them: the check can hang, the form must not (badges come later).
     await verdictsLoaded();
-    if (get().session !== session) return;
+    if (get().session !== session) return null;
   }
-  const fp = chosen ?? pickFingerprint(useProfile.getState().fingerprints);
-  if (!fp) { set({ status: "error", error: t("useProfile.noFingerprints") }); return; }
+  const fp = chosen ?? pickFingerprint(useProfile.getState().fingerprints, tpl?.source.os || HOST_OS);
+  if (!fp) { set({ status: "error", error: t("useProfile.noFingerprints") }); return null; }
   // Every field as the template has it, as the backend's create from a
   // template makes it: timezone, language and location follow the proxy
   // at launch (lib.rs `merge_library_fingerprint`).
@@ -221,28 +263,46 @@ async function loadCreate(session: number, proxyId: string | null, preset?: Part
   let picks: { hardware_concurrency?: number; device_memory?: number; platform_version?: string } = {};
   try { picks = await enrichPicksForPreset(fp.id); } catch { /* the template's own values */ }
   const host = await hostScreen();
-  if (get().session !== session) return;
+  if (get().session !== session) return null;
   set({ host });
   const templated = fromStored({ ...structuredClone(fp.payload ?? {}), _meta: { gpu_preset_id: fp.id } });
   const base = {
     ...templated,
     hardware_concurrency: picks.hardware_concurrency ?? templated.hardware_concurrency,
     device_memory: picks.device_memory ?? templated.device_memory,
-    platform_version: picks.platform_version ?? templated.platform_version,
+    platform_version: pickedPlatformVersion(picks.platform_version, fp.payload),
     timezone: AUTO_TZ, language: AUTO_LANG, geo_mode: "auto" as const,
     // This computer's screen or the template's own, which the backend fits to this display.
     ...screenFor(fp, host),
   };
   const folder = useProfileUi.getState().folder;
-  show({
-    form: { ...base, id: "", rev: 0, name: nextName(), proxy_id: proxyId, ...preset, gpu_preset_id: fp.id },
-    // The Folder the list shows; none from All profiles.
-    folder: folder !== "all" ? folder : "",
-    tagIds: [],
+  // A profile template's settings over the fresh fingerprint; a proxy the caller named still wins.
+  const own = tpl ? fromTemplate(tpl) : null;
+  return {
+    form: { ...base, id: "", rev: 0, name: opts.name, proxy_id: opts.proxyId, ...own?.form, ...(opts.proxyId ? { proxy_id: opts.proxyId } : {}), ...preset, gpu_preset_id: fp.id },
+    // The template's Folder, else the one the list shows; none from All profiles.
+    folder: own ? own.folder : folder !== "all" ? folder : "",
+    tagIds: own?.tagIds ?? [],
     newTags: [],
     newProxyLine: "",
     cookies: null,
-  });
+  };
+}
+
+async function loadCreate(session: number, proxyId: string | null, preset: Partial<ProfileForm> | undefined, tpl: ProfileTemplate | null) {
+  const draft = await freshDraft(session, { proxyId, preset, tpl, name: nextName() });
+  if (draft && get().session === session) show(draft);
+}
+
+/** A template's form: its settings over a sample fingerprint from its source. */
+async function loadTemplate(session: number, id: string | null) {
+  await useTemplates.getState().load();
+  const tpl = id ? useTemplates.getState().templates.find((x) => x.id === id) ?? null : null;
+  if (id && !tpl) { set({ status: "error", error: t("templates.gone") }); return; }
+  const draft = await freshDraft(session, { proxyId: null, tpl, name: tpl?.name ?? nextTemplateName() });
+  if (!draft || get().session !== session) return;
+  // Its own library fingerprint while this computer has it; a new template takes any of the OS.
+  show({ ...draft, sourceKind: ownFingerprint(tpl) ? "library" : "os" });
 }
 
 /// Opens the form: on a profile (edit), or on a new one that exists only
@@ -250,17 +310,46 @@ async function loadCreate(session: number, proxyId: string | null, preset?: Part
 /// proxy (the setup checklist's step). `tab` is the tab it opens on. `preset`
 /// starts a new profile with these fields set; a `gpu_preset_id` in it picks
 /// that library fingerprint (all its fields come with it) instead of a random one.
-export function openProfileForm(opts: { mode: "edit"; id: string; tab?: ProfileFormTab } | { mode: "create"; tab?: ProfileFormTab; proxyId?: string | null; preset?: Partial<ProfileForm> }): void {
+/// `template` starts it from that profile template (null: blank); left out,
+/// the space's default template, unless a preset or a proxy was given.
+export function openProfileForm(opts: { mode: "edit"; id: string; tab?: ProfileFormTab } | { mode: "create"; tab?: ProfileFormTab; proxyId?: string | null; preset?: Partial<ProfileForm>; template?: string | null }): void {
   // A protected profile opens only once its password is given (#127).
   if (opts.mode === "edit" && isProtected(useProfile.getState().profiles.find((p) => p.id === opts.id))) { void openLocked(opts); return; }
   const session = get().session + 1;
+  const tpl = opts.mode !== "create" ? null
+    : opts.template !== undefined ? useTemplates.getState().templates.find((x) => x.id === opts.template) ?? null
+    : opts.preset || opts.proxyId ? null : defaultTemplate();
   set({
-    open: true, mode: opts.mode, id: opts.mode === "edit" ? opts.id : null, tab: opts.tab ?? "basics",
+    open: true, mode: opts.mode, template: tpl?.id ?? null, id: opts.mode === "edit" ? opts.id : null, tab: opts.tab ?? "basics",
     draft: null, saved: null, status: "idle", error: null, errorDetail: null, session, theirs: null, tried: false, badFields: [], screenPicked: false,
     password: "", passwordRepeat: "", unlocked: null,
   });
   if (opts.mode === "edit") void loadEdit(session, opts.id);
-  else void loadCreate(session, opts.proxyId ?? null, opts.preset);
+  else void loadCreate(session, opts.proxyId ?? null, opts.preset, tpl);
+}
+
+/// Opens the form on a profile template (#145): `id`'s, or a new one (null).
+export function openTemplateForm(id: string | null, opts: { tab?: ProfileFormTab } = {}): void {
+  const session = get().session + 1;
+  set({
+    open: true, mode: "template", template: id, id: null, tab: opts.tab ?? "basics",
+    draft: null, saved: null, status: "idle", error: null, errorDetail: null, session, theirs: null, tried: false, badFields: [], screenPicked: false,
+    password: "", passwordRepeat: "", unlocked: null,
+  });
+  void loadTemplate(session, id);
+}
+
+/// A new profile's form starts over from another template (null: blank),
+/// once the person agrees to drop what they changed in it.
+export async function chooseTemplate(id: string | null): Promise<void> {
+  const s = get();
+  if (s.mode !== "create" || !s.open || s.status === "saving" || id === s.template) return;
+  if (isDirty(s)) {
+    const name = id ? useTemplates.getState().templates.find((x) => x.id === id)?.name ?? "" : t("templates.blank");
+    const ok = await confirmModal({ title: t("templates.startOverTitle", { name }), message: t("templates.startOverBody"), confirmLabel: t("templates.startOver") });
+    if (!ok || get().session !== s.session) return;
+  }
+  openProfileForm({ mode: "create", tab: get().tab, template: id });
 }
 
 /// A protected profile's form: its password first, in the password dialog, which
@@ -280,7 +369,7 @@ async function openLocked(opts: { id: string; tab?: ProfileFormTab }): Promise<v
   });
   if (!answer) return;
   set({
-    open: true, mode: "edit", id: real, tab: opts.tab ?? "basics", draft: null, saved: null, status: "idle", error: null, errorDetail: null,
+    open: true, mode: "edit", template: null, id: real, tab: opts.tab ?? "basics", draft: null, saved: null, status: "idle", error: null, errorDetail: null,
     session: get().session + 1, theirs: null, tried: false, badFields: [], screenPicked: false,
     password: "", passwordRepeat: "", unlocked: answer.value.password,
   });
@@ -313,7 +402,7 @@ export function patchForm(changes: Partial<ProfileForm>): void {
   const form = { ...d.form, ...changes };
   // A new profile's screen follows another template's OS; a size picked by
   // hand stays only on Windows/Linux (macOS and phones keep their own).
-  const fp = s.mode === "create" && changes.gpu_preset_id && changes.gpu_preset_id !== d.form.gpu_preset_id
+  const fp = s.mode !== "edit" && changes.gpu_preset_id && changes.gpu_preset_id !== d.form.gpu_preset_id
     ? useProfile.getState().fingerprints.find((x) => x.id === changes.gpu_preset_id) : undefined;
   // A pick by hand ("As in the fingerprint" too) stays on another Windows/Linux one.
   let screenPicked = s.screenPicked || "screen_host" in changes;
@@ -363,10 +452,12 @@ export function readOnlyWhy(s: Pick<ProfileFormState, "mode" | "id"> = get()): s
   return row ? profileRefusal(row, "edit") : null;
 }
 
-/** Why a team does not take the form as it is: Create where the profile goes, or for a new tag. */
-export function rightsProblem(s: Pick<ProfileFormState, "mode" | "id" | "draft" | "saved"> = get()): string | null {
+/** Why a team does not take the form as it is: Create where the profile goes, or for a new tag.
+ *  A template is the team's own: Create for a new one, Edit for one it has. */
+export function rightsProblem(s: Pick<ProfileFormState, "mode" | "id" | "draft" | "saved"> & Partial<Pick<ProfileFormState, "template">> = get()): string | null {
   const d = s.draft;
   if (!d) return null;
+  if (s.mode === "template") return teamRefusal(s.template ? "edit" : "create") ?? (d.newTags.length > 0 ? teamRefusal("create") : null);
   const readOnly = readOnlyWhy(s);
   if (readOnly) return readOnly;
   if (s.mode === "create" || d.folder !== s.saved?.folder) {
@@ -378,9 +469,9 @@ export function rightsProblem(s: Pick<ProfileFormState, "mode" | "id" | "draft" 
 
 /** True when Save or Create profile can run now. */
 export function canSave(s: ProfileFormState = get()): boolean {
-  if (!s.open || !s.draft || s.status === "saving" || problemsOf(s.draft).name || s.badFields.length > 0 || passwordProblemOf(s)) return false;
+  if (!s.open || !s.draft || s.status === "saving" || problemsOf(s.draft, s).name || s.badFields.length > 0 || passwordProblemOf(s)) return false;
   if (rightsProblem(s)) return false;
-  return s.mode === "create" || isDirty(s);
+  return s.mode === "create" || (s.mode === "template" && !s.template) || isDirty(s);
 }
 
 /// Brings a cookies file picked in the form into the saved profile. A running
@@ -416,7 +507,8 @@ async function protectNew(id: string, name: string, password: string): Promise<v
 export async function saveProfileForm(): Promise<boolean> {
   const s = get();
   if (!s.open || !s.draft || s.status === "saving") return false;
-  if (problemsOf(s.draft).name) { set({ tried: true, tab: "basics" }); return false; }
+  if (problemsOf(s.draft, s).name) { set({ tried: true, tab: "basics" }); return false; }
+  if (s.mode === "template") return saveTemplateForm();
   // A number field shows text that is not a number: it is on screen, so nothing is saved behind it.
   if (s.badFields.length > 0) return false;
   if (passwordProblemOf(s)) { set({ tried: true, tab: "basics" }); return false; }
@@ -533,4 +625,51 @@ export async function saveProfileForm(): Promise<boolean> {
   toast.saved(t("profileForm.saved", { name }));
   close();
   return true;
+}
+
+/// Saves a template's form (#145): its settings as a profile would be saved,
+/// cut to what a template keeps; where its fingerprints come from; its Folder
+/// and tags. A tag name typed in becomes a tag now, as on a profile's Save.
+async function saveTemplateForm(): Promise<boolean> {
+  const s = get();
+  const d = s.draft;
+  if (!d || s.badFields.length > 0) return false;
+  if (rightsProblem(s)) return false;
+  if (s.template && !isDirty(s)) return true;
+  const session = s.session;
+  const here = () => get().session === session;
+  set({ status: "saving", error: null, tried: true });
+  const tags = useTags.getState();
+  const made = d.newTags.map((n) => tags.create(n)?.id).filter((x): x is string => !!x);
+  const lib = useProfile.getState().fingerprints.find((f) => f.id === d.form.gpu_preset_id) ?? null;
+  const was = s.template ? useTemplates.getState().templates.find((x) => x.id === s.template) : undefined;
+  const name = cleanTemplateName(d.form.name);
+  try {
+    const saved = await useTemplates.getState().save({
+      id: s.template ?? "",
+      name,
+      source: sourceOfForm(d.form, lib, d.sourceKind ?? "library", HOST_OS),
+      settings: settingsOfForm(d.form, lib),
+      folder: d.folder,
+      tags: [...new Set([...d.tagIds, ...made])],
+      is_default: was?.is_default ?? false,
+      updated_at: 0,
+    });
+    const store = useProfile.getState();
+    if (d.folder && !store.folderRegistry.includes(d.folder)) store.rememberFolder(d.folder);
+    if (here()) set({ open: false, status: "idle", session: get().session + 1 });
+    toast.saved(was ? t("templates.saved", { name: saved.name }) : t("templates.created", { name: saved.name }));
+    return true;
+  } catch (e) {
+    if (here()) set({ status: "error", error: t("templates.saveFailed", { name }), errorDetail: explainError(e) ?? null, draft: { ...d, tagIds: [...d.tagIds, ...made], newTags: [] } });
+    toast.fail({ title: t("templates.saveFailed", { name }), detail: e, subject: name });
+    return false;
+  }
+}
+
+/** How a template's profiles get their fingerprints, in its form. */
+export function setSourceKind(kind: SourceKind): void {
+  const d = get().draft;
+  if (!d || get().status === "saving" || get().mode !== "template") return;
+  set({ draft: { ...d, sourceKind: kind } });
 }

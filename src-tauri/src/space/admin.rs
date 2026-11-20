@@ -335,16 +335,22 @@ pub async fn trash_restore(team_id: &str, id: &str, kind: &str) -> Result<TeamRe
     Ok(TeamRestored { kind, id: b.id, name: b.name, revision: b.revision })
 }
 
-/// A tag comes back only under a name no live tag has: the server does not look, and two
-/// of one name could not be edited here.
+/// A tag or a profile template comes back only under a name no live one has: the server
+/// does not look, and two of one name could not be edited here.
 async fn tag_name_free(c: &TeamClient, id: &str, kind: &str) -> Result<()> {
-    if !kind.is_empty() && kind != "tag" {
+    let kind = if kind.is_empty() { "tag" } else { kind };
+    if kind != "tag" && kind != "template" {
         return Ok(());
     }
     let trash: Vec<TeamTrashRow> = c.get("/trash").await?;
-    let Some(row) = trash.iter().find(|r| r.id == id && r.kind == "tag") else { return Ok(()) };
-    let live: Vec<super::remote::ItemRow> = c.get("/items/tag").await?;
-    if let Some(t) = super::remote::tags(&live, &[]).named(&row.name, id) {
+    let Some(row) = trash.iter().find(|r| r.id == id && r.kind == kind) else { return Ok(()) };
+    let live: Vec<super::remote::ItemRow> = c.get(&format!("/items/{kind}")).await?;
+    if kind == "template" {
+        let held = super::local::templates::TemplateState { templates: super::remote::templates(&live) };
+        if let Some(t) = held.named(&row.name, id) {
+            bail!("a template named {} already exists", t.name);
+        }
+    } else if let Some(t) = super::remote::tags(&live, &[]).named(&row.name, id) {
         bail!("a tag named {} already exists", t.name);
     }
     Ok(())

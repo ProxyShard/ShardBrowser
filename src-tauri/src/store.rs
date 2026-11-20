@@ -164,6 +164,11 @@ pub fn tags_path() -> Result<PathBuf> {
     Ok(config_root()?.join("tags.json"))
 }
 
+/// Profile templates: what a new profile starts with (#145).
+pub fn templates_path() -> Result<PathBuf> {
+    Ok(config_root()?.join("templates.json"))
+}
+
 /// Folders kept while empty, and each folder's color and icon.
 pub fn folders_path() -> Result<PathBuf> {
     Ok(config_root()?.join("folders.json"))

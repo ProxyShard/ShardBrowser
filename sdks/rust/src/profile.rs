@@ -128,25 +128,7 @@ impl Profile {
 
     /// Whether the profile claims a device whose primary input is a finger.
     pub fn claims_mobile(&self) -> bool {
-        let s = |path: [&str; 2]| {
-            self.config
-                .get(path[0])
-                .and_then(|v| v.get(path[1]))
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_ascii_lowercase()
-        };
-        if self
-            .config
-            .get("client_hints")
-            .and_then(|c| c.get("mobile"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false)
-        {
-            return true;
-        }
-        s(["client_hints", "platform"]).starts_with("android")
-            || s(["navigator", "user_agent"]).contains("android")
+        config_claims_mobile(&self.config)
     }
 
     /// Whether the profile claims a DESKTOP Linux machine. Android is excluded:
@@ -219,6 +201,7 @@ impl FingerprintLibrary {
     }
 
     pub fn load(&self, fingerprint_id: &str) -> Result<Profile> {
+        let fingerprint_id = retired_successor(fingerprint_id).unwrap_or(fingerprint_id);
         let path = self
             .runtime
             .fingerprints_dir()
@@ -252,9 +235,11 @@ impl FingerprintLibrary {
 /// version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so a
 /// 149-era profile is eleven entries short and reads as a mismatch.
 ///
-/// `android_version` is the Chrome for Android build of the same major, passed
-/// for phone profiles: Android ships its own build numbers, and a phone
-/// reporting a desktop one claims a build no phone has.
+/// `android_version` is the build this profile's OS is shipped, when it is not
+/// `chromium_version`: the Chrome for Android build of the same major for a
+/// phone (a phone reporting a desktop build claims one no phone has), or the
+/// manifest's `desktop_chromium_versions` entry for a desktop profile (158
+/// went out as .37 for macOS and Windows and .36 for Linux).
 pub fn apply_engine_version(
     config: &mut Value,
     chromium_version: &str,
@@ -334,6 +319,22 @@ pub(crate) fn apply_chrome_brand(config: &mut Value) {
     ch.insert("brand".into(), Value::String(CHROME_BRAND.into()));
 }
 
+/// Whether a config claims a phone: the engine's three signals, in its order.
+pub(crate) fn config_claims_mobile(config: &Value) -> bool {
+    let s = |path: [&str; 2]| {
+        config
+            .get(path[0])
+            .and_then(|v| v.get(path[1]))
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    };
+    if config.pointer("/client_hints/mobile").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return true;
+    }
+    s(["client_hints", "platform"]).starts_with("android") || s(["navigator", "user_agent"]).contains("android")
+}
+
 /// Copies into a saved profile what its library template gained after it was frozen:
 /// fonts, fonts_local and webgpu.features where the profile has none, and the adapter's
 /// subgroup sizes for the same claimed GPU (the template's win). The template is found by
@@ -346,15 +347,18 @@ pub(crate) fn adopt_library_fields(config: &mut Value, fingerprints_dir: &Path) 
         .filter_map(|v| v.as_str())
         .find(|k| !k.is_empty())
         .map(str::to_owned);
-    let Some(key) = key.filter(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))) else {
-        return;
-    };
-    let Some(src) = fs::read_to_string(fingerprints_dir.join(format!("{key}.json")))
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-    else {
-        return;
-    };
+    let successor = key.as_deref().and_then(retired_successor);
+    let src = successor
+        .map(str::to_owned)
+        .or(key)
+        .filter(|k| k.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c)))
+        .and_then(|k| fs::read_to_string(fingerprints_dir.join(format!("{k}.json"))).ok())
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok());
+    // A phone's fixes need no template; the version takes the template's when there is one.
+    adopt_phone_angle_webgl(config);
+    adopt_phone_platform_version(config, src.as_ref(), fingerprints_dir);
+    adopt_desktop_min_cores(config);
+    let Some(src) = src else { return };
     for k in ["fonts", "fonts_local"] {
         if config.get(k).is_none() {
             if let Some(v) = src.get(k) {
@@ -362,6 +366,10 @@ pub(crate) fn adopt_library_fields(config: &mut Value, fingerprints_dir: &Path) 
             }
         }
     }
+    adopt_laptop_battery(config, &src);
+    adopt_air15_screen(config, &src);
+    adopt_linux_gl_webgl(config, &src, successor);
+    adopt_webgl_extensions(config, &src);
     let same_gpu = ["/webgpu/vendor", "/webgpu/architecture"]
         .iter()
         .all(|k| config.pointer(k).is_some() && config.pointer(k) == src.pointer(k));
@@ -381,6 +389,206 @@ pub(crate) fn adopt_library_fields(config: &mut Value, fingerprints_dir: &Path) 
             w.insert(k.into(), v.clone());
         }
     }
+}
+
+/// Plugged in and full: what the library pinned on every desktop template until 18.11, and the
+/// one state a machine without a battery reports.
+fn is_desktop_battery(b: Option<&Value>) -> bool {
+    let Some(b) = b.and_then(|v| v.as_object()) else { return false };
+    let num = |k: &str| b.get(k).and_then(|v| v.as_f64());
+    b.get("charging").and_then(|v| v.as_bool()) == Some(true)
+        && num("level") == Some(1.0)
+        && num("charging_time") == Some(0.0)
+}
+
+/// A laptop profile still carrying that battery takes the template's `{"laptop": true}`; the
+/// engine then picks its own state from the profile's seed.
+fn adopt_laptop_battery(config: &mut Value, src: &Value) {
+    if src.pointer("/battery/laptop").and_then(|v| v.as_bool()) == Some(true) && is_desktop_battery(config.get("battery")) {
+        config["battery"] = serde_json::json!({ "laptop": true });
+    }
+}
+
+/// MacBook Air 15" templates claimed 1680x1050; they now claim 1710x1112. A profile with the old
+/// size moves, its window with it.
+fn adopt_air15_screen(config: &mut Value, src: &Value) {
+    let size = |v: &Value| (v.pointer("/screen/width").and_then(|x| x.as_i64()), v.pointer("/screen/height").and_then(|x| x.as_i64()));
+    if size(config) != (Some(1680), Some(1050)) || size(src) != (Some(1710), Some(1112)) {
+        return;
+    }
+    let get = |p: &str| config.pointer(p).and_then(|x| x.as_i64());
+    let (Some(avail_h), Some(outer_h), Some(inner_h)) =
+        (get("/screen/avail_height"), get("/window/outer_height"), get("/window/inner_height"))
+    else {
+        return;
+    };
+    let new_avail = 1112 - (1050 - avail_h);
+    let new_outer = new_avail - (avail_h - outer_h);
+    for (p, v) in [
+        ("/screen/width", 1710),
+        ("/screen/height", 1112),
+        ("/screen/avail_width", 1710),
+        ("/screen/avail_height", new_avail),
+        ("/window/outer_width", 1710),
+        ("/window/inner_width", 1710),
+        ("/window/outer_height", new_outer),
+        ("/window/inner_height", new_outer - (outer_h - inner_h)),
+    ] {
+        if let Some(slot) = config.pointer_mut(p) {
+            *slot = v.into();
+        }
+    }
+}
+
+/// Library ids dropped for another GPU: the Cedar capture (a PrimeOS tablet's bare driver
+/// string) became an RX 6800 on 20.11. A retired id loads its successor, and its file goes.
+pub(crate) const RETIRED_TEMPLATES: &[(&str, &str)] = &[("linux-unknown-amdcedardr", "linux-navi21")];
+
+fn retired_successor(id: &str) -> Option<&'static str> {
+    RETIRED_TEMPLATES.iter().find(|(old, _)| *old == id).map(|(_, new)| *new)
+}
+
+/// Linux templates claimed Vulkan until 20.11, which Chrome on Linux never reports (ANGLE draws
+/// through GLX there): such a profile, or one from a retired template, takes the template's whole
+/// WebGL block. Notes still holding the old renderer take the template's; a retired template's
+/// tablet platform and touch screen take the new one's. An empty list or table stays.
+fn adopt_linux_gl_webgl(config: &mut Value, src: &Value, successor: Option<&str>) {
+    let renderer = |v: &Value| v.pointer("/webgl/renderer").and_then(|x| x.as_str()).unwrap_or("").to_owned();
+    let (have, want) = (renderer(config), renderer(src));
+    let desktop_linux = config.pointer("/navigator/user_agent").and_then(|v| v.as_str()).is_some_and(|ua| ua.contains("X11; Linux"));
+    let glx = want.starts_with("ANGLE (") && want.contains(", OpenGL ") && !want.contains("OpenGL ES");
+    if !desktop_linux || !glx || have == want || !(successor.is_some() || have.contains(", Vulkan ")) {
+        return;
+    }
+    let Some(from) = src.get("webgl").and_then(|v| v.as_object()).cloned() else { return };
+    let Some(to) = config.get_mut("webgl").and_then(|v| v.as_object_mut()) else { return };
+    for (k, v) in from {
+        let host_own = to
+            .get(&k)
+            .is_some_and(|x| x.as_array().is_some_and(|a| a.is_empty()) || x.as_object().is_some_and(|o| o.is_empty()));
+        if !host_own {
+            to.insert(k, v);
+        }
+    }
+    if config.get("notes").and_then(|v| v.as_str()) == Some(have.as_str()) {
+        if let Some(n) = src.get("notes") {
+            config["notes"] = n.clone();
+        }
+    }
+    let Some(new) = successor else { return };
+    for k in ["platform_value", "max_touch_points"] {
+        if let (Some(v), Some(nav)) = (src.pointer(&format!("/navigator/{k}")).cloned(), config.get_mut("navigator").and_then(|v| v.as_object_mut())) {
+            nav.insert(k.into(), v);
+        }
+    }
+    if let Some(m) = config.get_mut("_meta").and_then(|v| v.as_object_mut()) {
+        if m.contains_key("gpu_preset_id") {
+            m.insert("gpu_preset_id".into(), new.into());
+        }
+    }
+}
+
+/// WebGL extensions and getParameter answers the template gained for the same GPU (Chrome 158
+/// added WEBGL_shader_pixel_local_storage and its two limits): added, never removed or changed.
+/// An empty list or table means "the host's own" and stays.
+fn adopt_webgl_extensions(config: &mut Value, src: &Value) {
+    if config.pointer("/webgl/renderer").is_none() || config.pointer("/webgl/renderer") != src.pointer("/webgl/renderer") {
+        return;
+    }
+    for k in ["extensions", "extensions_v2"] {
+        let p = format!("/webgl/{k}");
+        let Some(want) = src.pointer(&p).and_then(|v| v.as_array()).cloned() else { continue };
+        let Some(have) = config.pointer_mut(&p).and_then(|v| v.as_array_mut()) else { continue };
+        if have.is_empty() {
+            continue;
+        }
+        for e in want {
+            if e.is_string() && !have.contains(&e) {
+                have.push(e);
+            }
+        }
+    }
+    let want = src.pointer("/webgl/parameters").and_then(|v| v.as_object()).cloned();
+    if let (Some(want), Some(have)) = (want, config.pointer_mut("/webgl/parameters").and_then(|v| v.as_object_mut())) {
+        if !have.is_empty() {
+            for (k, v) in want {
+                have.entry(k).or_insert(v);
+            }
+        }
+    }
+}
+
+/// A desktop profile claiming 1-3 logical cores claims 4: a page can time workers on the real
+/// machine, and anti.bot flags a claim under 8 whose workers scale past twice it.
+fn adopt_desktop_min_cores(config: &mut Value) {
+    if config_claims_mobile(config) {
+        return;
+    }
+    if let Some(1..=3) = config.pointer("/navigator/hardware_concurrency").and_then(|v| v.as_u64()) {
+        config["navigator"]["hardware_concurrency"] = 4.into();
+    }
+}
+
+/// GPU makers whose bare driver strings the Android templates carried before 19.11.
+const PHONE_GL_MAKERS: &[&str] = &["Qualcomm", "ARM"];
+
+/// A phone's bare WebGL vendor/renderer in the ANGLE form Chrome on Android reports (#131):
+/// "Qualcomm" / "Adreno (TM) 619" become "Google Inc. (Qualcomm)" / "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)".
+fn adopt_phone_angle_webgl(config: &mut Value) {
+    if !config_claims_mobile(config) {
+        return;
+    }
+    let Some(gl) = config.get_mut("webgl").and_then(|v| v.as_object_mut()) else { return };
+    let vendor = gl.get("vendor").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let Some(maker) = PHONE_GL_MAKERS.iter().find(|m| vendor == **m || vendor == format!("Google Inc. ({m})")) else {
+        return;
+    };
+    gl.insert("vendor".into(), format!("Google Inc. ({maker})").into());
+    let renderer = gl.get("renderer").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    if !renderer.is_empty() && !renderer.starts_with("ANGLE (") {
+        gl.insert("renderer".into(), format!("ANGLE ({maker}, {renderer}, OpenGL ES 3.2)").into());
+    }
+}
+
+fn platform_version_of(v: &Value, block: &str) -> Option<String> {
+    v.get(block)?.get("platform_version")?.as_str().filter(|s| !s.is_empty()).map(String::from)
+}
+
+/// A phone's platform_version that is no Android release (a desktop's, carried over by a template
+/// pick before #131) becomes its template's, else that of a template of the same model; else it
+/// stays. Never the user agent's: Chrome 158 on Android always says "Android 10" there.
+fn adopt_phone_platform_version(config: &mut Value, src: Option<&Value>, fingerprints_dir: &Path) {
+    use crate::randomize::is_android_release;
+    if !config_claims_mobile(config) {
+        return;
+    }
+    // The engine reads client_hints over navigator.
+    let current = platform_version_of(config, "client_hints").or_else(|| platform_version_of(config, "navigator"));
+    if !current.is_some_and(|v| !is_android_release(&v)) {
+        return;
+    }
+    let release = |t: &Value| platform_version_of(t, "client_hints").filter(|v| is_android_release(v));
+    let Some(want) = src.and_then(release).or_else(|| newest_of_model(config, fingerprints_dir, release)) else {
+        return;
+    };
+    for block in ["client_hints", "navigator"] {
+        if platform_version_of(config, block).is_some_and(|v| !is_android_release(&v)) {
+            config[block]["platform_version"] = want.clone().into();
+        }
+    }
+}
+
+/// The newest release a library template of the profile's model carries: two can differ.
+fn newest_of_model(config: &Value, fingerprints_dir: &Path, release: impl Fn(&Value) -> Option<String>) -> Option<String> {
+    let model = config.pointer("/client_hints/model").and_then(|v| v.as_str()).filter(|m| !m.is_empty())?;
+    fs::read_dir(fingerprints_dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().and_then(|x| x.to_str()) == Some("json"))
+        .filter_map(|e| serde_json::from_str::<Value>(&fs::read_to_string(e.path()).ok()?).ok())
+        .filter(|t| t.pointer("/client_hints/model").and_then(|v| v.as_str()) == Some(model))
+        .filter_map(|t| release(&t))
+        .max_by_key(|v| v.split('.').next().and_then(|m| m.parse::<u32>().ok()))
 }
 
 /// WebGPU features Chrome 156 reports on Apple M-series that older templates lack.
@@ -512,14 +720,87 @@ mod adopt_tests {
     use super::adopt_library_fields;
     use serde_json::json;
 
+    #[test]
+    fn a_desktop_claim_under_four_cores_is_raised_a_phone_keeps_its_own() {
+        // No template needed: an empty folder.
+        let d = std::env::temp_dir().join(format!("shardx-lib-cores-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for n in [1, 2, 3] {
+            let mut desk = json!({ "navigator": { "platform": "Windows", "hardware_concurrency": n } });
+            adopt_library_fields(&mut desk, &d);
+            assert_eq!(desk["navigator"]["hardware_concurrency"], 4);
+        }
+        for n in [4, 6, 0] {
+            let mut desk = json!({ "navigator": { "platform": "Win32", "hardware_concurrency": n } });
+            adopt_library_fields(&mut desk, &d);
+            assert_eq!(desk["navigator"]["hardware_concurrency"], n);
+        }
+        let mut phone = json!({ "navigator": { "platform": "Linux armv81", "hardware_concurrency": 2,
+            "user_agent": "Mozilla/5.0 (Linux; Android 10; K)" }, "client_hints": { "mobile": true } });
+        adopt_library_fields(&mut phone, &d);
+        assert_eq!(phone["navigator"]["hardware_concurrency"], 2);
+    }
+
     fn lib() -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("shardx-lib-{}", std::process::id()));
+        // A folder per call: tests run in parallel and one rewriting a shared one broke another's read.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("shardx-lib-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join("win-rtx3060.json"), json!({ "name": "win-rtx3060", "fonts_local": ["Arial"], "webgpu": {
             "vendor": "nvidia", "architecture": "ampere", "features": ["shader-f16"], "subgroupMinSize": 32, "subgroupMaxSize": 32 } }).to_string()).unwrap();
         std::fs::write(d.join("android-x.json"), json!({ "name": "android-x", "webgpu": {
             "vendor": "arm", "architecture": "valhall", "features": ["shader-f16"], "subgroupMinSize": null, "subgroupMaxSize": null } }).to_string()).unwrap();
         d
+    }
+
+    #[test]
+    fn a_linux_profile_moves_from_vulkan_to_glx_and_cedar_to_the_rx6800() {
+        let ua = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36";
+        let glx = "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL 4.6)";
+        let vk = "ANGLE (Intel, Vulkan 1.3.246 (Intel(R) UHD Graphics 620 (KBL GT2) (0x00005917)), Intel open-source Mesa driver)";
+        let navi = "ANGLE (AMD, AMD Radeon RX 6800 (radeonsi navi21 LLVM 20.1.2), OpenGL 4.6)";
+        let d = lib();
+        std::fs::write(d.join("linux-uhd620.json"), json!({ "notes": glx, "navigator": { "platform_value": "Linux x86_64", "max_touch_points": 0 },
+            "webgl": { "renderer": glx, "extensions": ["EXT_new"], "parameters": { "0x0D33": 16384 } } }).to_string()).unwrap();
+        std::fs::write(d.join("linux-navi21.json"), json!({ "notes": navi, "navigator": { "platform_value": "Linux x86_64", "max_touch_points": 0 },
+            "webgl": { "renderer": navi, "extensions": ["EXT_amd"] } }).to_string()).unwrap();
+        let old = |id: &str, r: &str, notes: &str| json!({ "name": "Profile 7", "notes": notes, "_meta": { "gpu_preset_id": id },
+            "navigator": { "user_agent": ua, "platform_value": "Linux armv81", "max_touch_points": 5 },
+            "webgl": { "renderer": r, "extensions": ["EXT_old"], "parameters": { "0x0D33": 8192 }, "own_key": 1 } });
+
+        let mut p = old("linux-uhd620", vk, vk);
+        adopt_library_fields(&mut p, &d);
+        let once = p.clone();
+        adopt_library_fields(&mut p, &d);
+        assert_eq!(p, once);
+        assert_eq!(p["webgl"], json!({ "renderer": glx, "extensions": ["EXT_new"], "parameters": { "0x0D33": 16384 }, "own_key": 1 }));
+        assert_eq!(p["notes"], glx);
+        assert_eq!(p["navigator"]["platform_value"], "Linux armv81");
+        let mut kept = old("linux-uhd620", vk, "work account");
+        adopt_library_fields(&mut kept, &d);
+        assert_eq!(kept["notes"], "work account");
+
+        let mut cedar = old("linux-unknown-amdcedardr", "AMD CEDAR (DRM 2.49.0 / 4.9.194-primeos+, LLVM 7.0.0)", "x");
+        adopt_library_fields(&mut cedar, &d);
+        assert_eq!(cedar["webgl"]["renderer"], navi);
+        assert_eq!(cedar["_meta"]["gpu_preset_id"], "linux-navi21");
+        assert_eq!(cedar["navigator"]["platform_value"], "Linux x86_64");
+        assert_eq!(cedar["navigator"]["max_touch_points"], 0);
+
+        // An operator's own GLX capture, a host-own list, and a non-Linux profile stay.
+        let es = "ANGLE (Intel, Mesa Intel(R) UHD Graphics 620 (KBL GT2), OpenGL ES 3.2)";
+        let mut own = old("linux-uhd620", es, "x");
+        adopt_library_fields(&mut own, &d);
+        assert_eq!(own["webgl"]["renderer"], es);
+        let mut host = old("linux-uhd620", vk, "x");
+        host["webgl"]["extensions"] = json!([]);
+        adopt_library_fields(&mut host, &d);
+        assert_eq!((host["webgl"]["extensions"].clone(), host["webgl"]["renderer"].clone()), (json!([]), json!(glx)));
+        let mut win = old("linux-uhd620", vk, "x");
+        win["navigator"]["user_agent"] = json!("Mozilla/5.0 (Windows NT 10.0; Win64; x64)");
+        adopt_library_fields(&mut win, &d);
+        assert_eq!(win["webgl"]["renderer"], vk);
     }
 
     #[test]
@@ -558,6 +839,36 @@ mod adopt_tests {
         adopt_library_fields(&mut own, &d);
         assert_eq!(own["webgpu"], json!({ "vendor": "nvidia", "architecture": "ampere" }));
     }
+
+    #[test]
+    fn an_air15_takes_its_battery_screen_and_extensions_once() {
+        let d = lib();
+        let r = "ANGLE (Apple, ANGLE Metal Renderer: Apple M3, Unspecified Version)";
+        std::fs::write(d.join("mac-m3-air15.json"), json!({
+            "screen": { "width": 1710, "height": 1112, "avail_width": 1710, "avail_height": 1075 },
+            "battery": { "laptop": true },
+            "webgl": { "renderer": r, "extensions_v2": ["EXT_a", "WEBGL_shader_pixel_local_storage"],
+                       "parameters": { "0x0D33": 16384, "0x96E0": 8, "0x96E1": 8 } } }).to_string()).unwrap();
+        let mut cfg = json!({ "_meta": { "gpu_preset_id": "mac-m3-air15" },
+            "screen": { "width": 1680, "height": 1050, "avail_width": 1680, "avail_height": 1013 },
+            "window": { "outer_width": 1680, "outer_height": 1012, "inner_width": 1680, "inner_height": 925 },
+            "battery": { "charging": true, "level": 1, "charging_time": 0, "discharging_time": "Infinity" },
+            "webgl": { "renderer": r, "extensions_v2": ["EXT_a"], "parameters": { "0x0D33": 8192 } } });
+        adopt_library_fields(&mut cfg, &d);
+        adopt_library_fields(&mut cfg, &d);
+        assert_eq!(cfg["battery"], json!({ "laptop": true }));
+        assert_eq!((cfg["screen"]["width"].clone(), cfg["screen"]["avail_height"].clone()), (json!(1710), json!(1075)));
+        assert_eq!((cfg["window"]["outer_height"].clone(), cfg["window"]["inner_height"].clone()), (json!(1074), json!(987)));
+        assert_eq!(cfg["webgl"]["extensions_v2"], json!(["EXT_a", "WEBGL_shader_pixel_local_storage"]));
+        // New limits come in; a value the profile already has stays.
+        assert_eq!(cfg["webgl"]["parameters"], json!({ "0x0D33": 8192, "0x96E0": 8, "0x96E1": 8 }));
+        let mut host = json!({ "_meta": { "gpu_preset_id": "mac-m3-air15" }, "webgl": { "renderer": r, "parameters": {} } });
+        adopt_library_fields(&mut host, &d);
+        assert_eq!(host["webgl"]["parameters"], json!({}), "an empty table means the host's values");
+        let mut own = json!({ "_meta": { "gpu_preset_id": "mac-m3-air15" }, "battery": { "charging": false, "level": 0.4 } });
+        adopt_library_fields(&mut own, &d);
+        assert_eq!(own["battery"], json!({ "charging": false, "level": 0.4 }));
+    }
 }
 
 #[cfg(test)]
@@ -576,5 +887,89 @@ mod chrome_brand_tests {
         let mut named = json!({ "client_hints": { "brand": "Microsoft Edge" } });
         apply_chrome_brand(&mut named);
         assert_eq!(named["client_hints"]["brand"], "Microsoft Edge");
+    }
+}
+
+#[cfg(test)]
+mod phone_tests {
+    use super::adopt_library_fields;
+    use crate::screen::{apply_screen_strategy, ScreenStrategy};
+    use serde_json::{json, Value};
+
+    const PHONE_UA: &str = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Mobile Safari/537.36";
+
+    fn lib() -> std::path::PathBuf {
+        // A folder per call, as above.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let d = std::env::temp_dir().join(format!("shardx-phone-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        for (name, model, v) in [("android-s24", "SM-S928B", "16.0.0"), ("android-a35", "SM-A356E", "16.0.0"), ("android-a35-2", "SM-A356E", "15.0.0")] {
+            std::fs::write(d.join(format!("{name}.json")), json!({ "client_hints": { "model": model, "platform_version": v } }).to_string()).unwrap();
+        }
+        d
+    }
+
+    fn phone(key: &str, model: &str, version: &str, nav: Option<&str>) -> Value {
+        let mut p = json!({ "_meta": { "gpu_preset_id": key }, "navigator": { "user_agent": PHONE_UA },
+            "client_hints": { "mobile": true, "model": model, "platform_version": version } });
+        if let Some(n) = nav {
+            p["navigator"]["platform_version"] = json!(n);
+        }
+        p
+    }
+
+    /// #131: Chrome on Android has no WebGL backend but ANGLE.
+    #[test]
+    fn a_phones_bare_webgl_takes_the_angle_form_once() {
+        let d = lib();
+        let mut q = json!({ "navigator": { "user_agent": PHONE_UA }, "webgl": { "vendor_masked": "WebKit", "vendor": "Qualcomm", "renderer": "Adreno (TM) 619" } });
+        adopt_library_fields(&mut q, &d);
+        adopt_library_fields(&mut q, &d);
+        assert_eq!(q["webgl"], json!({ "vendor_masked": "WebKit", "vendor": "Google Inc. (Qualcomm)", "renderer": "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)" }));
+        let mut half = json!({ "client_hints": { "mobile": true }, "webgl": { "vendor": "Google Inc. (ARM)", "renderer": "Mali-G68" } });
+        adopt_library_fields(&mut half, &d);
+        assert_eq!(half["webgl"]["renderer"], "ANGLE (ARM, Mali-G68, OpenGL ES 3.2)");
+        for mut cfg in [json!({ "navigator": { "user_agent": PHONE_UA }, "webgl": { "vendor": "Imagination Technologies", "renderer": "PowerVR Rogue GE8320" } }),
+                        json!({ "navigator": { "user_agent": "Mozilla/5.0 (X11; Linux x86_64)" }, "webgl": { "vendor": "ARM", "renderer": "Mali-G57" } })] {
+            let before = cfg.clone();
+            adopt_library_fields(&mut cfg, &d);
+            assert_eq!(cfg, before);
+        }
+    }
+
+    /// #131: a template pick carried the previous OS's version onto a phone.
+    #[test]
+    fn a_desktop_version_becomes_the_templates_else_the_models() {
+        let d = lib();
+        let mut mac = phone("android-s24", "SM-S928B", "15.7.1", Some("15.7.1"));
+        adopt_library_fields(&mut mac, &d);
+        assert_eq!((mac["client_hints"]["platform_version"].clone(), mac["navigator"]["platform_version"].clone()), (json!("16.0.0"), json!("16.0.0")));
+        let mut gone = phone("android-gone", "SM-A356E", "26.1.0", None);
+        adopt_library_fields(&mut gone, &d);
+        assert_eq!(gone["client_hints"]["platform_version"], "16.0.0", "the newest of the model's");
+        assert!(gone["navigator"].get("platform_version").is_none());
+    }
+
+    #[test]
+    fn no_template_and_no_model_leave_it_never_the_user_agents() {
+        let d = lib();
+        for mut cfg in [phone("android-gone", "SM-X000", "26.1.0", None), phone("android-s24", "SM-S928B", "13.0.0", Some("6.8.0")),
+                        phone("android-s24", "SM-S928B", "", None),
+                        json!({ "_meta": { "gpu_preset_id": "android-s24" }, "navigator": { "platform": "macOS" }, "client_hints": { "platform_version": "15.7.1" } })] {
+            let before = cfg.clone();
+            adopt_library_fields(&mut cfg, &d);
+            assert_eq!(cfg, before);
+        }
+    }
+
+    #[test]
+    fn a_phone_keeps_its_own_screen_in_every_mode() {
+        let mut cfg = json!({ "navigator": { "user_agent": PHONE_UA, "platform": "Linux" },
+            "screen": { "width": 412, "height": 892, "avail_width": 412, "avail_height": 892 } });
+        let before = cfg.clone();
+        apply_screen_strategy(&mut cfg, ScreenStrategy::UseHost);
+        apply_screen_strategy(&mut cfg, ScreenStrategy::CapToHost);
+        assert_eq!(cfg, before);
     }
 }

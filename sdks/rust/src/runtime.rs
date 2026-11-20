@@ -1,7 +1,7 @@
-//! Runtime cache: download ShardX engine + Widevine CDM + fingerprint
-//! library from the ProxyShard CDN, extract into a per-user cache dir, place
-//! Widevine inside the engine bundle, remember etags so subsequent runs are
-//! zero-network. Mirrors `src-tauri/src/runtime.rs` in the launcher and the
+//! Runtime cache: download ShardX engine + fingerprint library from the
+//! ProxyShard CDN, extract into a per-user cache dir, remember etags so
+//! subsequent runs are zero-network. The Widevine CDM comes from Google at
+//! launch (`widevine.rs`). Mirrors `src-tauri/src/runtime.rs` in the launcher and the
 //! Node/Python SDK `runtime` module.
 
 use std::fs;
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 
 pub const PUB_BASE: &str = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev";
-pub const CHROMIUM_VERSION: &str = "157.0.8103.50";
+pub const CHROMIUM_VERSION: &str = "158.0.8127.36";
 /// This SDK's own version, compared against the manifest's `min_sdk_version`.
 pub const SDK_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Version manifest (GitHub raw) — one tiny GET yields every archive's current
@@ -41,9 +41,7 @@ pub struct Archive {
 #[derive(Clone, Debug)]
 pub struct HostSpec {
     pub browser: Archive,
-    pub widevine: Option<Archive>,
     pub binary_subpath: Vec<String>,
-    pub widevine_subpath: Vec<String>,
 }
 
 fn arc(key: &str, label: &str) -> Archive {
@@ -62,37 +60,21 @@ pub fn host_spec() -> Result<HostSpec> {
     {
         return Ok(HostSpec {
             browser: arc("ShardX-Mac-arm64.zip", "ShardX browser (macOS arm64)"),
-            widevine: Some(arc("ShardX-Widevine-Mac-arm64.zip", "Widevine CDM")),
             binary_subpath: p(&["ShardX-Mac-arm64", "ShardX.app", "Contents", "MacOS", "ShardX"]),
-            widevine_subpath: p(&[
-                "ShardX-Mac-arm64",
-                "ShardX.app",
-                "Contents",
-                "Frameworks",
-                "ShardX Framework.framework",
-                "Versions",
-                CHROMIUM_VERSION,
-                "Libraries",
-                "WidevineCdm",
-            ]),
         });
     }
     #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
     {
         return Ok(HostSpec {
             browser: arc("ShardX-Windows.zip", "ShardX browser (Windows x64)"),
-            widevine: Some(arc("ShardX-Widevine-Win.zip", "Widevine CDM")),
             binary_subpath: p(&["ShardX-Windows", "chrome.exe"]),
-            widevine_subpath: p(&["ShardX-Windows", "WidevineCdm"]),
         });
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         return Ok(HostSpec {
             browser: arc("ShardX-Linux.zip", "ShardX browser (Linux x64)"),
-            widevine: Some(arc("ShardX-Widevine-Linux.zip", "Widevine CDM")),
             binary_subpath: p(&["ShardX-Linux", "chrome"]),
-            widevine_subpath: p(&["ShardX-Linux", "WidevineCdm"]),
         });
     }
     #[allow(unreachable_code)]
@@ -128,6 +110,7 @@ pub fn default_cache_dir() -> PathBuf {
 #[derive(Default, Serialize, Deserialize)]
 struct Manifest {
     browser_etag: Option<String>,
+    /// Left by SDKs that took the CDM from the CDN; kept as read, never used.
     widevine_etag: Option<String>,
     fingerprints_etag: Option<String>,
     /// Chromium version of the engine last written to disk — the fallback when
@@ -147,8 +130,15 @@ struct Manifest {
     #[serde(default)]
     installed_android_chromium_version: Option<String>,
     #[serde(default)]
+    installed_desktop_chromium_versions: Option<DesktopVersions>,
+    #[serde(default)]
     installed_tls: Option<serde_json::Value>,
 }
+
+/// The Chrome build each desktop OS is shipped, keyed as `navigator.platform` names it ("macOS",
+/// "Windows", "Linux"), when it is not the engine's own: 158 went out as 158.0.8127.37 for macOS
+/// and Windows and 158.0.8127.36 for Linux.
+pub type DesktopVersions = std::collections::BTreeMap<String, String>;
 
 pub struct Runtime {
     pub root: PathBuf,
@@ -167,6 +157,8 @@ pub struct Runtime {
     tls: std::sync::Mutex<Option<serde_json::Value>>,
     /// Chrome for Android build of the engine's major, for phone profiles.
     android_version: std::sync::Mutex<Option<String>>,
+    /// The build each desktop OS reports (see `DesktopVersions`).
+    desktop_versions: std::sync::Mutex<Option<DesktopVersions>>,
     /// Where the manifest and the archives come from (tests serve their own).
     manifest_url: String,
     cdn: String,
@@ -204,6 +196,7 @@ impl Runtime {
             grease: std::sync::Mutex::new((None, None)),
             tls: std::sync::Mutex::new(None),
             android_version: std::sync::Mutex::new(None),
+            desktop_versions: std::sync::Mutex::new(None),
             manifest_url: MANIFEST_URL.to_string(),
             cdn: PUB_BASE.to_string(),
             hooks: Hooks::default(),
@@ -218,6 +211,19 @@ impl Runtime {
     /// Chrome for Android build phone profiles report (set on install()).
     pub fn android_chromium_version(&self) -> Option<String> {
         self.android_version.lock().unwrap().clone()
+    }
+
+    /// The build each desktop OS reports, keyed as `navigator.platform` names it (set on install()).
+    pub fn desktop_chromium_versions(&self) -> Option<DesktopVersions> {
+        self.desktop_versions.lock().unwrap().clone()
+    }
+
+    /// The build a profile of this platform reports instead of `chromium_version()`, if any.
+    pub fn claimed_chromium_version(&self, platform: &str, mobile: bool) -> Option<String> {
+        if mobile {
+            return self.android_chromium_version();
+        }
+        self.desktop_versions.lock().unwrap().as_ref().and_then(|m| m.get(platform)).filter(|v| !v.is_empty()).cloned()
     }
 
     /// TLS overrides from the manifest (set on install()).
@@ -240,6 +246,11 @@ impl Runtime {
             p.push(seg);
         }
         p
+    }
+
+    /// The Widevine CDM fetched from Google, copied into each profile at launch.
+    pub fn widevine_cache_dir(&self) -> PathBuf {
+        self.root.join("widevine-cdm")
     }
 
     pub fn fingerprints_dir(&self) -> PathBuf {
@@ -378,7 +389,7 @@ impl Runtime {
             .ok_or_else(|| anyhow!("no engine folder in this host's layout"))
     }
 
-    /// Ensure the engine + Widevine + fingerprints are present and current.
+    /// Ensure the engine + fingerprints are present and current.
     /// Cheap no-op after the first successful call in-process unless `force`.
     pub async fn install(&self, force: bool) -> Result<()> {
         if self.checked.load(Ordering::Relaxed) && !force {
@@ -406,6 +417,7 @@ impl Runtime {
         *self.engine_version.lock().unwrap() = v;
         *self.grease.lock().unwrap() = (local.installed_grease_brand, local.installed_grease_version);
         *self.android_version.lock().unwrap() = local.installed_android_chromium_version;
+        *self.desktop_versions.lock().unwrap() = local.installed_desktop_chromium_versions;
         *self.tls.lock().unwrap() = local.installed_tls;
     }
 
@@ -418,6 +430,7 @@ impl Runtime {
             local.installed_grease_version.clone(),
         );
         *self.android_version.lock().unwrap() = local.installed_android_chromium_version.clone();
+        *self.desktop_versions.lock().unwrap() = local.installed_desktop_chromium_versions.clone();
         *self.tls.lock().unwrap() = local.installed_tls.clone();
     }
 
@@ -471,6 +484,9 @@ impl Runtime {
         *self.android_version.lock().unwrap() = offered
             .and_then(|r| r.android_chromium_version.clone())
             .or_else(|| local.installed_android_chromium_version.clone());
+        *self.desktop_versions.lock().unwrap() = offered
+            .and_then(|r| r.desktop_chromium_versions.clone())
+            .or_else(|| local.installed_desktop_chromium_versions.clone());
         if too_old {
             eprintln!(
                 "[shardx] engine {} needs shardx {} or newer (this is {SDK_VERSION}); staying on \
@@ -523,24 +539,9 @@ impl Runtime {
                 local.installed_engine_build = remote.engine_build.clone();
             }
             // Saved at once: the engine on disk is the new one, whatever fails next.
-            // The new tree has no CDM yet, so the old one's etag must not say it has.
             local.installed_chromium_version = Some(self.chromium_version());
             record_descriptor(&mut local, &remote);
-            local.widevine_etag = None;
             self.save_manifest(&local)?;
-        }
-
-        if let Some(wv) = self.spec.widevine.clone() {
-            if swapped || local.widevine_etag.is_none() {
-                // The CDM is no reason to fail a run whose engine is in: tried again next time.
-                match self.download_and_extract(&wv, &self.root).await {
-                    Ok(etag) => {
-                        self.place_widevine();
-                        local.widevine_etag = Some(etag);
-                    }
-                    Err(e) => eprintln!("[shardx] Widevine CDM not installed ({e:#}); tried again on the next run."),
-                }
-            }
         }
 
         let remote_fp = remote.archives.get(FINGERPRINTS_KEY);
@@ -790,36 +791,11 @@ impl Runtime {
             let dst = dir.join(p.file_name().unwrap());
             fs::copy(&p, &dst)?;
         }
+        for (old, _) in crate::profile::RETIRED_TEMPLATES {
+            let _ = fs::remove_file(dir.join(format!("{old}.json")));
+        }
         let _ = fs::remove_dir_all(&staging);
         Ok(())
-    }
-
-    fn place_widevine(&self) {
-        let Some(wv) = &self.spec.widevine else { return };
-        let wrapper = wv.key.trim_end_matches(".zip");
-        let src = self.root.join(wrapper).join("WidevineCdm");
-        if !src.exists() {
-            return;
-        }
-        // On macOS the CDM sits inside the framework's versioned folder. That
-        // is the version of the engine on disk, not the one this SDK was
-        // published with: the constant put it in a folder the engine never
-        // reads.
-        let on_disk = self
-            .installed_engine_version()
-            .unwrap_or_else(|| CHROMIUM_VERSION.to_string());
-        let mut dst = self.root.clone();
-        for seg in &self.spec.widevine_subpath {
-            dst.push(if seg == CHROMIUM_VERSION { on_disk.as_str() } else { seg.as_str() });
-        }
-        if dst.exists() {
-            let _ = fs::remove_dir_all(&dst);
-        }
-        if let Some(parent) = dst.parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        let _ = fs::rename(&src, &dst);
-        let _ = fs::remove_dir_all(self.root.join(wrapper));
     }
 }
 
@@ -835,6 +811,8 @@ struct RemoteManifest {
     tls: Option<serde_json::Value>,
     /// The Chrome for Android build of the same major, for phone profiles.
     android_chromium_version: Option<String>,
+    /// The build each desktop OS reports, when it is not `chromium_version`.
+    desktop_chromium_versions: Option<DesktopVersions>,
     /// Which build of the engine archive this is, apart from its Chromium
     /// version. Not the manifest-wide `revision`, which also moves for a TLS
     /// or GREASE edit.
@@ -889,6 +867,15 @@ async fn fetch_manifest(url: &str) -> RemoteManifest {
             grease_brand: str_field("grease_brand"),
             grease_version: str_field("grease_version"),
             android_chromium_version: str_field("android_chromium_version"),
+            desktop_chromium_versions: v
+                .get("desktop_chromium_versions")
+                .and_then(|m| m.as_object())
+                .map(|o| {
+                    o.iter()
+                        .filter_map(|(k, val)| val.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<DesktopVersions>()
+                })
+                .filter(|m| !m.is_empty()),
             tls: v.get("tls").filter(|t| t.is_object()).cloned(),
             // Written as a number or a string; both mean the same thing.
             engine_build: v.get("engine_build").and_then(|b| match b {
@@ -930,6 +917,9 @@ fn record_descriptor(local: &mut Manifest, remote: &RemoteManifest) {
     }
     if remote.android_chromium_version.is_some() {
         local.installed_android_chromium_version = remote.android_chromium_version.clone();
+    }
+    if remote.desktop_chromium_versions.is_some() {
+        local.installed_desktop_chromium_versions = remote.desktop_chromium_versions.clone();
     }
 }
 
@@ -1185,7 +1175,8 @@ fn free_bytes(_dir: &Path) -> Option<u64> {
 }
 
 /// How many processes run from `dir`. On macOS and Linux a swap would pull the
-/// files from under them; Windows refuses the rename itself.
+/// files from under them; on Windows the files a running browser holds open
+/// make the rename fail.
 fn processes_under(dir: &Path) -> usize {
     if !dir.is_dir() {
         return 0;
@@ -1773,6 +1764,33 @@ mod swap_tests {
         assert_eq!(processes_under(&r.0.join("elsewhere")), 0);
     }
 
+    /// Windows counts no processes: the files a running browser holds open (its
+    /// .pak files, icudtl.dat) make it refuse the rename. A bare running exe does not.
+    #[cfg(windows)]
+    #[test]
+    fn an_engine_a_browser_holds_open_is_left_in_place() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let r = root();
+        let s = setup(&r);
+        let pak = s.live.join("resources.pak");
+        fs::write(&pak, "pak").unwrap();
+        // Shared the way Chrome shares it: reading and writing, not deletion.
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&pak)
+            .unwrap();
+        let err = swap_engine_tree(&r.0, TOP, &s.staged, real_rename, real_remove, 2).unwrap_err().to_string();
+        drop(held);
+        assert!(err.contains("is in use and was not replaced"), "{err}");
+        assert_eq!(version(&s.live), "156");
+        assert_eq!(version(&s.staged), "157");
+        assert!(!s.journal.exists() && !s.previous.exists());
+        swap_engine_tree(&r.0, TOP, &s.staged, real_rename, real_remove, 1).unwrap();
+        assert_eq!(version(&s.live), "157");
+    }
+
     // ---- the lock between processes ----
 
     fn write_lock(root: &Path, pid: u64, host: &str, token: &str) {
@@ -2006,8 +2024,9 @@ mod swap_tests {
         let m = record(&rt);
         assert_eq!(m["installed_chromium_version"], "157.0.0.1");
         assert_eq!(m["browser_etag"], "e157.0.0.1");
-        // The CDM failed (404): no reason to fail the run, and not marked as present.
-        assert!(m["widevine_etag"].is_null());
+        // The CDM comes from Google at launch, never from the CDN; the old record stays readable.
+        assert!(!cdn.calls.lock().unwrap().iter().any(|c| c.contains("Widevine")));
+        assert_eq!(m["widevine_etag"], "w1");
         assert!(!staging(&rt).exists() && !r.0.join(".install.lock").exists());
     }
 
@@ -2157,5 +2176,24 @@ mod swap_tests {
         assert_eq!(live_version(&a), "157.0.0.1");
         assert_eq!(count_files(&r.0.join(&a.spec.binary_subpath[0])) as usize, files.len());
         assert!(!r.0.join(".install.lock").exists() && !staging(&a).exists());
+    }
+
+    #[test]
+    fn each_desktop_os_takes_the_build_it_is_shipped_and_a_phone_its_android_one() {
+        let dir = std::env::temp_dir().join(format!("shardx-dv-{}", std::process::id()));
+        let rt = Runtime::new(Some(dir.clone()), None, None).unwrap();
+        *rt.android_version.lock().unwrap() = Some("158.0.8127.42".into());
+        *rt.desktop_versions.lock().unwrap() = Some(
+            [("macOS", "158.0.8127.37"), ("Windows", "158.0.8127.37"), ("Linux", "158.0.8127.36")]
+                .into_iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        );
+        assert_eq!(rt.claimed_chromium_version("macOS", false).as_deref(), Some("158.0.8127.37"));
+        assert_eq!(rt.claimed_chromium_version("Windows", false).as_deref(), Some("158.0.8127.37"));
+        assert_eq!(rt.claimed_chromium_version("Linux", false).as_deref(), Some("158.0.8127.36"));
+        assert_eq!(rt.claimed_chromium_version("Android", true).as_deref(), Some("158.0.8127.42"));
+        assert_eq!(rt.claimed_chromium_version("ChromeOS", false), None);
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

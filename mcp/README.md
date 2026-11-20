@@ -80,6 +80,9 @@ MCP_HTTP_PORT=40326 SHARDX_API=http://127.0.0.1:40325 SHARDX_TOKEN=… node inde
   `.crx`. Pass the ids to `create_profile` / `edit_profile` as `extensions`.
 - `list_bookmarks`, `save_bookmark(url, title?, folder?)`, `delete_bookmark` —
   bound to a folder they reach every profile in it on its next launch
+- `list_templates`, `save_template(name, profile_id?)`, `delete_template`,
+  `create_profile_from_template(id, name?)` — a profile's settings under a name;
+  each profile made from one gets a fingerprint of its own
 - `list_trash`, `restore_profile(id)`, `purge_profile(id)` — `delete_profile`
   moves a profile here, restorable for 7 days
 - `list_fingerprints`, `list_folders`, `rename_folder`, `delete_folder`

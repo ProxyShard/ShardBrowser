@@ -6,6 +6,7 @@ import { ChevronRightIcon, LockedIcon, StarOutlineIcon } from "../../shared/icon
 import { SelectField } from "../../shared/ui/SelectField";
 import { useWhatsNew } from "../../shared/model/whatsNew";
 import { takeTheTour } from "../../features/tour";
+import { askLauncherUpdate } from "../../features/launcher-update";
 import { useOnboarding } from "../../features/onboarding";
 import type { RtUpdate } from "../../shared/types";
 import { withUtm } from "../../shared/lib/utils";
@@ -303,7 +304,7 @@ export function WhatsNewDialog() {
             mode="link"
             size="2xsmall"
             className="self-start"
-            onClick={() => openUrl(update.release_url!).catch(() => {})}
+            onClick={() => { setOpen(false); void askLauncherUpdate(); }}
           >
             {t("sidebar.updateStatus", { v: update.latest ?? "" })}
           </Button>

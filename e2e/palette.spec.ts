@@ -108,10 +108,12 @@ test("the old name Projects still finds Automation", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Automation");
 });
 
-test("the old name Account still finds ProxyShard", async ({ page }) => {
+test("the old names Account and ProxyShard still find ShardX", async ({ page }) => {
   await openApp(page);
-  await run(page, "account", /^ProxyShard/);
-  await expect(page.getByRole("heading", { level: 1 })).toHaveText("ProxyShard");
+  await run(page, "account", /^ShardX/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("ShardX");
+  await run(page, "proxyshard", /^ShardX/);
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("ShardX");
 });
 
 test("Enter starts an idle profile; a running one is shown in the list", async ({ page }) => {

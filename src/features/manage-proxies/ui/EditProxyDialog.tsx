@@ -10,7 +10,7 @@ import { Field } from "../../../shared/ui/Field";
 import { NumField } from "../../../shared/ui/NumField";
 import { SelectField } from "../../../shared/ui/SelectField";
 import { useT } from "../../../shared/i18n";
-import { useProxy, type ProxyEntry } from "../../../entities/proxy";
+import { proxyRotationGet, proxyRotationSet, useProxy, useRotation, type ProxyEntry } from "../../../entities/proxy";
 
 const FIELDS = ["name", "kind", "host", "port", "username", "password", "country", "notes"] as const;
 
@@ -43,9 +43,19 @@ function EditProxyBody({ id, open, onClose }: { id: string; open: boolean; onClo
   const [portBad, setPortBad] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
   const busy = useRef(false);
+  // #162: the change-IP link, kept on this computer apart from the proxy.
+  const [openedLink, setOpenedLink] = useState<string | null>(null);
+  const [link, setLink] = useState("");
+  useEffect(() => {
+    let alive = true;
+    proxyRotationGet(id).then((l) => { if (alive) { setOpenedLink(l ?? ""); setLink(l ?? ""); } }, () => { if (alive) setOpenedLink(""); });
+    return () => { alive = false; };
+  }, [id]);
+  const linkChanged = openedLink != null && link.trim() !== openedLink;
+  const linkOk = link.trim() === "" || /^https?:\/\/\S+$/i.test(link.trim());
 
   const changed = opened && draft ? FIELDS.filter((k) => draft[k] !== opened[k]) : [];
-  const dirty = changed.length > 0;
+  const dirty = changed.length > 0 || linkChanged;
 
   // Gone before it opened, or while it is open (deleted elsewhere): saving
   // would bring it back, so the dialog closes and says why. "Could not be
@@ -60,7 +70,7 @@ function EditProxyBody({ id, open, onClose }: { id: string; open: boolean; onClo
 
   const hostOk = !!draft?.host.trim();
   const saving = status === "saving";
-  const canSave = !!draft && hostOk && !portBad && dirty && !saving;
+  const canSave = !!draft && hostOk && !portBad && linkOk && dirty && !saving;
   const name = opened ? opened.name || `${opened.host}:${opened.port}` : "";
 
   const patch = (changes: Partial<ProxyEntry>) => {
@@ -72,7 +82,7 @@ function EditProxyBody({ id, open, onClose }: { id: string; open: boolean; onClo
    *  elsewhere meanwhile (a test filling in the country) survives. True when written. */
   const save = async (): Promise<boolean> => {
     if (!opened || !draft || busy.current) return false;
-    if (!hostOk || portBad) { setTried(true); return false; }
+    if (!hostOk || portBad || !linkOk) { setTried(true); return false; }
     if (!dirty) return true;
     const base = useProxy.getState().proxies.find((p) => p.id === id);
     if (!base) return false;
@@ -82,7 +92,11 @@ function EditProxyBody({ id, open, onClose }: { id: string; open: boolean; onClo
     // A pasted value often carries a stray space, and the proxy then fails
     // for no visible reason (WIG-03). The password stays as typed.
     const entry = { ...merged, host: merged.host.trim(), username: merged.username.trim(), country: merged.country.trim().toUpperCase() };
-    const ok = await saveProxy(entry);
+    let ok = changed.length === 0 || await saveProxy(entry);
+    if (ok && linkChanged) {
+      ok = await proxyRotationSet(id, link.trim() || null).then(() => true, () => false);
+      void useRotation.getState().load();
+    }
     busy.current = false;
     if (!ok) { setStatus("error"); return false; }
     toast.saved(t("editProxy.saved", { name: entry.name || `${entry.host}:${entry.port}` }));
@@ -202,6 +216,17 @@ function EditProxyBody({ id, open, onClose }: { id: string; open: boolean; onClo
             />
           </div>
           <Field label={t("proxyPeek.notes")} value={draft.notes} onChange={(notes) => patch({ notes })} />
+          {/* #162: kept on this computer only, like a password; never sent to a team. */}
+          <Field
+            label={t("editProxy.changeIpLink")}
+            value={link}
+            mono
+            secret
+            placeholder="https://"
+            error={!linkOk ? t("editProxy.changeIpLinkBad") : undefined}
+            onChange={(v) => { setLink(v); if (status === "error") setStatus("idle"); }}
+          />
+          <p className="m-0 -mt-2 text-secondary text-text-soft-400">{t("editProxy.changeIpLinkHelp")}</p>
         </div>
       </fieldset>
     </DialogModal>

@@ -39,7 +39,7 @@ export function ProxyShardPage() {
   return (
     <>
       <PageHeader
-        title="ProxyShard"
+        title="ShardX"
         help={{ title: t("pageHelp.proxyshard.title"), body: t("pageHelp.proxyshard.body"), onTour: () => showMeAround("proxyshard") }}
         after={<PsHeaderFacts />}
         actions={

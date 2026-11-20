@@ -10,9 +10,12 @@ import { settingsRefusal, useProfile } from "../../../entities/profile";
 import { useRightsChange } from "../../../entities/space";
 import { walkTheForm } from "../../tour/lib/profileTour";
 import {
-  PROFILE_FORM_TABS, canSave, changedTabs, closeProfileForm, isDirty, openProfileForm, passwordProblemOf, problemsOf, readOnlyWhy, reloadProfileForm,
+  PROFILE_FORM_TABS, canSave, changedTabs, closeProfileForm, isDirty, openProfileForm, openTemplateForm, passwordProblemOf, problemsOf, readOnlyWhy, reloadProfileForm,
   rightsProblem, saveProfileForm, setProfileFormTab, useProfileForm, type ProfileFormTab,
 } from "../model/useProfileForm";
+import { saveFormAsTemplate } from "../model/saveTemplate";
+import { teamRefusal } from "../../../entities/space";
+import { useTemplates } from "../../../entities/template";
 import { BasicsTab } from "./BasicsTab";
 import { ProxyTab } from "./ProxyTab";
 import { FingerprintTab } from "./FingerprintTab";
@@ -49,7 +52,10 @@ export function ProfileFormDialog() {
   const saving = status === "saving";
   // The list's name until the form has loaded, so the title never reads "Edit ".
   const listed = useProfile((st) => st.profiles.find((p) => p.id === s.id));
-  const name = s.saved?.form.name ?? listed?.name ?? "";
+  const templateMode = mode === "template";
+  // A template's name from its list until the form has loaded.
+  const listedTemplate = useTemplates((st) => (templateMode && s.template ? st.templates.find((x) => x.id === s.template) : undefined));
+  const name = s.saved?.form.name ?? listed?.name ?? listedTemplate?.name ?? "";
   // A team's profile without Edit opens to read: every field shows, nothing changes.
   useRightsChange();
   const readOnly = listed ? readOnlyWhy(s) : null;
@@ -59,7 +65,7 @@ export function ProfileFormDialog() {
   // Every exit the dialog cannot see (a page change, quitting) asks first.
   useUnsaved(open && dirty ? {
     id: "profile-form",
-    label: mode === "create" ? t("profileForm.newTitle") : name,
+    label: mode === "create" ? t("profileForm.newTitle") : templateMode && !s.template ? t("templates.newTitle") : name,
     save: saveProfileForm,
     discard: closeProfileForm,
   } : null);
@@ -81,7 +87,7 @@ export function ProfileFormDialog() {
   // A new profile's name is selected as it shows, so typing replaces it.
   const ready = !!draft;
   useEffect(() => {
-    if (!open || !ready || mode !== "create") return;
+    if (!open || !ready || mode === "edit") return;
     const id = requestAnimationFrame(() => { nameRef.current?.focus(); nameRef.current?.select(); });
     return () => cancelAnimationFrame(id);
   }, [open, ready, mode, session]);
@@ -116,14 +122,35 @@ export function ProfileFormDialog() {
     : passwordProblem ? <span data-password-problem>{passwordProblem}</span>
     : refused ? <span data-rights-problem>{refused}</span>
     : s.badFields.length > 0 ? t("profileForm.numberInvalid")
-    : mode === "edit" && !dirty ? t("profileForm.noChanges")
+    : (mode === "edit" || (templateMode && s.template)) && !dirty ? t("profileForm.noChanges")
     : null;
+
+  // "Save as template" keeps what the form shows now, saved or not; a team's template needs Create there.
+  const noTemplate = teamRefusal("create");
+  const asTemplate = !templateMode && !readOnly && !hidden && draft && (
+    <Button
+      variant="neutral"
+      mode="link"
+      size="3xsmall"
+      className="shrink-0"
+      data-save-as-template
+      disabled={saving || !!noTemplate}
+      aria-description={noTemplate ?? undefined}
+      onClick={() => saveFormAsTemplate(draft)}
+    >
+      {t("templates.saveAs")}
+    </Button>
+  );
+  const title = templateMode ? (s.template ? t("templates.editTitle", { name }) : t("templates.newTitle"))
+    : mode === "create" ? t("profileForm.newTitle") : readOnly ? t("profileForm.viewTitle", { name }) : t("profileForm.editTitle", { name });
+  const confirmLabel = saving ? t("profileForm.saving") : mode === "create" ? t("profileForm.create")
+    : templateMode && !s.template ? t("templates.create") : t("profileForm.save");
 
   return (
     <DialogModal
       open={open}
       onOpenChange={(o) => { if (!o) closeProfileForm(); }}
-      title={mode === "create" ? t("profileForm.newTitle") : readOnly ? t("profileForm.viewTitle", { name }) : t("profileForm.editTitle", { name })}
+      title={title}
       size="lg"
       // At most 85% of the window; the body scrolls, the footer stays.
       className="max-h-[calc(var(--viewport-h)*0.85)]!"
@@ -131,7 +158,7 @@ export function ProfileFormDialog() {
       initialFocusRef={nameRef}
       {...(readOnly ? { cancelLabel: t("profileForm.close") } : {
         onConfirm: () => { commitFocusedField(); void saveProfileForm(); },
-        confirmLabel: saving ? t("profileForm.saving") : mode === "create" ? t("profileForm.create") : t("profileForm.save"),
+        confirmLabel,
       })}
       isLoading={saving}
       isDisabled={!canSave(s)}
@@ -166,6 +193,7 @@ export function ProfileFormDialog() {
                 {t("profileForm.showMe")}
               </Button>
             )}
+            {asTemplate}
           </div>
           <fieldset disabled={saving || !!readOnly} data-read-only={readOnly ? "" : undefined} className="m-0 min-w-0 border-0 p-0">
             <TabPanel tabsId="profile-form" value={tab} className="py-4">
@@ -184,7 +212,7 @@ export function ProfileFormDialog() {
           className="py-4"
           what={t("otherStates.profile")}
           error={error}
-          onRetry={() => openProfileForm(s.mode === "edit" && s.id ? { mode: "edit", id: s.id, tab } : { mode: "create", tab })}
+          onRetry={() => (s.mode === "template" ? openTemplateForm(s.template, { tab }) : openProfileForm(s.mode === "edit" && s.id ? { mode: "edit", id: s.id, tab } : { mode: "create", tab, template: s.template }))}
         />
       ) : (
         <div className="py-4"><LoadingRows rows={5} rowHeight={44} /></div>

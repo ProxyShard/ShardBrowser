@@ -4,6 +4,7 @@ import { t } from "../../../shared/i18n";
 import { toast } from "../../../shared/model/toast";
 import { confirmModal } from "../../../shared/model/confirm";
 import { activeTeam, useAccess, useSpace } from "../../../entities/space";
+import { useTemplates } from "../../../entities/template";
 import { decide, teamCall, trashError, useTeamAdmin, type Target, type TeamTrashKind, type TeamTrashRow } from "../../../entities/team";
 import { reloadFolders, useProfile, useProfileUi } from "../../../entities/profile";
 import { useBookmarks } from "../../../entities/bookmark";
@@ -113,6 +114,7 @@ const RELOAD: Record<TeamTrashKind, () => unknown> = {
   extension: () => useExtensions.getState().status === "ready" && useExtensions.getState().reload(),
   automation: () => useAutomation.getState().status === "ready" && useAutomation.getState().reload(),
   tag: () => useTags.getState().reload(),
+  template: () => useTemplates.getState().reload(),
 };
 
 /** Back where it was; a profile with its cookies and session. */

@@ -21,8 +21,9 @@ pub fn engine() -> Option<String> {
     crate::runtime::engine_version()
 }
 
+/// On, and a proxy chosen for the Web Store: without one the timer stays quiet (#154).
 fn enabled() -> bool {
-    crate::settings::load().map(|s| s.ext_update_check).unwrap_or(true)
+    crate::settings::load().map(|s| s.ext_update_check).unwrap_or(true) && space::extensions::store_proxy_chosen()
 }
 
 fn now() -> u64 {

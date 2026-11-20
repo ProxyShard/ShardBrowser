@@ -103,6 +103,7 @@ function made(state: MockState, r: TeamTrashRow): unknown {
     case "extension": return { id: r.id, name: r.name, version: "1.0.0", description: "", icon: "", path: `/x/${r.id}`, size_bytes: 1, added_at: `@${at}` };
     case "automation": return { id: r.id, name: r.name, notes: "", blocks: [], run: { threads: 1, loops: 1, hours: 0, profiles: [], start: "" }, rules: [], created_at: at, updated_at: at };
     case "tag": return { id: r.id, name: r.name, color: "gray" };
+    case "template": return { id: r.id, name: r.name, source: { library: null, os: "Windows" }, settings: {}, folder: "", tags: [], is_default: false, updated_at: at };
   }
 }
 
@@ -137,6 +138,9 @@ function putBack(state: MockState, teamId: string, row: TeamTrashRow, given: unk
     case "tag":
       (lists.tags ??= { tags: [], by_profile: {} }).tags.push(data as { id: string; name: string; color: string });
       return ["tags"];
+    case "template":
+      (lists.templates ??= []).push(data as NonNullable<MockState["templates"]>[number]);
+      return ["templates"];
   }
 }
 
@@ -156,6 +160,11 @@ export const teamTrashHandlers: Record<string, Handler> = {
       const lists = (ctx.state.dataOf ?? "personal") === teamId ? ctx.state : ctx.state.spaceData?.[String(teamId)];
       const live = lists?.tags?.tags.find((x) => x.id !== row.id && x.name.toLowerCase() === row.name.toLowerCase());
       if (live) throw trashTagTaken(live.name);
+    }
+    if (row.kind === "template") {
+      const lists = (ctx.state.dataOf ?? "personal") === teamId ? ctx.state : ctx.state.spaceData?.[String(teamId)];
+      const live = lists?.templates?.find((x) => x.id !== row.id && x.name.toLowerCase() === row.name.toLowerCase());
+      if (live) throw `a template named ${live.name} already exists`;
     }
     const { s, at, data } = mayAct(ctx.state, String(teamId), got);
     s.trash!.splice(at, 1);

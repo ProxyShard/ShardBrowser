@@ -38,6 +38,15 @@ export const LINUX_PLATFORM_VERSIONS: readonly string[] = [
 const MACOS_SETTLED = "26.7.2";
 const MACOS_SETTLED_M4 = "15.8.2";
 
+/** Android majors Chrome 158 runs on (10 and up); raise the top when a new Android ships. */
+const ANDROID_MAJORS: readonly [number, number] = [10, 17];
+
+/** A version Chrome on Android reports: the release as "<major>.0.0". */
+export function isAndroidRelease(version: string): boolean {
+  const m = /^(\d+)\.0\.0$/.exec(version);
+  return !!m && Number(m[1]) >= ANDROID_MAJORS[0] && Number(m[1]) <= ANDROID_MAJORS[1];
+}
+
 type HwPair = readonly [cores: number, gib: number];
 
 export const MAC_HW_CONFIGS: Readonly<Record<string, readonly HwPair[]>> = {

@@ -8,7 +8,7 @@ use axum::{
     http::{header::AUTHORIZATION, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Extension, Json, Router,
 };
 use serde::Deserialize;
@@ -199,6 +199,8 @@ async fn list_profiles() -> ApiResult {
     let running = crate::process::Tracker::shared().running();
     let by_id: std::collections::HashMap<String, crate::process::RunningProfile> =
         running.into_iter().map(|r| (r.profile_id.clone(), r)).collect();
+    // Tag ids, as `GET /tags` names them.
+    let tagged = space::tags::list().map(|s| s.by_profile).unwrap_or_default();
     let out: Vec<Value> = metas
         .into_iter()
         .map(|m| {
@@ -215,6 +217,7 @@ async fn list_profiles() -> ApiResult {
                 "color": m.color,
                 "extensions": m.extensions,
                 "protected": m.protected,
+                "tags": tagged.get(&m.id).cloned().unwrap_or_default(),
                 "running": r.is_some(),
                 "pid": r.map(|x| x.pid),
                 "cdp": r.and_then(|x| x.cdp.clone()),
@@ -229,6 +232,9 @@ async fn get_profile(Path(id): Path<String>) -> ApiResult {
     let stored = crate::space::profile::fetch(&id).await.map_err(fail(StatusCode::NOT_FOUND))?;
     let mut val = serde_json::to_value(stored)
         .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("tags".into(), json!(profile_tags(&id)));
+    }
     if let Some(cdp) = crate::process::Tracker::shared().cdp(&id) {
         if let Some(obj) = val.as_object_mut() {
             obj.insert("running".into(), json!(true));
@@ -496,6 +502,8 @@ struct EditReq {
     color: Option<String>,
     /// Replaces the whole list; `[]` loads none.
     extensions: Option<Vec<String>>,
+    /// The profile's tags, exactly: ids or names from `GET /tags`; `[]` clears.
+    tags: Option<Vec<String>>,
     /// Claimed display refresh rate in Hz (24-480); applied after `fingerprint`.
     refresh_rate: Option<i64>,
     /// Replace stored fingerprint verbatim.
@@ -587,6 +595,11 @@ async fn edit_profile(Extension(t): Extension<Ticket>, Path(id): Path<String>, J
         apply_refresh_rate(&mut stored.config, hz)
             .map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
     }
+    // Checked before anything is saved: an unknown tag changes nothing.
+    let tags = match body.tags.as_deref() {
+        Some(wanted) => Some(resolve_tags(wanted)?),
+        None => None,
+    };
 
     // Without a rev, the one just read: a change made in between is not undone.
     let opts = space::profile::SaveOpts {
@@ -596,10 +609,17 @@ async fn edit_profile(Extension(t): Extension<Ticket>, Path(id): Path<String>, J
         password: body.password.clone(),
     };
     space::profile::save(door, &t, stored, opts).await.map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if let Some(ids) = tags {
+        assign_tags(&t, &id, ids).await?;
+    }
 
     let updated = space::profile::load_raw(&id).map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
     crate::notify_store_changed("profiles");
-    Ok(Json(serde_json::to_value(updated).unwrap_or(Value::Null)))
+    let mut val = serde_json::to_value(updated).unwrap_or(Value::Null);
+    if let Some(obj) = val.as_object_mut() {
+        obj.insert("tags".into(), json!(profile_tags(&id)));
+    }
+    Ok(Json(val))
 }
 
 #[derive(Deserialize)]
@@ -753,6 +773,8 @@ struct AddProxyReq {
     name: Option<String>,
     country: Option<String>,
     notes: Option<String>,
+    /// #162: the provider's change-IP link; kept on this computer, never returned.
+    change_ip_url: Option<String>,
 }
 
 /// Add proxy (an identical one already stored is reused); returns summary.
@@ -795,9 +817,18 @@ async fn add_proxy(Extension(t): Extension<Ticket>, Json(body): Json<AddProxyReq
     if let Some(nt) = body.notes {
         entry.notes = nt;
     }
+    if let Some(url) = body.change_ip_url.as_deref().filter(|u| !u.trim().is_empty()) {
+        let ok = url::Url::parse(url.trim()).is_ok_and(|u| matches!(u.scheme(), "http" | "https"));
+        if !ok {
+            return Err(err(StatusCode::BAD_REQUEST, "`change_ip_url` must be an http(s) link"));
+        }
+    }
     let stored = crate::space::proxy::upsert_dedup(Door("POST /proxies"), &t, entry)
         .await
         .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if let Some(url) = body.change_ip_url.as_deref().filter(|u| !u.trim().is_empty()) {
+        crate::space::proxy::rotation_set(&stored.id, Some(url)).map_err(fail(StatusCode::BAD_REQUEST))?;
+    }
     crate::notify_store_changed("proxies");
     Ok(Json(json!({
         "id": stored.id,
@@ -815,6 +846,21 @@ async fn delete_proxy(Extension(t): Extension<Ticket>, Path(id): Path<String>) -
         .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
     crate::notify_store_changed("proxies");
     Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+/// #162: opens the proxy's change-IP link and reports the new exit.
+async fn change_proxy_ip(Extension(t): Extension<Ticket>, Path(id): Path<String>) -> ApiResult {
+    let out = space::proxy::change_ip(Door("POST /proxies/:id/change-ip"), &t, &id)
+        .await
+        .map_err(fail(StatusCode::BAD_GATEWAY))?;
+    crate::notify_store_changed("proxies");
+    Ok(Json(json!({
+        "id": id,
+        "changed": out.changed,
+        "before": out.before,
+        "ip": out.after.as_ref().map(|g| g.ip.clone()),
+        "country": out.after.as_ref().map(|g| g.country_code.clone()),
+    })))
 }
 
 async fn list_proxies() -> ApiResult {
@@ -1057,6 +1103,275 @@ async fn delete_bookmark(Extension(t): Extension<Ticket>, Path(id): Path<String>
     Ok(Json(json!({ "deleted": true, "id": id })))
 }
 
+// ---- tags ----
+
+/// The palette a tag's color is one of (src/shared/constants/labelColors.ts).
+const TAG_COLORS: [&str; 8] = ["blue", "violet", "magenta", "red", "orange", "yellow", "green", "sky"];
+
+/// A profile's tag ids.
+fn profile_tags(id: &str) -> Vec<String> {
+    space::tags::list().ok().and_then(|s| s.by_profile.get(id).cloned()).unwrap_or_default()
+}
+
+/// Tag ids for what a caller named: each entry a tag's id or its name (case
+/// aside), each once. An unknown one is refused, as an unknown extension is.
+fn resolve_tags(wanted: &[String]) -> Result<Vec<String>, ApiError> {
+    let state = space::tags::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let mut ids: Vec<String> = Vec::new();
+    let mut missing = Vec::new();
+    for w in wanted.iter().map(|w| w.trim()) {
+        let hit = state.tags.iter().find(|t| t.id == w)
+            .or_else(|| state.tags.iter().find(|t| t.name.to_lowercase() == w.to_lowercase()));
+        match hit {
+            Some(t) if !ids.contains(&t.id) => ids.push(t.id.clone()),
+            Some(_) => {}
+            None => missing.push(w.to_string()),
+        }
+    }
+    if missing.is_empty() {
+        Ok(ids)
+    } else {
+        Err(err(StatusCode::BAD_REQUEST, format!("no such tag: {} (POST /tags makes one)", missing.join(", "))))
+    }
+}
+
+/// Gives the profile exactly these tag ids, with the tag-assign door (Edit on the profile).
+async fn assign_tags(t: &Ticket, id: &str, ids: Vec<String>) -> Result<(), ApiError> {
+    let by_profile = std::collections::BTreeMap::from([(id.to_string(), ids)]);
+    space::tags::assign(Door("PUT /profiles/:id/tags"), t, by_profile)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    crate::notify_store_changed("tags");
+    Ok(())
+}
+
+/// The tags in their order, and `by_profile`: tag ids by profile id.
+async fn list_tags() -> ApiResult {
+    space::ready().await;
+    let state = space::tags::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Json(serde_json::to_value(state).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct TagReq {
+    /// Present = rename or recolor that tag; absent = a new one.
+    id: Option<String>,
+    name: String,
+    /// One of `TAG_COLORS`. Absent, a new tag takes the next one and an existing one keeps its own.
+    color: Option<String>,
+}
+
+/// Adds a tag or changes one. Two tags cannot share a name (case aside): 400.
+async fn save_tag_ep(Extension(t): Extension<Ticket>, Json(body): Json<TagReq>) -> ApiResult {
+    space::ready().await;
+    let state = space::tags::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    let id = body.id.unwrap_or_default();
+    let was = match id.as_str() {
+        "" => None,
+        id => Some(
+            state.tags.iter().find(|x| x.id == id).cloned()
+                .ok_or_else(|| err(StatusCode::NOT_FOUND, format!("no such tag: {id}")))?,
+        ),
+    };
+    let color = match body.color {
+        Some(c) => {
+            let c = c.trim().to_lowercase();
+            if !TAG_COLORS.contains(&c.as_str()) {
+                return Err(err(StatusCode::BAD_REQUEST, format!("`color` is one of: {}", TAG_COLORS.join(", "))));
+            }
+            c
+        }
+        None => was.map(|w| w.color).unwrap_or_else(|| TAG_COLORS[state.tags.len() % TAG_COLORS.len()].to_string()),
+    };
+    let tag = space::tags::Tag { id, name: body.name, color };
+    let saved = space::tags::save(Door("POST /tags"), &t, tag, None)
+        .await
+        .map_err(fail(StatusCode::BAD_REQUEST))?;
+    crate::notify_store_changed("tags");
+    Ok(Json(serde_json::to_value(saved).unwrap_or(Value::Null)))
+}
+
+/// Deletes the tag; the profiles that carried it stay, without it.
+async fn delete_tag_ep(Extension(t): Extension<Ticket>, Path(id): Path<String>) -> ApiResult {
+    space::ready().await;
+    let known = space::tags::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    if !known.tags.iter().any(|x| x.id == id) {
+        return Err(err(StatusCode::NOT_FOUND, format!("no such tag: {id}")));
+    }
+    space::tags::delete(Door("DELETE /tags/:id"), &t, &id)
+        .await
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    crate::notify_store_changed("tags");
+    Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+#[derive(Deserialize)]
+struct ProfileTagsReq {
+    /// The profile's tags, exactly: ids or names from `GET /tags`; `[]` clears.
+    tags: Vec<String>,
+}
+
+/// Gives one profile exactly these tags.
+async fn set_profile_tags(Extension(t): Extension<Ticket>, Path(id): Path<String>, Json(body): Json<ProfileTagsReq>) -> ApiResult {
+    space::ready().await;
+    let exists = space::profile::list_all()
+        .map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?
+        .iter()
+        .any(|m| m.id == id);
+    if !exists {
+        return Err(err(StatusCode::NOT_FOUND, format!("no such profile: {id}")));
+    }
+    let ids = resolve_tags(&body.tags)?;
+    assign_tags(&t, &id, ids).await?;
+    Ok(Json(json!({ "id": id, "tags": profile_tags(&id) })))
+}
+
+// ---- profile templates (#145) ----
+
+async fn list_templates() -> ApiResult {
+    crate::space::ready().await;
+    let list = space::templates::list().map_err(fail(StatusCode::INTERNAL_SERVER_ERROR))?;
+    Ok(Json(serde_json::to_value(list).unwrap_or(Value::Null)))
+}
+
+#[derive(Deserialize)]
+struct TemplateReq {
+    /// Present = change that template; absent = a new one.
+    id: Option<String>,
+    name: String,
+    /// The profile whose settings, folder, tags and fingerprint source it takes.
+    profile_id: Option<String>,
+    /// Over the profile's, when both are given.
+    settings: Option<serde_json::Map<String, Value>>,
+    source: Option<space::templates::Source>,
+    folder: Option<String>,
+    tags: Option<Vec<String>>,
+    /// Absent keeps it as it is (no for a new one).
+    is_default: Option<bool>,
+}
+
+/// Upsert. A template keeps a profile's settings and where its fingerprint came
+/// from, never the fingerprint, name, notes or cookies.
+async fn save_template(Extension(t): Extension<Ticket>, Json(body): Json<TemplateReq>) -> ApiResult {
+    crate::space::ready().await;
+    let id = body.id.unwrap_or_default();
+    let mut tpl = match id.as_str() {
+        "" => space::templates::ProfileTemplate::default(),
+        id => space::templates::get(id).map_err(fail(StatusCode::NOT_FOUND))?,
+    };
+    if let Some(pid) = body.profile_id.as_deref() {
+        let stored = space::profile::fetch(pid).await.map_err(fail(StatusCode::NOT_FOUND))?;
+        if stored.meta.lock.is_some() {
+            return Err(err(StatusCode::CONFLICT, space::profile::NOT_FOR_PROTECTED));
+        }
+        let folder = stored.meta.folder.clone();
+        let config = match serde_json::to_value(&stored) {
+            Ok(Value::Object(m)) => m,
+            _ => return Err(err(StatusCode::INTERNAL_SERVER_ERROR, "the profile is not readable")),
+        };
+        tpl.settings = space::templates::settings_of(&config);
+        tpl.source = space::templates::source_of(&config);
+        tpl.folder = folder;
+        tpl.tags = space::tags::list().map(|s| s.by_profile.get(pid).cloned().unwrap_or_default()).unwrap_or_default();
+    }
+    tpl.id = id;
+    tpl.name = body.name;
+    if let Some(d) = body.is_default {
+        tpl.is_default = d;
+    }
+    if let Some(s) = body.settings {
+        tpl.settings = s;
+    }
+    if let Some(s) = body.source {
+        tpl.source = s;
+    }
+    if let Some(f) = body.folder {
+        tpl.folder = f;
+    }
+    if let Some(tags) = body.tags {
+        tpl.tags = tags;
+    }
+    let saved = space::templates::save(Door("POST /templates"), &t, tpl).await.map_err(fail(StatusCode::BAD_REQUEST))?;
+    crate::notify_store_changed("templates");
+    Ok(Json(serde_json::to_value(saved).unwrap_or(Value::Null)))
+}
+
+async fn delete_template(Extension(t): Extension<Ticket>, Path(id): Path<String>) -> ApiResult {
+    space::templates::delete(Door("DELETE /templates/:id"), &t, &id).await.map_err(fail(StatusCode::NOT_FOUND))?;
+    crate::notify_store_changed("templates");
+    Ok(Json(json!({ "deleted": true, "id": id })))
+}
+
+#[derive(Deserialize, Default)]
+struct FromTemplateReq {
+    /// Absent: the template's name and the lowest number free.
+    name: Option<String>,
+    notes: Option<String>,
+    /// Absent: the template's folder.
+    folder: Option<String>,
+}
+
+/// The lowest "`base` N" no profile of the space is called yet.
+fn numbered(base: &str) -> String {
+    let taken: std::collections::HashSet<String> =
+        space::profile::list_all().map(|l| l.into_iter().map(|p| p.name).collect()).unwrap_or_default();
+    (1..).map(|n| format!("{base} {n}")).find(|n| !taken.contains(n)).unwrap_or_else(|| base.to_string())
+}
+
+/// A new profile from a template, with a fingerprint of its own drawn from the
+/// template's source. A proxy, extension or tag this space no longer has is left out.
+async fn create_from_template(
+    Extension(t): Extension<Ticket>,
+    Path(id): Path<String>,
+    body: Option<Json<FromTemplateReq>>,
+) -> ApiResult {
+    crate::space::ready().await;
+    let door = Door("POST /templates/:id/profiles");
+    let body = body.map(|b| b.0).unwrap_or_default();
+    let tpl = space::templates::get(&id).map_err(fail(StatusCode::NOT_FOUND))?;
+    let (mut cfg, fid) =
+        crate::profile_from_template(crate::main_window().as_ref(), &tpl).map_err(|e| err(StatusCode::BAD_REQUEST, e))?;
+    let name = body.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| numbered(&tpl.name));
+    cfg.insert("name".into(), json!(name));
+    cfg.insert("notes".into(), json!(body.notes.unwrap_or_default()));
+    let folder = body.folder.unwrap_or_else(|| tpl.folder.clone());
+    let proxies: Vec<String> = space::proxy::list().map(|l| l.into_iter().map(|p| p.id).collect()).unwrap_or_default();
+    let extensions: Vec<String> = space::extensions::list().map(|l| l.into_iter().map(|e| e.id).collect()).unwrap_or_default();
+    let meta = cfg.entry("_meta").or_insert_with(|| json!({})).as_object_mut().ok_or_else(|| err(StatusCode::INTERNAL_SERVER_ERROR, "no _meta"))?;
+    meta.insert("folder".into(), json!(folder));
+    if meta.get("proxy_id").and_then(Value::as_str).is_some_and(|p| !proxies.iter().any(|x| x == p)) {
+        meta.insert("proxy_id".into(), Value::Null);
+    }
+    if let Some(Value::Array(ids)) = meta.get_mut("extensions") {
+        ids.retain(|e| e.as_str().is_some_and(|e| extensions.iter().any(|x| x == e)));
+    }
+    let stored: space::profile::StoredProfile =
+        serde_json::from_value(Value::Object(cfg)).map_err(fail(StatusCode::BAD_REQUEST))?;
+    let made = space::profile::Made {
+        proxy_id: stored.meta.proxy_id.as_deref(),
+        inline_proxy: false,
+        extensions: !stored.meta.extensions.is_empty(),
+    };
+    space::profile::check_create(door, &t, &folder, &made).map_err(fail(StatusCode::FORBIDDEN))?;
+    let pm = space::profile::save(door, &t, stored, Default::default()).await.map_err(fail(StatusCode::BAD_REQUEST))?;
+    let known: Vec<String> = space::tags::list().map(|s| s.tags.into_iter().map(|x| x.id).collect()).unwrap_or_default();
+    let tags: Vec<String> = tpl.tags.iter().filter(|x| known.contains(x)).cloned().collect();
+    if !tags.is_empty() {
+        let by_profile = std::collections::BTreeMap::from([(pm.id.clone(), tags)]);
+        if let Err(e) = space::tags::assign(Door("tag_assign"), &t, by_profile).await {
+            eprintln!("[api] profile {} made from template {id} without its tags: {e:#}", pm.id);
+        }
+        crate::notify_store_changed("tags");
+    }
+    crate::notify_store_changed("profiles");
+    let mut out = serde_json::to_value(&pm).unwrap_or(Value::Null);
+    if let Some(o) = out.as_object_mut() {
+        o.insert("fingerprint_id".into(), json!(fid));
+        o.insert("template_id".into(), json!(tpl.id));
+    }
+    Ok(Json(out))
+}
+
 // ---- trash ----
 
 async fn list_trash() -> ApiResult {
@@ -1100,6 +1415,7 @@ fn normalize_platform(p: &str) -> String {
         "windows" | "win" => "Windows".into(),
         "linux" => "Linux".into(),
         "mac" | "macos" | "osx" | "darwin" => "macOS".into(),
+        "android" | "phone" | "mobile" => "Android".into(),
         other => other.to_string(),
     }
 }
@@ -1359,6 +1675,7 @@ fn router() -> Router {
         .route("/running", get(list_running))
         .route("/proxies", get(list_proxies).post(add_proxy))
         .route("/proxies/:id", delete(delete_proxy))
+        .route("/proxies/:id/change-ip", post(change_proxy_ip))
         .route("/extensions", get(list_extensions).post(add_extension))
         .route("/extensions/:id", delete(delete_extension))
         .route("/extensions/updates", get(list_extension_updates))
@@ -1366,6 +1683,12 @@ fn router() -> Router {
         .route("/extensions/updates/apply", post(apply_extension_updates))
         .route("/bookmarks", get(list_bookmarks).post(save_bookmark))
         .route("/bookmarks/:id", delete(delete_bookmark))
+        .route("/tags", get(list_tags).post(save_tag_ep))
+        .route("/tags/:id", delete(delete_tag_ep))
+        .route("/profiles/:id/tags", put(set_profile_tags))
+        .route("/templates", get(list_templates).post(save_template))
+        .route("/templates/:id", delete(delete_template))
+        .route("/templates/:id/profiles", post(create_from_template))
         .route("/trash", get(list_trash))
         .route("/trash/:id", delete(purge_trash))
         .route("/trash/:id/restore", post(restore_trash))
@@ -1547,6 +1870,112 @@ mod tests {
         assert_eq!(router().oneshot(req).await.unwrap().status(), StatusCode::CONFLICT);
         let (_, _, all) = authed("GET", "/profiles", None).await;
         assert_eq!(all, json!([]));
+    }
+
+    /// Tags over the API: made, put on a profile by id or by name, read back in
+    /// every answer that lists the profile, taken off, and deleted from under it.
+    #[tokio::test]
+    async fn tags_are_made_given_read_back_and_taken_off() {
+        let _serial = crate::migrate::serial();
+        let _root = crate::store::test_root("api-tags").with_config();
+        let (status, _, made) = authed("POST", "/profiles", Some(json!({ "name": "A", "fingerprint": {} }))).await;
+        assert_eq!(status, StatusCode::OK, "{made}");
+        let id = made["id"].as_str().unwrap().to_string();
+
+        let (status, _, web) = authed("POST", "/tags", Some(json!({ "name": "web" }))).await;
+        assert_eq!((status, web["color"].as_str()), (StatusCode::OK, Some("blue")), "{web}");
+        let web_id = web["id"].as_str().unwrap().to_string();
+        let (status, _, vip) = authed("POST", "/tags", Some(json!({ "name": "VIP", "color": "Red" }))).await;
+        assert_eq!((status, vip["color"].as_str()), (StatusCode::OK, Some("red")), "{vip}");
+        let vip_id = vip["id"].as_str().unwrap().to_string();
+        // One name, one tag (case aside); a color outside the palette; a tag that is not there.
+        assert_eq!(authed("POST", "/tags", Some(json!({ "name": "WEB" }))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(authed("POST", "/tags", Some(json!({ "name": "x", "color": "#ff0000" }))).await.0, StatusCode::BAD_REQUEST);
+        assert_eq!(authed("POST", "/tags", Some(json!({ "id": "t-nope", "name": "x" }))).await.0, StatusCode::NOT_FOUND);
+        // A rename keeps the color it had.
+        let (_, _, renamed) = authed("POST", "/tags", Some(json!({ "id": web_id, "name": "shop" }))).await;
+        assert_eq!((renamed["name"].as_str(), renamed["color"].as_str()), (Some("shop"), Some("blue")), "{renamed}");
+
+        // By id and by name; an unknown one changes nothing.
+        let tags = format!("/profiles/{id}/tags");
+        let (status, _, got) = authed("PUT", &tags, Some(json!({ "tags": [web_id, "vip", "vip"] }))).await;
+        assert_eq!((status, got["tags"].clone()), (StatusCode::OK, json!([web_id, vip_id])), "{got}");
+        let (status, _, got) = authed("PUT", &tags, Some(json!({ "tags": ["nope"] }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+        assert_eq!(authed("PUT", "/profiles/p-nope/tags", Some(json!({ "tags": [] }))).await.0, StatusCode::NOT_FOUND);
+        let path = format!("/profiles/{id}");
+        assert_eq!(authed("GET", &path, None).await.2["tags"], json!([web_id, vip_id]));
+        assert_eq!(authed("GET", "/profiles", None).await.2[0]["tags"], json!([web_id, vip_id]));
+        let (_, _, all) = authed("GET", "/tags", None).await;
+        assert_eq!(all["by_profile"][id.as_str()], json!([web_id, vip_id]), "{all}");
+
+        // PATCH takes them too, and an unknown one stops the whole edit.
+        let (status, _, got) = authed("PATCH", &path, Some(json!({ "name": "B", "tags": ["nope"] }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{got}");
+        assert_eq!(authed("GET", &path, None).await.2["name"], json!("A"));
+        let (status, _, got) = authed("PATCH", &path, Some(json!({ "tags": ["shop"] }))).await;
+        assert_eq!((status, got["tags"].clone()), (StatusCode::OK, json!([web_id])), "{got}");
+
+        // Deleting a tag takes it off; `[]` clears the rest.
+        assert_eq!(authed("DELETE", &format!("/tags/{web_id}"), None).await.0, StatusCode::OK);
+        assert_eq!(authed("DELETE", &format!("/tags/{web_id}"), None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(authed("GET", &path, None).await.2["tags"], json!([]));
+        authed("PUT", &tags, Some(json!({ "tags": ["vip"] }))).await;
+        let (_, _, got) = authed("PUT", &tags, Some(json!({ "tags": [] }))).await;
+        assert_eq!(got["tags"], json!([]), "{got}");
+    }
+
+    /// #145: a template keeps a profile's settings, never its fingerprint; each
+    /// profile made from it draws one of its own.
+    #[tokio::test]
+    async fn a_template_makes_profiles_with_its_settings_and_a_fingerprint_each() {
+        let _serial = crate::migrate::serial();
+        let _root = crate::store::test_root("api-templates").with_config();
+        let lib = json!({
+            "id": "win-a", "label": "Win A", "platform": "Windows", "chrome": "157", "gpu": "A", "tag_color": "",
+            "payload": { "navigator": { "platform": "Win32", "user_agent": "Mozilla/5.0 (Windows NT 10.0)" }, "screen": { "width": 1920, "height": 1080 } },
+        });
+        std::fs::write(crate::store::fingerprints_dir().unwrap().join("win-a.json"), lib.to_string()).unwrap();
+        let fp = json!({
+            "webrtc": "tcp_only", "navigator": { "platform": "Win32", "hardware_concurrency": 12 },
+            "noise": { "canvas": { "enabled": true, "seed": 77 } }, "webgl": { "renderer": "Own GPU" },
+        });
+        let (status, _, src) = authed("POST", "/profiles", Some(json!({ "name": "Src", "notes": "secret", "folder": "Ads", "fingerprint": fp }))).await;
+        assert_eq!(status, StatusCode::OK, "{src}");
+
+        let (status, _, tpl) = authed("POST", "/templates", Some(json!({ "name": "Ads base", "profile_id": src["id"], "is_default": true }))).await;
+        assert_eq!(status, StatusCode::OK, "{tpl}");
+        assert_eq!((tpl["folder"].as_str(), tpl["is_default"].as_bool()), (Some("Ads"), Some(true)));
+        assert_eq!(tpl["source"], json!({ "library": null, "os": "Windows" }));
+        assert_eq!(tpl["settings"]["webrtc"], "tcp_only");
+        assert_eq!(tpl["settings"]["noise"]["canvas"], json!({ "enabled": true, "seed": 0 }));
+        for gone in ["name", "notes", "webgl"] {
+            assert!(tpl["settings"].get(gone).is_none(), "{gone} kept: {tpl}");
+        }
+        let (status, _, taken) = authed("POST", "/templates", Some(json!({ "name": "ADS base" }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{taken}");
+
+        let path = format!("/templates/{}/profiles", tpl["id"].as_str().unwrap());
+        let (status, _, one) = authed("POST", &path, None).await;
+        assert_eq!(status, StatusCode::OK, "{one}");
+        let (_, _, two) = authed("POST", &path, Some(json!({ "name": "Mine", "folder": "" }))).await;
+        assert_eq!((one["name"].as_str(), one["folder"].as_str(), one["fingerprint_id"].as_str()), (Some("Ads base 1"), Some("Ads"), Some("win-a")));
+        assert_eq!((two["name"].as_str(), two["folder"].as_str()), (Some("Mine"), Some("")));
+        let read = |id: &Value| format!("/profiles/{}", id.as_str().unwrap());
+        let (_, _, a) = authed("GET", &read(&one["id"]), None).await;
+        let (_, _, b) = authed("GET", &read(&two["id"]), None).await;
+        assert_eq!((a["webrtc"].as_str(), a["notes"].as_str()), (Some("tcp_only"), Some("")));
+        assert!(a.get("webgl").is_none(), "the source profile's own GPU stays its own");
+        assert_eq!(a["_meta"]["gpu_preset_id"], "win-a");
+        let seed = |p: &Value| p["noise"]["canvas"]["seed"].as_u64().unwrap();
+        assert!(a["noise"]["canvas"]["enabled"].as_bool().unwrap());
+        assert!(seed(&a) != 0 && seed(&a) != 77 && seed(&a) != seed(&b), "{} {}", seed(&a), seed(&b));
+
+        let tpl_path = format!("/templates/{}", tpl["id"].as_str().unwrap());
+        assert_eq!(authed("DELETE", &tpl_path, None).await.0, StatusCode::OK);
+        assert_eq!(authed("DELETE", &tpl_path, None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(authed("POST", &path, None).await.0, StatusCode::NOT_FOUND);
+        assert_eq!(authed("GET", "/templates", None).await.2, json!([]));
     }
 
     /// The local API in a team's space, against a real team server in-process.
@@ -1788,7 +2217,12 @@ mod tests {
                 if crate::space::doors::is_open(door) {
                     continue;
                 }
-                let empty = got == json!([]) || got.is_null();
+                // A list answers `[]`; the tag state answers as its two halves, both empty.
+                let halves_empty = got.as_object().is_some_and(|o| {
+                    !o.is_empty()
+                        && o.values().all(|v| v.as_array().is_some_and(Vec::is_empty) || v.as_object().is_some_and(|m| m.is_empty()))
+                });
+                let empty = got == json!([]) || got.is_null() || halves_empty;
                 assert!(!status.is_success() || empty, "{door} answered {status}: {text}");
                 assert!(!status.is_server_error() || status == StatusCode::NOT_IMPLEMENTED, "{door}: {status} {text}");
             }

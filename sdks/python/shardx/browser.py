@@ -8,6 +8,8 @@ spoofing flags the desktop launcher uses, plus pre-launch:
     `clamp_screen_to_real_display` / `--shardx-real-screen` switch.
   • probe_udp            — decide QUIC + WebRTC policy from a live SOCKS5
     UDP_ASSOCIATE probe.
+  • ensure_widevine      — the Widevine CDM from Google, put into the
+    profile's user-data-dir before the engine starts.
 """
 from __future__ import annotations
 
@@ -32,6 +34,7 @@ from .proxy import ParsedProxy, parse_proxy, probe_udp
 from .randomize import settle_platform_version
 from .runtime import Runtime, adopt_library_fields, apply_apple_webgpu_features, apply_chrome_brand, apply_engine_version
 from .screen import apply_screen_strategy, default_mode_for
+from .widevine import ensure_widevine, harvest_widevine, install_widevine
 
 _NOISE_DEFAULT = {
     "canvas":       {"enabled": False, "seed": 0},
@@ -167,7 +170,8 @@ class Browser:
         if has_auto_fields(profile.config):
             geo = resolve_auto_fields(profile.config, parsed)
 
-        mode = screen_mode or default_mode_for(profile.platform)
+        # A phone keeps its own screen whatever the option says, as in the launcher (#131).
+        mode = "profile" if profile.claims_mobile else (screen_mode or default_mode_for(profile.platform))
         apply_screen_strategy(profile.config, mode)
 
         proxy_udp_ms: Optional[float] = None
@@ -191,7 +195,7 @@ class Browser:
             self.runtime.grease_brand,
             self.runtime.grease_version,
             self.runtime.tls,
-            self.runtime.android_chromium_version if profile.claims_mobile else None,
+            self.runtime.claimed_chromium_version(profile.platform, profile.claims_mobile),
         )
         adopt_library_fields(profile.config, self.runtime.fingerprints_dir)
         apply_apple_webgpu_features(profile.config)
@@ -201,6 +205,20 @@ class Browser:
         apply_noise_seeds(profile.config, profile.id)
         fp_file = udd / "fingerprint.json"
         fp_file.write_text(json.dumps(profile.config), encoding="utf-8")
+
+        # Widevine from Google before the first start, through this profile's proxy:
+        # Chrome ships with its CDM and this engine does not.
+        cdm = self.runtime.widevine_cache_dir
+        ensure_widevine(cdm, self.runtime.chromium_version, parsed)
+        # Keep a newer CDM the engine fetched for itself, then hand the cached one to this profile.
+        try:
+            harvest_widevine(cdm, udd)
+        except Exception as e:
+            print(f"[shardx] Widevine harvest skipped: {e}", file=sys.stderr, flush=True)
+        try:
+            install_widevine(cdm, udd)
+        except Exception as e:
+            print(f"[shardx] Widevine not put in place: {e}", file=sys.stderr, flush=True)
 
         argv: list[str] = [
             str(self.runtime.binary_path),

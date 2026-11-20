@@ -8,7 +8,8 @@ import { explainError } from "../../shared/lib/errors";
 import { fmtTs } from "../../shared/lib/utils";
 import { focusProxyRow } from "../../shared/lib/focusRow";
 import { useT } from "../../shared/i18n";
-import { proxyHistory, proxyStatus, useProxy, type ProxyEntry, type ProxyTestSnapshot } from "../../entities/proxy";
+import { proxyChangeIp, proxyHistory, proxyLastTest, proxyStatus, useProxy, useRotation, type ProxyEntry, type ProxyTestSnapshot } from "../../entities/proxy";
+import { toast } from "../../shared/model/toast";
 import { useProfileUi } from "../../entities/profile";
 import { onProxy, teamRefusal, useRightsChange } from "../../entities/space";
 import { capOf, command, menuItemsFor } from "../../features/commands";
@@ -146,6 +147,7 @@ function TestSection({ proxy }: { proxy: ProxyEntry }) {
   return (
     <>
       {snap ? <Result proxy={proxy} snap={snap} /> : <p className="m-0 text-secondary text-text-soft-400">{t("proxyPeek.notTested")}</p>}
+      <ChangeIp proxy={proxy} />
       <Label as="div" className="mt-1">{t("proxyPeek.history")}</Label>
       {history.length === 0 ? (
         <p className="m-0 text-secondary text-text-soft-400">{t("proxyInfoPopover.historyEmpty")}</p>
@@ -168,6 +170,36 @@ function TestSection({ proxy }: { proxy: ProxyEntry }) {
         </ul>
       )}
     </>
+  );
+}
+
+/// #162: the provider's change-IP link, for a proxy that has one; then the new exit.
+function ChangeIp({ proxy }: { proxy: ProxyEntry }) {
+  const t = useT();
+  const has = useRotation((s) => s.ids.has(proxy.id));
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void useRotation.getState().load(); }, [proxy.id]);
+  if (!has) return null;
+  const run = async () => {
+    setBusy(true);
+    try {
+      const r = await proxyChangeIp(proxy.id);
+      if (r.changed && r.after) toast.ok(t("proxyPeek.ipChanged", { ip: r.after.ip }));
+      else toast.info(t("proxyPeek.ipNotChanged"));
+      const snap = await proxyLastTest(proxy.id);
+      if (snap) useProxy.setState((st) => ({ snapshots: { ...st.snapshots, [proxy.id]: snap } }));
+    } catch (e) {
+      toast.err(t("proxyPeek.changeIpFailed"), { detail: explainError(e) ?? String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div>
+      <Button variant="neutral" mode="stroke" size="3xsmall" data-change-ip leftIcon={<RefreshIcon className="size-3.5" />} isLoading={busy} onClick={() => void run()}>
+        {t("proxyPeek.changeIp")}
+      </Button>
+    </div>
   );
 }
 

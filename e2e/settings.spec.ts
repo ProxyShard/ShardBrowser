@@ -4,10 +4,10 @@ import { openApp } from "./support/app";
 const tab = (page: Page, name: string) =>
   page.getByRole("tablist", { name: "Settings sections" }).getByRole("tab", { name });
 
-test("Settings has eleven sections", async ({ page }) => {
+test("Settings has twelve sections", async ({ page }) => {
   await openApp(page, { section: "settings" });
   const tabs = page.getByRole("tablist", { name: "Settings sections" }).getByRole("tab");
-  await expect(tabs).toHaveText(["General", "Appearance", "Profile defaults", "Tags", "Views", "API & MCP", "Helper", "Storage", "Sync", "Other", "About"]);
+  await expect(tabs).toHaveText(["General", "Appearance", "Profile defaults", "Templates", "Tags", "Views", "API & MCP", "Helper", "Storage", "Sync", "Other", "About"]);
   await expect(tab(page, "General")).toHaveAttribute("aria-selected", "true");
 });
 

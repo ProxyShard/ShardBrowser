@@ -102,6 +102,8 @@ tags:
   - name: Proxies
   - name: Extensions
   - name: Bookmarks
+  - name: Tags
+  - name: Templates
   - name: Trash
   - name: Automation
 
@@ -155,14 +157,14 @@ paths:
         uniquifies it: a fresh Sec-CH-UA `platform_version`, host-aware
         `hardware_concurrency`/`device_memory` (never claims more than the
         real machine), and the screen: Windows/Linux claim this computer's
-        (the template's taskbar kept), macOS/Android the template's own, both
-        clamped to the real display. Returned unsaved — feed it to a create
-        endpoint as `fingerprint`.
+        (the template's taskbar kept), macOS/Android the template's own; a
+        Mac's is clamped to the real display, a phone's never is. Returned
+        unsaved — feed it to a create endpoint as `fingerprint`.
       parameters:
         - name: platform
           in: path
           required: true
-          description: Case-insensitive; `win`/`osx`/`darwin` aliases accepted.
+          description: Case-insensitive; `win`/`osx`/`darwin` and `phone`/`mobile` (Android) aliases accepted.
           schema:
             type: string
             enum: [Windows, macOS, Linux]
@@ -708,6 +710,41 @@ paths:
                   id: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /proxies/{id}/change-ip:
+    post:
+      tags: [Proxies]
+      summary: Change the proxy's IP through its change-IP link
+      description: >-
+        Opens the change-IP link set for this proxy (in the launcher or as
+        `change_ip_url` on create), then reads the exit until it changes, for
+        up to about 25 seconds. A provider's refusal is returned as it is and
+        not retried: rotation is rate-limited. The link is kept on this
+        computer only and is never returned by `GET /proxies`.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The provider took the request.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  changed: { type: boolean, description: "False when the exit had not changed yet." }
+                  before: { type: string, nullable: true, description: "The exit IP of the last test." }
+                  ip: { type: string, nullable: true }
+                  country: { type: string, nullable: true, description: "ISO 3166-1 alpha-2." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "502":
+          description: No change-IP link, or the provider refused or did not answer.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /extensions:
     get:
       tags: [Extensions]
@@ -970,6 +1007,238 @@ paths:
                   deleted: { type: boolean, example: true }
                   id: { type: string }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /tags:
+    get:
+      tags: [Tags]
+      summary: List tags
+      description: The tags in their order, and which profiles carry them.
+      responses:
+        "200":
+          description: The tags and `by_profile`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/TagState" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Tags]
+      summary: Add or change a tag
+      description: |
+        With `id` it renames or recolors that tag; without, it adds one.
+        Two tags cannot share a name, case aside.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TagRequest" }
+      responses:
+        "200":
+          description: The saved tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tag" }
+        "400":
+          description: No name, a name another tag has, or a color outside the palette.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No tag with this `id`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /tags/{id}:
+    delete:
+      tags: [Tags]
+      summary: Delete a tag
+      description: The profiles that carried it stay, without it.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean, example: true }
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No tag with this id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /profiles/{id}/tags:
+    put:
+      tags: [Tags]
+      summary: Set a profile's tags
+      description: |
+        The profile carries exactly these tags afterwards; `[]` takes them all
+        off. Each entry is a tag's id or its name (case aside). An unknown tag
+        changes nothing and answers 400: add it with `POST /tags` first.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProfileTagsRequest" }
+      responses:
+        "200":
+          description: The profile's tag ids now.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  tags: { type: array, items: { type: string } }
+        "400":
+          description: An unknown tag.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No profile with this id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /templates:
+    get:
+      tags: [Templates]
+      summary: List profile templates
+      description: |
+        The space's profile templates, by name. In a team they are the team's,
+        listed to whoever may See the team or make a profile somewhere in it.
+      responses:
+        "200":
+          description: Every template.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/ProfileTemplate" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    post:
+      tags: [Templates]
+      summary: Add or update a profile template
+      description: |
+        With `id` it updates that template; without, it creates one. With
+        `profile_id` it takes that profile's settings, folder, tags and where
+        its fingerprint came from; fields given beside it win.
+
+        A template keeps a profile's settings (proxy, WebRTC, noise,
+        extensions, language and the rest) and the **source** of its
+        fingerprint, never the fingerprint itself, its name, notes or cookies.
+        `settings` is cut to what a template carries, and each noise seed is
+        left for the new profile. One template per space can be the default.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TemplateRequest" }
+      responses:
+        "200":
+          description: The saved template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProfileTemplate" }
+        "400":
+          description: No name, or another template has it.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No template with `id`, or no profile with `profile_id`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /templates/{id}:
+    delete:
+      tags: [Templates]
+      summary: Delete a profile template
+      description: Profiles made from it stay as they are.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: { type: boolean, example: true }
+                  id: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: No such template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /templates/{id}/profiles:
+    post:
+      tags: [Templates]
+      summary: Create a profile from a template
+      description: |
+        A new profile with the template's settings and a **fresh**
+        fingerprint: from the template's library fingerprint while this
+        computer has it, else a random library fingerprint of its OS, with
+        its own hardware, platform version and noise seeds. Two profiles
+        from one template never share a fingerprint. A proxy, extension or
+        tag the space no longer has is left out.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FromTemplateRequest" }
+      responses:
+        "200":
+          description: Created profile metadata, with the template and the library fingerprint used.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - { $ref: "#/components/schemas/ProfileMeta" }
+                  - type: object
+                    properties:
+                      template_id: { type: string }
+                      fingerprint_id: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: In a team, no Create in the folder (or a right the profile needs).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: No such template.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /trash:
     get:
@@ -1682,6 +1951,12 @@ components:
           type: array
           items: { type: string }
           description: Replaces the whole list; `[]` loads none.
+        tags:
+          type: array
+          items: { type: string }
+          description: |
+            Replaces the profile's tags: tag ids or names from `GET /tags`;
+            `[]` clears. An unknown tag refuses the whole edit (400).
         refresh_rate:
           type: integer
           minimum: 24
@@ -1926,6 +2201,52 @@ components:
           items: { type: string }
           description: Bookmark folders it sits in inside its root, outermost first. Left out when none.
 
+    Tag:
+      type: object
+      properties:
+        id: { type: string, example: t-7ll25rly }
+        name: { type: string }
+        color: { $ref: "#/components/schemas/TagColor" }
+
+    TagColor:
+      type: string
+      enum: [blue, violet, magenta, red, orange, yellow, green, sky]
+
+    TagState:
+      type: object
+      properties:
+        tags:
+          type: array
+          items: { $ref: "#/components/schemas/Tag" }
+          description: In the order the launcher lists them.
+        by_profile:
+          type: object
+          additionalProperties:
+            type: array
+            items: { type: string }
+          description: Tag ids by profile id; a profile with none is left out.
+
+    TagRequest:
+      type: object
+      required: [name]
+      properties:
+        id:
+          type: string
+          description: Present renames or recolors that tag; absent adds one.
+        name: { type: string }
+        color:
+          allOf: [{ $ref: "#/components/schemas/TagColor" }]
+          description: Absent, a new tag takes the next palette color and an existing one keeps its own.
+
+    ProfileTagsRequest:
+      type: object
+      required: [tags]
+      properties:
+        tags:
+          type: array
+          items: { type: string }
+          description: Tag ids or names; `[]` takes them all off.
+
     BookmarkRequest:
       type: object
       required: [url]
@@ -1952,6 +2273,78 @@ components:
           items: { type: string }
           description: Bookmark folders inside its root, outermost first. Absent keeps an updated bookmark's own.
           example: [Work, Docs]
+
+    TemplateSource:
+      type: object
+      description: Where each profile made from the template gets its fingerprint.
+      properties:
+        library:
+          type: string
+          nullable: true
+          description: The library fingerprint each one is drawn from (`GET /fingerprints`); null for any of `os`.
+        os:
+          type: string
+          enum: [macOS, Windows, Linux, Android]
+          description: The OS a fingerprint is picked for when there is no library one, or this computer does not have it.
+
+    ProfileTemplate:
+      type: object
+      properties:
+        id: { type: string, example: pt-1a2b3c4d }
+        name: { type: string }
+        source: { $ref: "#/components/schemas/TemplateSource" }
+        settings:
+          type: object
+          additionalProperties: true
+          description: |
+            The settings a new profile takes, as a stored profile holds them:
+            `timezone`, `icu_locale`, `ui_language`, `webrtc`, `geolocation`,
+            `blocked_ports`, `media_devices`, `noise` (seeds 0),
+            `navigator.{language, accept_language, languages, do_not_track}`,
+            `screen.refresh_rate`, `window.{keep_focus, maximized}` and
+            `_meta.{proxy_id, color, extensions, android_media}`.
+        folder: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+          description: Tag ids of the space.
+        is_default: { type: boolean, description: “New profile” in the launcher starts from it. }
+        updated_at: { type: integer, description: Unix seconds. }
+
+    TemplateRequest:
+      type: object
+      required: [name]
+      properties:
+        id:
+          type: string
+          description: Present updates that template; absent creates one.
+        name: { type: string }
+        profile_id:
+          type: string
+          description: The profile whose settings, folder, tags and fingerprint source it takes.
+        settings:
+          type: object
+          additionalProperties: true
+          description: A stored profile, or part of one; only what a template carries is kept.
+        source: { $ref: "#/components/schemas/TemplateSource" }
+        folder: { type: string }
+        tags:
+          type: array
+          items: { type: string }
+        is_default:
+          type: boolean
+          description: Absent keeps it as it is (false for a new one).
+
+    FromTemplateRequest:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Absent names it after the template with the lowest number free (“Ads 1”).
+        notes: { type: string }
+        folder:
+          type: string
+          description: Absent uses the template's folder.
 
     TrashEntry:
       type: object
@@ -1997,6 +2390,10 @@ components:
         - $ref: "#/components/schemas/ProfileMeta"
         - type: object
           properties:
+            tags:
+              type: array
+              items: { type: string }
+              description: Tag ids, as `GET /tags` names them.
             running: { type: boolean }
             pid: { type: integer, format: int64, nullable: true }
             cdp:
@@ -2085,6 +2482,9 @@ components:
         name: { type: string }
         country: { type: string }
         notes: { type: string }
+        change_ip_url:
+          type: string
+          description: "The provider's change-IP link (http/https). Kept on this computer only, never returned."
 
     ProxySummary:
       type: object

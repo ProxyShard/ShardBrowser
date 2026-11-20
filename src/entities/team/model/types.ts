@@ -38,7 +38,7 @@ export type TeamOverview = {
 export type CreatedMember = { member: TeamMember; invite: string };
 
 /** What the team's trash holds (space/admin.rs `TeamTrashRow`). */
-export type TeamTrashKind = "profile" | "proxy" | "bookmark" | "extension" | "automation" | "tag";
+export type TeamTrashKind = "profile" | "proxy" | "bookmark" | "extension" | "automation" | "tag" | "template";
 
 /** A row of the team's trash, as far as this launcher's token may see it. Times are unix seconds. */
 export type TeamTrashRow = {

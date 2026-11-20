@@ -314,7 +314,7 @@ test.describe("on a fresh install", () => {
     await openApp(page, { section: "proxies" });
     await oneTile("Add proxies");
     // The hint's quiet text button opens the same Buy flow as the header menu.
-    await expect(page.locator("main [data-empty-state] p").getByRole("button", { name: "or buy from ProxyShard" })).toBeVisible();
+    await expect(page.locator("main [data-empty-state] p").getByRole("button", { name: "or buy from ShardX" })).toBeVisible();
   });
 
   test("the Automation tile creates and opens a project", async ({ page }) => {

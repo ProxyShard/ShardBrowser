@@ -2,6 +2,14 @@ export type Settings = {
   browser_path: string | null;
   theme: string;
   geo_checker?: string | null;
+  /** #157: an own geo service (http/https), asked before the built-in ones. */
+  geo_custom_url?: string | null;
+  /** #157: host[:port] a proxy test connects to (example.com:443 when empty). */
+  probe_host?: string | null;
+  /** #157: host[:port] of the STUN server for the UDP test (Google's when empty). */
+  stun_server?: string | null;
+  /** #162: the shortcut for the in-browser "Change IP" ("Ctrl+Shift+U"); none, the button alone. */
+  change_ip_hotkey?: string | null;
   screen_resolution_mode?: string | null;
   api_enabled?: boolean;
   api_port?: number;
@@ -21,6 +29,8 @@ export type Settings = {
   extra_args?: string;
   /** Ask the Web Store about linked extensions every 5 h (on when absent). */
   ext_update_check?: boolean;
+  /** #154: the saved proxy the launcher reaches the Web Store through; none, it does not. */
+  store_proxy?: string | null;
 };
 
 /** Where profiles, user-data, extensions and the trash live. */

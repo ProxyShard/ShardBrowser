@@ -2,7 +2,9 @@ import { useId, useState, type RefObject } from "react";
 import { Input } from "@proxyshard/shardx-ui-kit";
 import { PropertySheet } from "../../../shared/ui/peek";
 import { useT } from "../../../shared/i18n";
-import { addTagName, patchDraft, patchForm, problemsOf, setFormPassword, useProfileForm, type ProfileFormDraft } from "../model/useProfileForm";
+import { addTagName, chooseTemplate, patchDraft, patchForm, problemsOf, setFormPassword, useProfileForm, type ProfileFormDraft } from "../model/useProfileForm";
+import { SelectField } from "../../../shared/ui/SelectField";
+import { useTemplates } from "../../../entities/template";
 import { KeyIcon } from "../../../shared/icons";
 import { PASSWORD_MIN, passwordProblem } from "../../../entities/profile";
 import { useProfilePasswords } from "../../../entities/settings";
@@ -13,7 +15,9 @@ import { TagsField } from "./TagsField";
 
 /// Basics: the name (required), its Folder, tags, color and notes, and a new
 /// profile's password while Settings allows one. The parts the walk through
-/// this form points at carry `data-tour`.
+/// this form points at carry `data-tour`. A new profile's form starts with the
+/// template it came from; a template's form (#145) names the template and has
+/// no notes, cookies or password: those are each profile's own.
 export function BasicsTab({ draft, nameRef }: { draft: ProfileFormDraft; nameRef: RefObject<HTMLInputElement | null> }) {
   const t = useT();
   const tried = useProfileForm((s) => s.tried);
@@ -28,13 +32,15 @@ export function BasicsTab({ draft, nameRef }: { draft: ProfileFormDraft; nameRef
   // A protected profile takes no cookies file: its cookies are sealed with it.
   const locked = useProfileForm((s) => s.unlocked !== null);
   const creating = useProfileForm((s) => s.mode === "create");
+  const template = useProfileForm((s) => s.mode === "template");
   const passwords = useProfilePasswords((s) => s.on);
   return (
     <div className="flex flex-col gap-4">
+      {creating && <TemplatePicker />}
       <div data-tour="form-name">
         <Input
           ref={nameRef}
-          label={t("profileForm.name")}
+          label={template ? t("templates.name") : t("profileForm.name")}
           inputSize="xsmall"
           wrapperClassName="gap-[6px]"
           required
@@ -59,11 +65,35 @@ export function BasicsTab({ draft, nameRef }: { draft: ProfileFormDraft; nameRef
             />
           </div>
           <ColorRow value={f.color} onChange={(color) => patchForm({ color })} />
-          <NotesRow value={f.notes} onChange={(notes) => patchForm({ notes })} />
-          {!team && !locked && <CookiesRow value={draft.cookies} onChange={(cookies) => patchDraft({ cookies })} />}
+          {!template && <NotesRow value={f.notes} onChange={(notes) => patchForm({ notes })} />}
+          {!team && !locked && !template && <CookiesRow value={draft.cookies} onChange={(cookies) => patchDraft({ cookies })} />}
         </div>
       </PropertySheet>
       {creating && passwords && <PasswordFields />}
+    </div>
+  );
+}
+
+/// The template a new profile starts from (#145), or a blank one: another
+/// pick starts the form over. Shown once the space has a template.
+function TemplatePicker() {
+  const t = useT();
+  const templates = useTemplates((s) => s.templates);
+  const current = useProfileForm((s) => s.template);
+  if (templates.length === 0) return null;
+  const BLANK = "blank:";
+  return (
+    <div data-template-picker>
+      <SelectField<string>
+        label={t("templates.startFrom")}
+        value={current ?? BLANK}
+        onChange={(v) => void chooseTemplate(v === BLANK ? null : v)}
+        isSearchable={templates.length > 8}
+        options={[
+          { value: BLANK, label: t("templates.blank") },
+          ...templates.map((x) => ({ value: x.id, label: x.name, ...(x.is_default ? { hint: t("templates.defaultMark") } : {}) })),
+        ]}
+      />
     </div>
   );
 }

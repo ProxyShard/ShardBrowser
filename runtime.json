@@ -1,20 +1,25 @@
 {
   "archives": {
-    "ShardX-Fingerprints.zip": "f18ad288bed2ac5e4599313d6312667b",
-    "ShardX-Linux.zip": "211e3d2582474c58100ccf32ad39a2a2-27",
-    "ShardX-Mac-arm64.zip": "53061ab891a2dc5ff5f35e0eff2f90f9-21",
+    "ShardX-Fingerprints.zip": "0c0a13d8962a648c1b8c3ffc633e14bb",
+    "ShardX-Linux.zip": "a776c26e99fbc59b486cdbd9b11d546c-26",
+    "ShardX-Mac-arm64.zip": "5ebb6ad2f9972ca3bc043b0d1c050621-20",
     "ShardX-Widevine-Linux.zip": "9b7d2697bc8ede2bd9fe72ccaaa2f15f-3",
     "ShardX-Widevine-Mac-arm64.zip": "c54f3fb0b47c47d8f4663ddd3b1f2cf4",
     "ShardX-Widevine-Win.zip": "8852779330edb7ac2096e0d21dc3afb5",
-    "ShardX-Windows.zip": "57a2ea084a8bb5c4199a5b436a678d1c-26"
+    "ShardX-Windows.zip": "6368a9a7870dbaeef6dba22276c25ef3-25"
   },
-  "chromium_version": "157.0.8103.50",
-  "android_chromium_version": "157.0.8103.50",
+  "chromium_version": "158.0.8127.36",
+  "android_chromium_version": "158.0.8127.42",
+  "desktop_chromium_versions": {
+    "macOS": "158.0.8127.37",
+    "Windows": "158.0.8127.37",
+    "Linux": "158.0.8127.36"
+  },
   "engine_build": "1",
   "min_launcher_version": "2.0.1",
   "min_sdk_version": "2.1.0",
-  "grease_brand": "Not-A.Brand",
-  "grease_version": "99",
+  "grease_brand": "Not.A/Brand",
+  "grease_version": "24",
   "tls": {
     "signature_algorithms": [
       2308,

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ShardBrowser Launcher",
-  "version": "2.1.5",
+  "version": "2.1.6",
   "identifier": "com.shardx.launcher",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -31,6 +31,7 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -44,6 +45,17 @@
     "windows": {
       "wix": {
         "upgradeCode": "004ac8c7-eb6d-5866-a3d7-d1cfd9d82f3d"
+      }
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEI5ODAyRDk4RDZDQjkxMDcKUldRSGtjdldtQzJBdVQzaHdJWmdrVzRyUE0yUHNJMExreUZ5cjNpMENwMG9NS3pDcXU0THpwdFcK",
+      "endpoints": [
+        "https://github.com/ProxyShard/ShardBrowser/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
       }
     }
   }

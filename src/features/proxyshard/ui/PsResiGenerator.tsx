@@ -153,7 +153,7 @@ export function PsResiGenerator({ open, type, onClose }: { open: boolean; type: 
       username: buildUser(session === "sticky" ? randSid() : null),
       password,
       country: country ? country.toUpperCase() : "",
-      notes: `ProxyShard residential (${plan})`,
+      notes: `ShardX residential (${plan})`,
     }));
     setSaving(true);
     try {

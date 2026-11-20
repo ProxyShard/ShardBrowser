@@ -15,6 +15,22 @@ pub struct Settings {
     /// One of "ip-api.com" | "ipapi.co" | "ipwho.is".
     #[serde(default)]
     pub geo_checker: Option<String>,
+    /// #157: the operator's own geo service (http/https), asked before the built-in ones.
+    #[serde(default)]
+    pub geo_custom_url: Option<String>,
+    /// #157: host[:port] the proxy test connects to instead of example.com:443.
+    #[serde(default)]
+    pub probe_host: Option<String>,
+    /// #157: host[:port] of the STUN server the UDP test uses instead of Google's.
+    #[serde(default)]
+    pub stun_server: Option<String>,
+    /// #154: the saved proxy the launcher reaches the Web Store through; none, it does not.
+    #[serde(default)]
+    pub store_proxy: Option<String>,
+    /// #162: the shortcut that presses a profile's in-browser "Change IP" ("Ctrl+Shift+U");
+    /// none, the button alone.
+    #[serde(default)]
+    pub change_ip_hotkey: Option<String>,
     /// "fingerprint" (use the screen from the bound fingerprint) or
     /// "real" (let ShardX use the host's real screen).
     #[serde(default)]
@@ -94,6 +110,11 @@ fn defaults() -> Settings {
         browser_path: None,
         theme: default_theme(),
         geo_checker: Some("ip-api.com".into()),
+        geo_custom_url: None,
+        probe_host: None,
+        stun_server: None,
+        store_proxy: None,
+        change_ip_hotkey: None,
         screen_resolution_mode: Some("fingerprint".into()),
         helper_enabled: default_true(),
         camera_enabled: default_true(),

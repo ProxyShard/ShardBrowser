@@ -11,7 +11,7 @@
  *  capitalizes (6.2), the What's new dialog, products, platforms and keys. */
 export const PROPER = new Set([
   "Trash", "Settings", "Peek", "What’s", "What's",
-  "ShardBrowser", "ProxyShard", "Shard", "Helper", "Launcher", "GitHub", "Google", "Chrome", "Chromium", "Web", "Store", "Widevine",
+  "ShardBrowser", "ProxyShard", "ShardX", "Cloudflare", "Shard", "Helper", "Launcher", "GitHub", "Google", "Chrome", "Chromium", "Web", "Store", "Widevine",
   "Node.js", "README", "PowerShell", "Finder", "Explorer", "Microsoft", "Apple", "Intel", "Edge",
   "macOS", "Windows", "Linux", "Android", "iOS",
   "Cmd", "Ctrl", "Shift", "Alt", "Option", "Enter", "Esc", "Tab", "Space", "Backspace", "Delete", "Home", "End",
@@ -19,10 +19,16 @@ export const PROPER = new Set([
   "English", "Chinese",
 ]);
 
-/** Words the glossary replaces (CONTEXT.md, "Words in the interface"). */
+/** The keys of the profile template's own copy (#145): the one place “template”
+ *  is the word, for a Profile template, never for a fingerprint (CONTEXT.md). */
+const PROFILE_TEMPLATE_KEY = /^(?:templates\.|commands\.saveAsTemplate$|settings\.(?:tabTemplates|templates\w*)$|team\.trashKindTemplate$|sync\.kindFoldersHelp$)/;
+
+/** Words the glossary replaces (CONTEXT.md, "Words in the interface"). `except`
+ *  names the keys a word is the glossary's own in. */
 export const BANNED = [
   { re: /\bcore\b/i, use: "“browser engine” (never “core”)" },
-  { re: /\btemplates?\b/i, use: "“fingerprint” (never “template”)" },
+  { re: /\b(?:fingerprint|library) templates?\b/i, use: "“fingerprint” (never “template”)" },
+  { re: /\btemplates?\b/i, use: "“fingerprint” (never “template”); “template” is a profile template’s word, in its own keys", except: PROFILE_TEMPLATE_KEY },
   { re: /\b(?:bind|binds|binding|bound)\b/i, use: "“assign” (UI verbs)" },
   { re: /\bdistribut(?:e|es|ed|ing)\b/i, use: "“assign” (UI verbs)" },
   { re: /\blaunch(?:es|ed|ing)?\b/i, use: "“start” (Start and Stop)" },
@@ -31,7 +37,7 @@ export const BANNED = [
   { re: /\bNothing matches\b/i, use: "“No results for “{q}””" },
   { re: /\bsynchroni[sz]\w*/i, use: "“in sync”" },
 ];
-/** The two banned words that also apply to the What's new notes (ruling 3). */
+/** The banned words that also apply to the What's new notes (ruling 3): a note may name profile templates. */
 const NOTE_BANNED = BANNED.slice(0, 2);
 
 const BRITISH = /\b(?:colour\w*|behaviour\w*|favourite\w*|licence|centre\w*|organis\w*|recognis\w*|synchronis\w*|cancelled|cancelling|postcode|untick\w*|tick|ticked|grey)\b/i;
@@ -96,13 +102,13 @@ export function capitalsInside(value) {
 
 const varsOf = (s) => [...String(s).matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort().join(",");
 const tagsOf = (s) => [...String(s).matchAll(/<([a-z][a-z0-9]*)>/gi)].map((m) => m[1]).sort().join(",");
-const banned = (value, list) => list.filter((b) => b.re.test(value)).map((b) => `use ${b.use}`).join("; ") || null;
+const banned = (value, list, key = "") => list.filter((b) => b.re.test(value) && !b.except?.test(key)).map((b) => `use ${b.use}`).join("; ") || null;
 
 /** Rules over one English value: `test(value, key)` returns a message or null. */
 const EN_RULES = [
   { id: "sentence-case", test: (v) => { const c = capitalsInside(v); return c.length ? `lowercase inside a sentence: ${c.join(", ")}` : null; } },
   { id: "us-spelling", test: (v) => (BRITISH.test(v) ? `US spelling: ${v.match(BRITISH)[0]}` : null) },
-  { id: "banned-word", test: (v) => banned(v, BANNED) },
+  { id: "banned-word", test: (v, key) => banned(v, BANNED, key) },
   { id: "straight-quote", test: (v) => (/"|[A-Za-z]'[A-Za-z]|(?:^|[\s(])'|'(?:[\s).,!?]|$)/.test(v) ? "curly quotes and apostrophes: “ ” ’" : null) },
   { id: "three-dots", test: (v) => (v.includes("...") ? "an ellipsis is one character: …" : null) },
   { id: "command-ellipsis", test: (v, key) => commandEllipsis(v, key) },

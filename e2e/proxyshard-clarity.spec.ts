@@ -288,7 +288,7 @@ test("opening ProxyShard by mouse shows no focus ring on the title", async ({ pa
   // focus on a click on macOS): the page hands the title the keyboard, with no ring.
   await page.locator("aside [data-nav='proxyshard']").dispatchEvent("click", { detail: 1 });
   const title = page.locator("main h1[data-page-title]");
-  await expect(title).toHaveText("ProxyShard");
+  await expect(title).toHaveText("ShardX");
   await expect(title).toBeFocused();
   expect(await title.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("none");
 });
@@ -298,7 +298,7 @@ test("opening ProxyShard from the keyboard keeps the title's ring", async ({ pag
   await page.locator("aside [data-nav='proxyshard']").focus();
   await page.keyboard.press("Enter");
   const title = page.locator("main h1[data-page-title]");
-  await expect(title).toHaveText("ProxyShard");
+  await expect(title).toHaveText("ShardX");
   await expect(title).toBeFocused();
   expect(await title.evaluate((el) => getComputedStyle(el).outlineStyle)).toBe("solid");
 });

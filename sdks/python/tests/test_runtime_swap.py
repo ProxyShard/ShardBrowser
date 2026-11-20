@@ -171,7 +171,7 @@ rt._swap_engine_tree(Path({str(self.root)!r}), {TOP!r}, staged, rename=rename)
         rt._swap_engine_tree(self.root, TOP, self.staged)
         self.assertEqual(version(self.live), "157")
 
-    @unittest.skipIf(sys.platform == "win32", "Windows refuses the rename itself")
+    @unittest.skipIf(sys.platform == "win32", "on Windows the browser's open files refuse the rename")
     def test_processes_running_from_the_engine_folder_are_counted(self):
         d = self.root / "engine"
         d.mkdir()
@@ -355,7 +355,8 @@ class InstallTest(unittest.TestCase):
 
     def test_an_update_swaps_the_engine_in_and_records_it_at_once(self):
         self.installed("156.0.0.1")
-        r = self.runtime(self.remote("157.0.0.1"), self.zip_bytes(self.entries("157.0.0.1")))
+        calls = []
+        r = self.runtime(self.remote("157.0.0.1"), self.zip_bytes(self.entries("157.0.0.1")), calls)
         seen = self.install(r)
         self.assertEqual(version(self.live), "157.0.0.1")
         self.assertFalse((self.live / "only-in-156.0.0.1").exists())
@@ -363,9 +364,10 @@ class InstallTest(unittest.TestCase):
         m = self.record()
         self.assertEqual(m["installed_chromium_version"], "157.0.0.1")
         self.assertEqual(m["browser_etag"], "e157.0.0.1")
-        # The CDM failed: no reason to fail the run, and not marked as present.
-        self.assertNotIn("widevine_etag", m)
-        self.assertTrue(any("Widevine" in w for w in seen), seen)
+        # The CDM comes from Google at launch, never from the CDN; the old record stays readable.
+        self.assertFalse(any("Widevine" in c for c in calls), calls)
+        self.assertEqual(m["widevine_etag"], "w1")
+        self.assertEqual(seen, [])
         self.assertFalse(self.staging.exists() or (self.root / ".install.lock").exists())
 
     def check_stays(self, body: bytes) -> None:

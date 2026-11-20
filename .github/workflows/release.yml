@@ -135,8 +135,17 @@ jobs:
           API_KEY: ${{ secrets.APPLE_API_KEY }}
           API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           API_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          UPDATER_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           # Presence only — never the values, which the log would keep.
+          # The updater key signs the packages the launcher updates itself from
+          # (#161); createUpdaterArtifacts makes the build fail without it.
+          if [ -n "$UPDATER_KEY" ]; then
+            echo "UPDATER_KEY: set"
+          else
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is not set: the launcher's update packages cannot be signed"
+            exit 1
+          fi
           missing=""
           for name in CERT CERT_PASSWORD IDENTITY API_KEY API_ISSUER API_P8; do
             if [ -n "${!name}" ]; then
@@ -169,6 +178,8 @@ jobs:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: npx tauri build --target ${{ matrix.target }}
 
@@ -251,8 +262,12 @@ jobs:
         if: runner.os != 'macOS' || steps.signing.outputs.apple != 'yes'
         # The Tauri bundler skips codesign / signtool only when the signing env
         # vars are UNSET — an empty string makes it import a cert and crash — so
-        # this step sets no signing vars at all. On macOS it runs only when the
+        # this step sets no Apple signing vars at all. On macOS it runs only when the
         # signing secrets are missing, and the release notes assume a signed app.
+        # The updater key is another matter: every build signs its update packages.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: npx tauri build --target ${{ matrix.target }}
 
       - name: Collect bundles
@@ -264,7 +279,8 @@ jobs:
             -type f \
             \( -name '*.dmg' -o -name '*.app.tar.gz' \
                -o -name '*.msi' -o -name '*.exe' \
-               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \) \
+               -o -name '*.AppImage' -o -name '*.deb' -o -name '*.rpm' \
+               -o -name '*.sig' \) \
             -exec cp -v {} staging/ \;
           ls -la staging/
 
@@ -325,6 +341,58 @@ jobs:
 
       - name: List collected bundles
         run: ls -la dist/
+
+      # What the launcher updates itself from (#161): the newest release's
+      # latest.json names the version and, per kind of install, the package and
+      # its signature. The keys carry the bundle type, so an MSI install gets
+      # the MSI and an AppImage the AppImage; the portable .exe has no type and
+      # is never offered a package (the launcher shows the release page).
+      - name: Write latest.json for the launcher's updater
+        shell: bash
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          cd dist
+          # GitHub turns spaces in asset names into dots: name them so here, and the URLs match.
+          for f in *' '*; do [ -e "$f" ] && mv -v "$f" "${f// /.}"; done
+          # The signatures go into latest.json, not onto the release page.
+          mkdir -p ../sigs
+          mv -v ./*.sig ../sigs/
+          python3 - <<'PY'
+          import datetime, json, os, sys, urllib.parse
+          tag, repo = os.environ["TAG"], os.environ["REPO"]
+          sigs = {f[:-4]: open(os.path.join("../sigs", f)).read().strip() for f in os.listdir("../sigs")}
+          files = [f for f in os.listdir(".") if f in sigs]
+          platforms = {}
+          def add(keys, test):
+              found = [f for f in files if test(f)]
+              if len(found) != 1:
+                  print(f"::warning::{keys[0]}: {len(found)} signed packages {found}; left out of latest.json")
+                  return
+              url = f"https://github.com/{repo}/releases/download/{tag}/{urllib.parse.quote(found[0])}"
+              for k in keys:
+                  platforms[k] = {"signature": sigs[found[0]], "url": url}
+          add(["darwin-aarch64-app", "darwin-aarch64"], lambda f: f.endswith(".app.tar.gz"))
+          add(["windows-x86_64-msi"], lambda f: f.endswith(".msi"))
+          add(["windows-x86_64-nsis"], lambda f: f.endswith("-setup.exe"))
+          add(["linux-x86_64-appimage"], lambda f: f.endswith(".AppImage"))
+          add(["linux-x86_64-deb"], lambda f: f.endswith(".deb"))
+          add(["linux-x86_64-rpm"], lambda f: f.endswith(".rpm"))
+          for must in ("darwin-aarch64-app", "windows-x86_64-msi", "linux-x86_64-appimage"):
+              if must not in platforms:
+                  sys.exit(f"::error::no signed package for {must}")
+          doc = {
+              "version": tag.removeprefix("v"),
+              "notes": f"https://github.com/{repo}/releases/tag/{tag}",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }
+          with open("latest.json", "w") as out:
+              json.dump(doc, out, indent=2)
+          for k, v in platforms.items():
+              print(f"{k}: {v['url']}")
+          PY
 
       - name: Create / update GitHub Release
         uses: softprops/action-gh-release@v2

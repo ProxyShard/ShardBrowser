@@ -1,7 +1,7 @@
-"""Runtime cache: download ShardX engine + Widevine CDM + fingerprint library
-from the ProxyShard CDN, extract into a per-user cache dir, place Widevine
-inside the engine bundle, and remember etags so subsequent runs are
-zero-network. Mirrors src-tauri/src/runtime.rs in the launcher."""
+"""Runtime cache: download ShardX engine + fingerprint library from the
+ProxyShard CDN, extract into a per-user cache dir, and remember etags so
+subsequent runs are zero-network. Mirrors src-tauri/src/runtime.rs in the
+launcher. The Widevine CDM comes from Google at launch (widevine.py)."""
 from __future__ import annotations
 
 import errno
@@ -26,9 +26,9 @@ from typing import Callable, Optional
 import httpx
 
 PUB_BASE = "https://pub-e57a7c60f6934eb09a6600bf2fc59cdc.r2.dev"
-CHROMIUM_VERSION = "157.0.8103.50"
+CHROMIUM_VERSION = "158.0.8127.36"
 # This SDK's own version, compared against the manifest's `min_sdk_version`.
-SDK_VERSION = "2.1.6"
+SDK_VERSION = "2.1.7"
 # Version manifest (GitHub raw) — one tiny GET tells us every archive's current
 # etag, so we never poll R2/S3 (no per-archive HEAD). Updated archives are then
 # pulled from PUB_BASE only when their etag changed.
@@ -55,9 +55,7 @@ class Archive:
 @dataclass(frozen=True)
 class HostSpec:
     browser: Archive
-    widevine: Optional[Archive]
     binary_subpath: tuple[str, ...]   # path under runtime/ to the executable
-    widevine_subpath: tuple[str, ...] # destination for the WidevineCdm dir
 
 
 def host_spec() -> HostSpec:
@@ -66,25 +64,17 @@ def host_spec() -> HostSpec:
     if sysname == "darwin" and arch in ("arm64", "aarch64"):
         return HostSpec(
             browser=Archive("ShardX-Mac-arm64.zip", "ShardX browser (macOS arm64)"),
-            widevine=Archive("ShardX-Widevine-Mac-arm64.zip", "Widevine CDM"),
             binary_subpath=("ShardX-Mac-arm64", "ShardX.app", "Contents", "MacOS", "ShardX"),
-            widevine_subpath=("ShardX-Mac-arm64", "ShardX.app", "Contents", "Frameworks",
-                              "ShardX Framework.framework", "Versions", CHROMIUM_VERSION,
-                              "Libraries", "WidevineCdm"),
         )
     if sysname == "win32" and arch in ("amd64", "x86_64"):
         return HostSpec(
             browser=Archive("ShardX-Windows.zip", "ShardX browser (Windows x64)"),
-            widevine=Archive("ShardX-Widevine-Win.zip", "Widevine CDM"),
             binary_subpath=("ShardX-Windows", "chrome.exe"),
-            widevine_subpath=("ShardX-Windows", "WidevineCdm"),
         )
     if sysname.startswith("linux") and arch in ("x86_64", "amd64"):
         return HostSpec(
             browser=Archive("ShardX-Linux.zip", "ShardX browser (Linux x64)"),
-            widevine=Archive("ShardX-Widevine-Linux.zip", "Widevine CDM"),
             binary_subpath=("ShardX-Linux", "chrome"),
-            widevine_subpath=("ShardX-Linux", "WidevineCdm"),
         )
     raise RuntimeError(
         f"Unsupported host: {sysname}/{arch}. ShardX ships mac-arm64, win-x64, linux-x64."
@@ -125,9 +115,11 @@ def apply_engine_version(
     version the profile claims: 152 added the ML-DSA schemes 0x0904-0x0906, so
     a 149-era profile is eleven entries short and reads as a mismatch.
 
-    `android_version` is the Chrome for Android build of the same major, passed
-    for phone profiles: Android ships its own build numbers, and a phone
-    reporting a desktop one claims a build no phone has."""
+    `android_version` is the build this profile's OS is shipped, when it is not
+    `chromium_version`: the Chrome for Android build of the same major for a
+    phone (a phone reporting a desktop build claims one no phone has), or the
+    manifest's `desktop_chromium_versions` entry for a desktop profile (158
+    went out as .37 for macOS and Windows and .36 for Linux)."""
     parts = chromium_version.split(".")
     if len(parts) != 4:
         return
@@ -197,16 +189,27 @@ def adopt_library_fields(config: dict, fingerprints_dir: Path) -> None:
     launcher's `adopt_value`."""
     meta = config.get("_meta") if isinstance(config.get("_meta"), dict) else {}
     key = next((k for k in (meta.get("gpu_preset_id"), config.get("name")) if isinstance(k, str) and k), None)
-    if not key or not re.fullmatch(r"[A-Za-z0-9._-]+", key):
-        return
-    path = Path(fingerprints_dir) / f"{key}.json"
-    try:
-        src = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    successor = RETIRED_TEMPLATES.get(key) if key else None
+    pick = successor or key
+    src = None
+    if pick and re.fullmatch(r"[A-Za-z0-9._-]+", pick):
+        try:
+            src = json.loads((Path(fingerprints_dir) / f"{pick}.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            src = None
+    # A phone's fixes need no template; the version takes the template's when there is one.
+    _adopt_phone_angle_webgl(config)
+    _adopt_phone_platform_version(config, src if isinstance(src, dict) else None, Path(fingerprints_dir))
+    _adopt_desktop_min_cores(config)
+    if not isinstance(src, dict):
         return
     for k in ("fonts", "fonts_local"):
         if k not in config and k in src:
             config[k] = src[k]
+    _adopt_laptop_battery(config, src)
+    _adopt_air15_screen(config, src)
+    _adopt_linux_gl_webgl(config, src, successor)
+    _adopt_webgl_extensions(config, src)
     w, sw = config.get("webgpu"), src.get("webgpu")
     if not isinstance(w, dict) or not isinstance(sw, dict):
         return
@@ -219,6 +222,210 @@ def adopt_library_fields(config: dict, fingerprints_dir: Path) -> None:
         v = sw.get(k)
         if same_gpu and isinstance(v, int) and not isinstance(v, bool):
             w[k] = v
+
+
+def _is_desktop_battery(b) -> bool:
+    """Plugged in and full: what the library pinned on every desktop template until 18.11,
+    and the one state a machine without a battery reports."""
+    if not isinstance(b, dict):
+        return False
+
+    def num(k):
+        v = b.get(k)
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+    return b.get("charging") is True and num("level") == 1 and num("charging_time") == 0
+
+
+def _adopt_laptop_battery(config: dict, src: dict) -> None:
+    """A laptop profile still carrying that battery takes the template's {"laptop": true};
+    the engine then picks its own state from the profile's seed."""
+    sb = src.get("battery")
+    if isinstance(sb, dict) and sb.get("laptop") is True and _is_desktop_battery(config.get("battery")):
+        config["battery"] = {"laptop": True}
+
+
+def _adopt_air15_screen(config: dict, src: dict) -> None:
+    """MacBook Air 15" templates claimed 1680x1050; they now claim 1710x1112. A profile with
+    the old size moves, its window with it."""
+    s, w, ss = config.get("screen"), config.get("window"), src.get("screen")
+    if not (isinstance(s, dict) and isinstance(w, dict) and isinstance(ss, dict)):
+        return
+    if (s.get("width"), s.get("height")) != (1680, 1050) or (ss.get("width"), ss.get("height")) != (1710, 1112):
+        return
+    try:
+        avail_h, outer_h, inner_h = int(s["avail_height"]), int(w["outer_height"]), int(w["inner_height"])
+    except (KeyError, TypeError, ValueError):
+        return
+    new_avail = 1112 - (1050 - avail_h)
+    new_outer = new_avail - (avail_h - outer_h)
+    s.update(width=1710, height=1112, avail_width=1710, avail_height=new_avail)
+    w.update(outer_width=1710, inner_width=1710, outer_height=new_outer,
+             inner_height=new_outer - (outer_h - inner_h))
+
+
+# Library ids dropped for another GPU: the Cedar capture (a PrimeOS tablet's bare driver
+# string) became an RX 6800 on 20.11. A retired id loads its successor, and its file goes.
+RETIRED_TEMPLATES = {"linux-unknown-amdcedardr": "linux-navi21"}
+
+
+def _adopt_linux_gl_webgl(config: dict, src: dict, successor: Optional[str]) -> None:
+    """Linux templates claimed Vulkan until 20.11, which Chrome on Linux never reports (ANGLE
+    draws through GLX there): such a profile, or one from a retired template, takes the
+    template's whole WebGL block. Notes still holding the old renderer take the template's; a
+    retired template's tablet platform and touch screen take the new one's. An empty list or
+    table stays."""
+    g, sg, nav = config.get("webgl"), src.get("webgl"), config.get("navigator")
+    if not (isinstance(g, dict) and isinstance(sg, dict) and isinstance(nav, dict)):
+        return
+    have = g.get("renderer") if isinstance(g.get("renderer"), str) else ""
+    want = sg.get("renderer") if isinstance(sg.get("renderer"), str) else ""
+    ua = nav.get("user_agent") if isinstance(nav.get("user_agent"), str) else ""
+    glx = want.startswith("ANGLE (") and ", OpenGL " in want and "OpenGL ES" not in want
+    if "X11; Linux" not in ua or not glx or have == want or not (successor or ", Vulkan " in have):
+        return
+    for k, v in sg.items():
+        cur = g.get(k)
+        if not (isinstance(cur, (list, dict)) and not cur):
+            g[k] = v
+    if config.get("notes") == have and "notes" in src:
+        config["notes"] = src["notes"]
+    if not successor:
+        return
+    snav = src.get("navigator")
+    if isinstance(snav, dict):
+        for k in ("platform_value", "max_touch_points"):
+            if k in snav:
+                nav[k] = snav[k]
+    meta = config.get("_meta")
+    if isinstance(meta, dict) and "gpu_preset_id" in meta:
+        meta["gpu_preset_id"] = successor
+
+
+def _adopt_webgl_extensions(config: dict, src: dict) -> None:
+    """WebGL extensions and getParameter answers the template gained for the same GPU
+    (Chrome 158 added WEBGL_shader_pixel_local_storage and its two limits): added, never
+    removed or changed. An empty list or table means "the host's own" and stays."""
+    g, sg = config.get("webgl"), src.get("webgl")
+    if not (isinstance(g, dict) and isinstance(sg, dict)):
+        return
+    if not g.get("renderer") or g.get("renderer") != sg.get("renderer"):
+        return
+    for k in ("extensions", "extensions_v2"):
+        have, want = g.get(k), sg.get(k)
+        if isinstance(have, list) and have and isinstance(want, list):
+            have.extend(e for e in want if isinstance(e, str) and e not in have)
+    have, want = g.get("parameters"), sg.get("parameters")
+    if isinstance(have, dict) and have and isinstance(want, dict):
+        for k, v in want.items():
+            have.setdefault(k, v)
+
+
+def _adopt_desktop_min_cores(config: dict) -> None:
+    """A desktop profile claiming 1-3 logical cores claims 4: a page can time workers on the
+    real machine, and anti.bot flags a claim under 8 whose workers scale past twice it."""
+    nav = config.get("navigator")
+    if config_claims_mobile(config) or not isinstance(nav, dict):
+        return
+    n = nav.get("hardware_concurrency")
+    if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= 3:
+        nav["hardware_concurrency"] = 4
+
+
+def config_claims_mobile(config: dict) -> bool:
+    """Whether a config claims a phone: the engine's three signals, in its order."""
+    ch = config.get("client_hints") if isinstance(config.get("client_hints"), dict) else {}
+    if ch.get("mobile") is True:
+        return True
+    if str(ch.get("platform") or "").lower().startswith("android"):
+        return True
+    nav = config.get("navigator") if isinstance(config.get("navigator"), dict) else {}
+    return "android" in str(nav.get("user_agent") or "").lower()
+
+
+# Android majors Chrome 158 runs on (10 and up); raise the top when a new Android ships.
+_ANDROID_MAJORS = (10, 17)
+
+
+def is_android_release(version: str) -> bool:
+    """A version Chrome on Android reports: the release as "<major>.0.0"."""
+    m = re.fullmatch(r"(\d+)\.0\.0", version or "")
+    return bool(m) and _ANDROID_MAJORS[0] <= int(m.group(1)) <= _ANDROID_MAJORS[1]
+
+
+# GPU makers whose bare driver strings the Android templates carried before 19.11.
+_PHONE_GL_MAKERS = ("Qualcomm", "ARM")
+
+
+def _adopt_phone_angle_webgl(config: dict) -> None:
+    """A phone's bare WebGL vendor/renderer in the ANGLE form Chrome on Android reports (#131):
+    "Qualcomm" / "Adreno (TM) 619" become "Google Inc. (Qualcomm)" / "ANGLE (Qualcomm, Adreno (TM) 619, OpenGL ES 3.2)"."""
+    g = config.get("webgl")
+    if not config_claims_mobile(config) or not isinstance(g, dict):
+        return
+    maker = next((m for m in _PHONE_GL_MAKERS if g.get("vendor") in (m, f"Google Inc. ({m})")), None)
+    if maker is None:
+        return
+    g["vendor"] = f"Google Inc. ({maker})"
+    r = g.get("renderer")
+    if isinstance(r, str) and r and not r.startswith("ANGLE ("):
+        g["renderer"] = f"ANGLE ({maker}, {r}, OpenGL ES 3.2)"
+
+
+def _platform_version(o, block: str) -> str:
+    b = o.get(block) if isinstance(o, dict) else None
+    v = b.get("platform_version") if isinstance(b, dict) else None
+    return v if isinstance(v, str) else ""
+
+
+def _adopt_phone_platform_version(config: dict, src: Optional[dict], fingerprints_dir: Path) -> None:
+    """A phone's platform_version that is no Android release (a desktop's, carried over by a
+    template pick before #131) becomes its template's, else that of a template of the same
+    model; else it stays. Never the user agent's: Chrome 158 on Android always says
+    "Android 10" there."""
+    if not config_claims_mobile(config):
+        return
+    # The engine reads client_hints over navigator.
+    current = _platform_version(config, "client_hints") or _platform_version(config, "navigator")
+    if not current or is_android_release(current):
+        return
+
+    def release(t) -> str:
+        v = _platform_version(t, "client_hints")
+        return v if is_android_release(v) else ""
+
+    want = release(src) or _newest_of_model(config, fingerprints_dir, release)
+    if not want:
+        return
+    for b in ("client_hints", "navigator"):
+        v = _platform_version(config, b)
+        if v and not is_android_release(v):
+            config[b]["platform_version"] = want
+
+
+def _newest_of_model(config: dict, fingerprints_dir: Path, release) -> str:
+    """The newest release a library template of the profile's model carries: two can differ."""
+    ch = config.get("client_hints")
+    model = ch.get("model") if isinstance(ch, dict) else None
+    if not isinstance(model, str) or not model:
+        return ""
+    best = ""
+    try:
+        files = sorted(fingerprints_dir.glob("*.json"))
+    except OSError:
+        return ""
+    for f in files:
+        try:
+            t = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        tch = t.get("client_hints") if isinstance(t, dict) else None
+        if not isinstance(tch, dict) or tch.get("model") != model:
+            continue
+        v = release(t)
+        if v and int(v.split(".")[0]) > int((best or "0").split(".")[0]):
+            best = v
+    return best
 
 
 # WebGPU features Chrome 156 reports on Apple M-series that older templates lack.
@@ -278,6 +485,9 @@ class Runtime:
         self._grease_version: Optional[str] = None
         # Chrome for Android build of the engine's major, for phone profiles.
         self._android_version: Optional[str] = None
+        # The build each desktop OS is shipped ({"macOS": ..., "Windows": ..., "Linux": ...}),
+        # when it is not the engine's own: 158 went out as .37 for macOS/Windows, .36 for Linux.
+        self._desktop_versions: Optional[dict] = None
         # TLS block from the manifest (signature_algorithms / cipher_suites).
         # Applied to profiles on launch so the JA4 hash keeps matching the
         # Chrome version the profile claims.
@@ -302,6 +512,11 @@ class Runtime:
     @property
     def binary_path(self) -> Path:
         return self.root.joinpath(*self._spec.binary_subpath)
+
+    @property
+    def widevine_cache_dir(self) -> Path:
+        """The Widevine CDM fetched from Google, copied into each profile at launch."""
+        return self.root / "widevine-cdm"
 
     @property
     def fingerprints_dir(self) -> Path:
@@ -332,6 +547,19 @@ class Runtime:
     def android_chromium_version(self) -> Optional[str]:
         """Chrome for Android build phone profiles report; set on install()."""
         return self._android_version
+
+    @property
+    def desktop_chromium_versions(self) -> Optional[dict]:
+        """The build each desktop OS reports, keyed as navigator.platform names it; set on
+        install(). An OS it does not name reports `chromium_version`."""
+        return self._desktop_versions
+
+    def claimed_chromium_version(self, platform: str, mobile: bool) -> Optional[str]:
+        """The build a profile of this platform reports instead of `chromium_version`, if any."""
+        if mobile:
+            return self._android_version
+        v = (self._desktop_versions or {}).get(platform)
+        return v if isinstance(v, str) and v else None
 
     @property
     def tls(self) -> Optional[dict]:
@@ -455,6 +683,8 @@ class Runtime:
         self._grease_brand = local.get("installed_grease_brand") or None
         self._grease_version = local.get("installed_grease_version") or None
         self._android_version = local.get("installed_android_chromium_version") or None
+        dv = local.get("installed_desktop_chromium_versions")
+        self._desktop_versions = dv if isinstance(dv, dict) else None
         tls = local.get("installed_tls")
         self._tls = tls if isinstance(tls, dict) else None
 
@@ -463,6 +693,8 @@ class Runtime:
         self._grease_brand = local.get("installed_grease_brand") or None
         self._grease_version = local.get("installed_grease_version") or None
         self._android_version = local.get("installed_android_chromium_version") or None
+        dv = local.get("installed_desktop_chromium_versions")
+        self._desktop_versions = dv if isinstance(dv, dict) else None
         tls = local.get("installed_tls")
         self._tls = tls if isinstance(tls, dict) else None
 
@@ -504,6 +736,10 @@ class Runtime:
         self._grease_version = offered.get("grease_version") or local.get("installed_grease_version") or None
         self._android_version = (offered.get("android_chromium_version")
                                  or local.get("installed_android_chromium_version") or None)
+        dv = offered.get("desktop_chromium_versions")
+        if not isinstance(dv, dict):
+            dv = local.get("installed_desktop_chromium_versions")
+        self._desktop_versions = dv if isinstance(dv, dict) else None
         remote_tls = offered.get("tls")
         if not isinstance(remote_tls, dict):
             remote_tls = local.get("installed_tls")
@@ -551,22 +787,9 @@ class Runtime:
             if manifest.get("engine_build"):
                 local["installed_engine_build"] = manifest["engine_build"]
             # Saved at once: the engine on disk is the new one, whatever fails next.
-            # The new tree has no CDM yet, so the old one's etag must not say it has.
             local["installed_chromium_version"] = self._chromium_version
             self._record_descriptor(local, manifest)
-            local.pop("widevine_etag", None)
             self._save_manifest(local)
-        if self._spec.widevine and (swapped or not local.get("widevine_etag")):
-            # The CDM is no reason to fail a run whose engine is in: tried again next time.
-            try:
-                local["widevine_etag"] = self._download_and_extract(self._spec.widevine, self.root)
-                self._place_widevine()
-            except Exception as e:
-                warnings.warn(
-                    f"[shardx] Widevine CDM not installed ({e}); tried again on the next run.",
-                    RuntimeWarning,
-                    stacklevel=3,
-                )
         # Fingerprints — additive seed (etag changed → re-extract, never
         # overwrites user-renamed files).
         fp_remote = remote.get(FINGERPRINTS_ARCHIVE.key)
@@ -601,6 +824,8 @@ class Runtime:
                 local[dst] = manifest[src]
         if isinstance(manifest.get("tls"), dict):
             local["installed_tls"] = manifest["tls"]
+        if isinstance(manifest.get("desktop_chromium_versions"), dict):
+            local["installed_desktop_chromium_versions"] = manifest["desktop_chromium_versions"]
 
     def _fetch_manifest(self) -> dict:
         """Fetch the version manifest (GitHub raw) — one request that yields
@@ -616,11 +841,6 @@ class Runtime:
                 return data if isinstance(data, dict) else {}
         except Exception:
             return {}
-
-    def _download_and_extract(self, arch: Archive, dest: Path) -> str:
-        tmp, etag = self._download(arch, dest)
-        self._extract_archive(tmp, dest)
-        return etag
 
     def _download(self, arch: Archive, dest: Path, unpacks: bool = False) -> tuple[Path, str]:
         """Fetch `arch` beside `dest` without touching what is installed.
@@ -760,29 +980,6 @@ class Runtime:
         _swap_engine_tree(self.root, top, staging / top)
         shutil.rmtree(staging, ignore_errors=True)
 
-    def _place_widevine(self) -> None:
-        if not self._spec.widevine:
-            return
-        # Source dir inside the extracted Widevine archive (mirrors the
-        # `ShardX-Widevine-<plat>/WidevineCdm` layout from the launcher).
-        wrapper_name = self._spec.widevine.key.removesuffix(".zip")
-        src = self.root / wrapper_name / "WidevineCdm"
-        if not src.exists():
-            return
-        # On macOS the CDM sits inside the framework's versioned folder. That
-        # is the version of the engine on disk, not the one this SDK was
-        # published with: the constant put it in a folder the engine never
-        # reads.
-        on_disk = self._installed_engine_version() or CHROMIUM_VERSION
-        dst = self.root.joinpath(*(
-            on_disk if seg == CHROMIUM_VERSION else seg for seg in self._spec.widevine_subpath
-        ))
-        if dst.exists():
-            shutil.rmtree(dst)
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), str(dst))
-        shutil.rmtree(self.root / wrapper_name, ignore_errors=True)
-
     def _install_fingerprints(self) -> None:
         url = f"{PUB_BASE}/{FINGERPRINTS_ARCHIVE.key}"
         staging = self.fingerprints_dir / ".staging"
@@ -812,6 +1009,8 @@ class Runtime:
         for p in walk.iterdir():
             if p.suffix == ".json":
                 shutil.copy(p, self.fingerprints_dir / p.name)
+        for old in RETIRED_TEMPLATES:
+            (self.fingerprints_dir / f"{old}.json").unlink(missing_ok=True)
         shutil.rmtree(staging, ignore_errors=True)
 
 
@@ -1031,7 +1230,8 @@ def _assert_room(d: Path, need: int) -> None:
 
 def _processes_under(d: Path) -> int:
     """How many processes run from `d`. On macOS and Linux a swap would pull
-    the files from under them; Windows refuses the rename itself."""
+    the files from under them; on Windows the files a running browser holds
+    open make the rename fail."""
     if not os.path.isdir(d):
         return 0
     roots = {os.path.abspath(d).rstrip(os.sep) + os.sep, os.path.realpath(d).rstrip(os.sep) + os.sep}

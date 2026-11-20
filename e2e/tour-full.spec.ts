@@ -111,7 +111,7 @@ async function walk(page: Page, check: (entry: Entry, i: number) => Promise<void
 /** The page names the cards show, which are the sidebar's labels. */
 const PAGE_NAME: Record<string, string> = {
   profiles: "All profiles", proxies: "Proxies", fingerprints: "Fingerprints", extensions: "Extensions",
-  bookmarks: "Bookmarks", automation: "Automation", proxyshard: "ProxyShard", settings: "Settings", trash: "Trash",
+  bookmarks: "Bookmarks", automation: "Automation", proxyshard: "ShardX", settings: "Settings", trash: "Trash",
 };
 
 /** A quiet line above the step's title: the page's icon (14 px) and name. */
