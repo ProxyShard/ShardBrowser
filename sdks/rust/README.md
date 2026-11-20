@@ -1,10 +1,12 @@
 # `shardx` — Rust SDK
 
-Self-contained Rust SDK for the **ShardBrowser anti-detect browser** by the
-[ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)
-team (formerly ProxyShard). Same surface as the [Python](../python) and [Node](../node) SDKs: on
+Self-contained Rust SDK for the **ShardBrowser anti-detect browser**.
+
+ShardBrowser is a free, open-source project. It works with any HTTP/SOCKS5 proxy. Disclosure: the maintainers also work as contractors for ShardX, a proxy provider. ShardX does not own or fund this project.
+
+Same surface as the [Python](../python) and [Node](../node) SDKs: on
 first use it downloads the engine and the bundled fingerprint library from
-the ProxyShard CDN into a per-user cache dir, then launches isolated profiles
+our CDN into a per-user cache dir, then launches isolated profiles
 with the exact spoofing flags the desktop launcher uses. The Widevine CDM comes
 from Google's component update server, as Chrome gets it, and is put into each
 profile before it starts.

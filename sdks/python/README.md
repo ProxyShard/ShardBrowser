@@ -1,7 +1,8 @@
 # shardx (Python)
 
-Self-contained Python SDK for the **ShardBrowser anti-detect browser** by the
-[ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher) team (formerly ProxyShard).
+Self-contained Python SDK for the **ShardBrowser anti-detect browser**.
+
+ShardBrowser is a free, open-source project. It works with any HTTP/SOCKS5 proxy. Disclosure: the maintainers also work as contractors for ShardX, a proxy provider. ShardX does not own or fund this project.
 
 This package does **not** depend on the desktop launcher. On first use
 it downloads the patched Chromium 158 engine and the 220-profile

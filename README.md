@@ -40,8 +40,9 @@
   <a href="#usage">Usage</a>
 </p>
 
-ShardBrowser is built by the **[ShardX](https://shardx.com?utm_source=shardx&utm_medium=referral&utm_campaign=shardx-launcher)** team (formerly ProxyShard).
-ProxyShard provides full **SOCKS5 UDP relay** support (RFC 1928 §7) and
+ShardBrowser is a free, open-source project. It works with any HTTP/SOCKS5 proxy. Disclosure: the maintainers also work as contractors for ShardX, a proxy provider. ShardX does not own or fund this project.
+
+ShardX provides full **SOCKS5 UDP relay** support (RFC 1928 §7) and
 active **p0f TCP fingerprint spoofing** at the proxy exit. This keeps the
 operating system presented by the proxy consistent with the SYN/ACK shape
 seen by websites. ShardBrowser is the anti-detect browser stack built to use
@@ -117,7 +118,7 @@ profile, persistent cookies, Widevine pre-warming and QUIC over the
 proxy UDP relay. WebRTC traffic follows the configured proxy policy and
 does not expose the host IP.
 
-ShardBrowser is free to use. ProxyShard proxies support end-to-end QUIC and
+ShardBrowser is free to use. ShardX proxies support end-to-end QUIC and
 WebRTC over SOCKS5 UDP relay. Other proxy providers can also be used,
 but full QUIC and WebRTC operation requires SOCKS5 UDP relay support.
 
