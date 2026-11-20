@@ -2,7 +2,7 @@
 name = "shardx"
 version = "2.1.7"
 description = "Self-contained Python SDK for the ShardBrowser anti-detect browser — downloads the engine + Widevine + fingerprint library on first use, launches isolated profiles."
-authors = [{ name = "ProxyShard", email = "support@shardx.com" }]
+authors = [{ name = "ShardBrowser contributors", email = "support@shardx.com" }]
 license = { text = "MIT" }
 readme = "README.md"
 requires-python = ">=3.9"

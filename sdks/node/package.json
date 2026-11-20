@@ -38,7 +38,7 @@
     "playwright",
     "cdp"
   ],
-  "author": "ProxyShard",
+  "author": "ShardBrowser contributors",
   "license": "MIT",
   "homepage": "https://shardbrowser.com/sdk/node",
   "repository": {

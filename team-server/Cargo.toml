@@ -2,7 +2,7 @@
 name = "shardbrowser-team-server"
 version = "2.1.6"
 description = "Self-hosted team server for ShardBrowser: team profiles, member tokens and live permissions."
-authors = ["ProxyShard"]
+authors = ["ShardBrowser contributors"]
 edition = "2021"
 
 # A library too, so a launcher test can run a real server in-process.

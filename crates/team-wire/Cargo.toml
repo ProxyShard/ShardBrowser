@@ -2,7 +2,7 @@
 name = "team-wire"
 version = "0.1.0"
 description = "The encrypted link between the ShardBrowser launcher and its team server, shared by both."
-authors = ["ProxyShard"]
+authors = ["ShardBrowser contributors"]
 edition = "2021"
 publish = false
 

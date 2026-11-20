@@ -2,7 +2,7 @@
 name = "shardbrowser-launcher"
 version = "2.1.6"
 description = "ShardBrowser Launcher: profiles, proxies, fingerprints and automation for the ShardBrowser engine."
-authors = ["ProxyShard"]
+authors = ["ShardBrowser contributors"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

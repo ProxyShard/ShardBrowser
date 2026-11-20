@@ -2,7 +2,7 @@
 name = "team-model"
 version = "0.1.0"
 description = "The team rights model, shared by the ShardBrowser launcher and its team server."
-authors = ["ProxyShard"]
+authors = ["ShardBrowser contributors"]
 edition = "2021"
 publish = false
 
