@@ -1,0 +1,109 @@
+name: Build ShardX Chinese
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Set up Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Add Simplified Chinese UI layer
+        shell: pwsh
+        run: |
+          $zh = @'
+          const M: Record<string,string> = {
+            "Workspace":"工作区","Browsers":"浏览器环境","Browser":"浏览器","Proxies":"代理","Proxy":"代理",
+            "Library":"资源库","Fingerprints":"指纹模板","Fingerprint":"指纹","System":"系统","Settings":"设置",
+            "Profiles":"环境数量","Profile":"浏览器环境","Running":"运行中","Idle":"空闲","Search...":"搜索...",
+            "Import":"导入","Export":"导出","From template":"从模板创建","+ New profile":"+ 新建环境","New profile":"新建环境",
+            "All":"全部","Name":"名称","Status":"状态","Notes":"备注","Time":"时间","No profiles yet":"还没有浏览器环境",
+            "Light":"浅色","Dark":"深色","up to date":"已是最新版本","Download MCP":"下载 MCP","Documentation":"使用文档",
+            "Cancel":"取消","Delete":"删除","Save":"保存","Create":"创建","Edit":"编辑","Start":"启动","Stop":"停止",
+            "Locale":"语言与地区","Language":"语言","Timezone":"时区","Geolocation":"地理位置","Operating system":"操作系统",
+            "CPU cores":"CPU 核心数","Memory (GB)":"内存 (GB)","Canvas":"Canvas","WebGL":"WebGL","Audio":"音频",
+            "Client rects":"客户端矩形","Sensors":"传感器","Fonts":"字体","Ports to block":"需要屏蔽的端口",
+            "Do Not Track":"禁止跟踪","IDENTITY":"身份","NOISE":"噪声防护","PRIVACY":"隐私","MEDIA DEVICES":"媒体设备",
+            "Mic in":"麦克风输入","Speakers":"扬声器","Webcam":"摄像头","Real":"真实","Auto noise":"自动噪声",
+            "Auto (from proxy geo)":"自动（根据代理地区）","Manual coords":"手动坐标","— direct connection —":"— 直接连接 —",
+            "AUTOMATION API":"自动化 API","No proxy":"不使用代理","Add proxy":"添加代理","New proxy":"新建代理",
+            "Proxy manager":"代理管理","Import proxies":"导入代理","Bulk import":"批量导入","Check proxy":"检测代理"
+          };
+          const A = ["placeholder","title","aria-label"] as const;
+          function tx(n: Text) { const r=n.nodeValue??"", k=r.trim(), v=M[k]; if(v) n.nodeValue=r.replace(k,v); }
+          function ta(e: Element) { for(const a of A){ const v=e.getAttribute(a); if(v&&M[v.trim()]) e.setAttribute(a,M[v.trim()]); } }
+          function walk(n: Node) { if(n.nodeType===Node.TEXT_NODE){tx(n as Text);return;} if(n.nodeType===Node.ELEMENT_NODE)ta(n as Element); n.childNodes.forEach(walk); }
+          export function installZhCN(){
+            document.documentElement.lang="zh-CN";
+            const start=()=>{
+              walk(document.body);
+              new MutationObserver(ms=>ms.forEach(m=>{if(m.type==="characterData")tx(m.target as Text);m.addedNodes.forEach(walk);})).observe(document.body,{subtree:true,childList:true,characterData:true});
+            };
+            document.body?start():window.addEventListener("DOMContentLoaded",start,{once:true});
+          }
+          '@
+          Set-Content -Path "src/zh-cn.ts" -Value $zh -Encoding UTF8
+
+          $main = Get-Content "src/main.tsx" -Raw -Encoding UTF8
+          if ($main -notmatch 'installZhCN') {
+            $main = $main.Replace(
+              'import App from "./App";',
+              "import App from `"./App`";`r`nimport { installZhCN } from `"./zh-cn`";"
+            )
+            $main = $main + "`r`n`r`ninstallZhCN();`r`n"
+            Set-Content "src/main.tsx" $main -Encoding UTF8
+          }
+
+          $confPath = "src-tauri/tauri.conf.json"
+          $conf = Get-Content $confPath -Raw -Encoding UTF8
+          $conf = $conf.Replace('"title": "ShardX Launcher"', '"title": "ShardX Launcher 中文版"')
+          Set-Content $confPath $conf -Encoding UTF8
+
+      - name: Build Chinese Windows version
+        run: npx tauri build --target x86_64-pc-windows-msvc
+
+      - name: Prepare downloadable EXE
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "artifact" | Out-Null
+          $release = "src-tauri/target/x86_64-pc-windows-msvc/release"
+          $source = Join-Path $release "ShardX Launcher.exe"
+          if (-not (Test-Path $source)) { $source = Join-Path $release "shardx-launcher.exe" }
+          if (-not (Test-Path $source)) {
+            $source = Get-ChildItem $release -Filter "*.exe" -File |
+              Where-Object { $_.Name -notmatch "build|setup" } |
+              Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $source -or -not (Test-Path $source)) { throw "Could not find compiled ShardX Launcher EXE." }
+          Copy-Item $source "artifact/ShardX-Launcher-中文版.exe"
+
+          $msi = Get-ChildItem "$release/bundle" -Recurse -Filter "*.msi" -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($msi) { Copy-Item $msi.FullName "artifact/ShardX-Launcher-中文版.msi" }
+
+      - name: Upload Chinese build
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShardX-Launcher-Chinese-Windows
+          path: artifact/*
+          if-no-files-found: error
+          retention-days: 30
