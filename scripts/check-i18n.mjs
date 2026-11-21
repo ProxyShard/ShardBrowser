@@ -102,6 +102,7 @@ for (const file of files) {
 const en = JSON.parse(readFileSync(join(LOCALES, "en.json"), "utf8"));
 const zh = JSON.parse(readFileSync(join(LOCALES, "zh.json"), "utf8"));
 const ru = JSON.parse(readFileSync(join(LOCALES, "ru.json"), "utf8"));
+const vi = JSON.parse(readFileSync(join(LOCALES, "vi.json"), "utf8"));
 
 // The owner never wants the middle dot (·) in the UI: not in copy, separators
 // or sample data. Checked in the source (new UI and kit) and in every locale.
@@ -119,7 +120,7 @@ for (const file of [...files, ...kitFiles]) {
     if (line.includes(MIDDOT)) problems.push([relative(ROOT, file), i + 1, "middle dot (·): not used in the UI"]);
   });
 }
-for (const [name, dict] of [["en", en], ["zh", zh], ["ru", ru]]) {
+for (const [name, dict] of [["en", en], ["zh", zh], ["ru", ru], ["vi", vi]]) {
   for (const [key, value] of Object.entries(dict)) {
     if (String(value).includes(MIDDOT)) problems.push([`locales/${name}.json`, key, "middle dot (·): not used in the UI"]);
   }
@@ -139,17 +140,19 @@ for (const k of COMMAND_KEYS) if (!(k in en)) problems.push(["scripts/lib/copy-r
 const missingEn = [...called].filter((k) => !(k in en)).sort();
 const missingZh = Object.keys(en).filter((k) => !(k in zh)).sort();
 const missingRu = Object.keys(en).filter((k) => !(k in ru)).sort();
+const missingVi = Object.keys(en).filter((k) => !(k in vi)).sort();
 // A key only a translation has is one the English lost: delete it there too.
-const extra = [...Object.keys(zh).filter((k) => !(k in en)).map((k) => `zh.json: ${k}`), ...Object.keys(ru).filter((k) => !(k in en)).map((k) => `ru.json: ${k}`)].sort();
+const extra = [...Object.keys(zh).filter((k) => !(k in en)).map((k) => `zh.json: ${k}`), ...Object.keys(ru).filter((k) => !(k in en)).map((k) => `ru.json: ${k}`), ...Object.keys(vi).filter((k) => !(k in en)).map((k) => `vi.json: ${k}`)].sort();
 const unused = Object.keys(en).filter((k) => !called.has(k)).sort();
 
 for (const [f, line, what] of problems) console.log(`${f}:${line}  ${what}`);
 if (missingEn.length) console.log(`\nkeys called but not in en.json:\n  ${missingEn.join("\n  ")}`);
 if (missingZh.length) console.log(`\nkeys in en.json but not in zh.json:\n  ${missingZh.join("\n  ")}`);
 if (missingRu.length) console.log(`\nkeys in en.json but not in ru.json:\n  ${missingRu.join("\n  ")}`);
+if (missingVi.length) console.log(`\nkeys in en.json but not in vi.json:\n  ${missingVi.join("\n  ")}`);
 if (extra.length) console.log(`\nkeys in a translation but not in en.json:\n  ${extra.join("\n  ")}`);
 if (unused.length) console.log(`\nkeys in en.json that nothing calls:\n  ${unused.join("\n  ")}`);
 
-const bad = problems.length + missingEn.length + missingZh.length + missingRu.length + extra.length + unused.length;
+const bad = problems.length + missingEn.length + missingZh.length + missingRu.length + missingVi.length + extra.length + unused.length;
 console.log(bad ? `\n${bad} problem(s)` : `i18n OK — ${Object.keys(en).length} keys, all called, all translated`);
 process.exit(bad ? 1 : 0);
