@@ -1,6 +1,7 @@
 // Cookie import/export for ShardX profiles (Chromium Cookies sqlite v24).
 // v10 blob = "v10" + cipher; plaintext = SHA256(host) + value.
 //   macOS: AES-128-CBC,  key = PBKDF2(mock_password, saltysalt, 1003)
+//          (v11, read only: PBKDF2(mock_password, pepper, 1003), written by 158 b1)
 //   Linux: AES-128-CBC,  key = PBKDF2(peanuts,       saltysalt, 1)
 //   Win:   AES-256-GCM,  key = DPAPI-unwrapped Local State os_crypt.encrypted_key
 
@@ -67,6 +68,8 @@ fn now_chromium() -> i64 {
 /// Resolved OSCrypt key; cipher chosen per-OS at compile time.
 struct Crypt {
     key: Vec<u8>,
+    /// macOS: the key core 158 b1 wrote "v11" values with; never used to write.
+    v11: Option<Vec<u8>>,
 }
 
 impl Crypt {
@@ -74,15 +77,24 @@ impl Crypt {
     fn open(udd: &Path) -> Result<Self> {
         Ok(Self {
             key: os_crypt_key(udd)?,
+            v11: v11_key(),
         })
+    }
+
+    /// The key and cipher body for a v10 (or, on macOS, v11) value.
+    fn key_for<'a>(&'a self, encrypted: &'a [u8]) -> Option<(&'a [u8], &'a [u8])> {
+        if let Some(body) = encrypted.strip_prefix(b"v10") {
+            return Some((&self.key, body));
+        }
+        Some((self.v11.as_deref()?, encrypted.strip_prefix(b"v11")?))
     }
 
     fn decrypt(&self, encrypted: &[u8], plain: &str) -> String {
         // Legacy rows: value in `value` column, no v10 blob.
-        if encrypted.len() < 3 || &encrypted[..3] != b"v10" {
+        let Some((key, body)) = self.key_for(encrypted) else {
             return plain.to_string();
-        }
-        match cipher_decrypt(&self.key, &encrypted[3..]) {
+        };
+        match cipher_decrypt(key, body) {
             Some(pt) => String::from_utf8_lossy(&strip_host_prefix(pt)).into_owned(),
             None => String::new(),
         }
@@ -105,7 +117,8 @@ impl Crypt {
     }
 
     fn unseal(&self, encrypted: &[u8]) -> Option<Vec<u8>> {
-        encrypted.strip_prefix(b"v10").and_then(|body| cipher_decrypt(&self.key, body))
+        let (key, body) = self.key_for(encrypted)?;
+        cipher_decrypt(key, body)
     }
 }
 
@@ -123,6 +136,17 @@ fn os_crypt_key(_udd: &Path) -> Result<Vec<u8>> {
     let mut key = [0u8; 16];
     pbkdf2::pbkdf2_hmac::<sha1::Sha1>(b"mock_password", b"saltysalt", 1003, &mut key);
     Ok(key.to_vec())
+}
+
+#[cfg(target_os = "macos")]
+fn v11_key() -> Option<Vec<u8>> {
+    let mut key = [0u8; 16];
+    pbkdf2::pbkdf2_hmac::<sha1::Sha1>(b"mock_password", b"pepper", 1003, &mut key);
+    Some(key.to_vec())
+}
+#[cfg(not(target_os = "macos"))]
+fn v11_key() -> Option<Vec<u8>> {
+    None
 }
 
 // ---- Linux: peanuts ----
@@ -534,4 +558,21 @@ pub(in crate::space) fn forget_key(udd: &Path) -> Result<()> {
         Err(_) => std::fs::remove_file(&path)?,
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::*;
+
+    // A value core 158 b1 wrote with its per-directory key reads back; new ones stay v10.
+    #[test]
+    fn reads_v11_from_core_158() {
+        let crypt = Crypt::open(Path::new("/nonexistent")).unwrap();
+        let mut plain = Sha256::digest(b".example.com").to_vec();
+        plain.extend_from_slice(b"persist");
+        let mut v11 = b"v11".to_vec();
+        v11.extend(cipher_encrypt(crypt.v11.as_deref().unwrap(), &plain));
+        assert_eq!(crypt.decrypt(&v11, ""), "persist");
+        assert!(crypt.encrypt(".example.com", "x").starts_with(b"v10"));
+    }
 }
