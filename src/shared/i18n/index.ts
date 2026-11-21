@@ -12,7 +12,7 @@ import { renderRich, type RichTags } from "./rich";
 // A key with no entry in the chosen language falls back to English, and a key
 // in no file at all renders as the key — loud on screen, which is what you
 // want while a screen is being built.
-export type Lang = "en" | "zh" | "ru";
+export type Lang = "en" | "zh" | "ru" | "vi";
 
 // English is always in: every language falls back to it, and the palette
 // finds another language's commands by their English names. The others load
@@ -24,6 +24,7 @@ const DICTS: Partial<Record<Lang, Record<string, string>>> = { en: EN };
 const LOADERS: Record<Exclude<Lang, "en">, () => Promise<{ default: unknown }>> = {
   zh: () => import("./locales/zh.json"),
   ru: () => import("./locales/ru.json"),
+  vi: () => import("./locales/vi.json"),
 };
 const loading = new Map<Lang, Promise<void>>();
 
@@ -44,6 +45,7 @@ export const LANG_OPTIONS: { value: Lang; label: string }[] = [
   { value: "en", label: "English" },
   { value: "zh", label: "中文（简体）" },
   { value: "ru", label: "Русский" },
+  { value: "vi", label: "Tiếng Việt" },
 ];
 
 /** Every language's words, for a check that spans them all (a View's name). */
@@ -57,11 +59,12 @@ function load(): Lang {
   try {
     const v = localStorage.getItem(STORAGE_KEY);
     if (isLang(v)) return v;
-    // A Chinese or Russian system gets its language the first time, without
-    // being asked.
+    // A Chinese, Russian or Vietnamese system gets its language the first
+    // time, without being asked.
     const sys = navigator.language?.toLowerCase() ?? "";
     if (sys.startsWith("zh")) return "zh";
     if (sys.startsWith("ru")) return "ru";
+    if (sys.startsWith("vi")) return "vi";
     return "en";
   } catch {
     return "en";
@@ -69,9 +72,9 @@ function load(): Lang {
 }
 
 /** The page's language, so screen readers, fonts and quotes follow it (WCAG 3.1.1). */
-const HTML_LANG: Record<Lang, string> = { en: "en", zh: "zh-CN", ru: "ru" };
+const HTML_LANG: Record<Lang, string> = { en: "en", zh: "zh-CN", ru: "ru", vi: "vi" };
 /** Dates and numbers follow the UI language, not the computer's (WRITE-11). */
-const INTL_LOCALE: Record<Lang, string> = { en: "en-US", zh: "zh-CN", ru: "ru-RU" };
+const INTL_LOCALE: Record<Lang, string> = { en: "en-US", zh: "zh-CN", ru: "ru-RU", vi: "vi-VN" };
 /** The locale Intl formatters use for `lang`. */
 export const intlLocale = (lang: Lang): string => INTL_LOCALE[lang] ?? INTL_LOCALE.en;
 
