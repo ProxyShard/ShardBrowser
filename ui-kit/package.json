@@ -2,7 +2,7 @@
   "name": "@proxyshard/shardx-ui-kit",
   "version": "0.2.2",
   "private": false,
-  "description": "A React + Tailwind CSS v4 component library for the ShardBrowser Launcher and the ProxyShard dashboard. Light and dark theme aware; the design tokens live in code (src/styles/tokens.css).",
+  "description": "A React + Tailwind CSS v4 component library for the ShardBrowser Launcher and the ShardX dashboard. Light and dark theme aware; the design tokens live in code (src/styles/tokens.css).",
   "type": "module",
   "license": "MIT",
   "sideEffects": [

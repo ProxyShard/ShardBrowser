@@ -17,7 +17,9 @@ export function NoiseFields({ f, u, help }: FieldProps & { help?: string }) {
         <Pair label={t("inlineEditor.noiseCanvas")}        value={f.noise_canvas}        on={(v) => u("noise_canvas", v)} />
         <Pair label={t("inlineEditor.noiseWebgl")}         value={f.noise_webgl}         on={(v) => u("noise_webgl", v)} />
         <Pair label={t("inlineEditor.noiseAudio")}         value={f.noise_audio}         on={(v) => u("noise_audio", v)} />
-        <Pair label={t("inlineEditor.noiseClientRects")}   value={f.noise_client_rects}  on={(v) => u("noise_client_rects", v)} />
+        {/* Noised DOM sizes are ones no real Chrome reports, so sites can tell. */}
+        <Pair label={t("inlineEditor.noiseClientRects")}   value={f.noise_client_rects}  on={(v) => u("noise_client_rects", v)}
+              note={t("inlineEditor.noiseClientRectsNote")} warn={f.noise_client_rects === "auto"} />
         <Pair label={t("inlineEditor.noiseSensors")}       value={f.noise_sensors}       on={(v) => u("noise_sensors", v)} />
         <Pair label={t("inlineEditor.noiseFonts")}         value={f.noise_fonts}         on={(v) => u("noise_fonts", v)} />
       </div>

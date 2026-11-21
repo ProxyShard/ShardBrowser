@@ -885,6 +885,7 @@
   "inlineEditor.noiseAuto": "Auto noise",
   "inlineEditor.noiseCanvas": "Canvas",
   "inlineEditor.noiseClientRects": "Client rects",
+  "inlineEditor.noiseClientRectsNote": "Sites can detect this noise — best left off",
   "inlineEditor.noiseFonts": "Fonts",
   "inlineEditor.noiseHeading": "Noise",
   "inlineEditor.noiseReal": "Real",

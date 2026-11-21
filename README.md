@@ -602,6 +602,9 @@ with zero strength has no effect. A `seed` of `0`, or an omitted seed,
 still derives a stable value from the profile ID. This prevents temporary
 profiles created a second apart from sharing a fingerprint.
 
+Leave `client_rects` (DOMRect) off: noised DOM sizes are values no real
+Chrome reports, and sites detect them.
+
 #### Human input over CDP
 
 Once you have a CDP endpoint, the patched core provides a **`Motion`**

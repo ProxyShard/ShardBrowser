@@ -205,6 +205,9 @@ profile.set_noise()                               # all off
 sdk.save_profile(profile)                          # persist the choice
 ```
 
+Leave `client_rects` (DOMRect) off: noised DOM sizes are values no real
+Chrome reports, and sites detect them.
+
 Seeds are derived **per-profile** at launch — stable across runs, unique per
 profile — so two profiles with the same vectors enabled still produce different
 canvas/audio/WebGL fingerprints. Soft defaults: WebGL `intensity 0.0005`,

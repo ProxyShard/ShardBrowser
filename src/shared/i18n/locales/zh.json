@@ -885,6 +885,7 @@
   "inlineEditor.noiseAuto": "自动噪声",
   "inlineEditor.noiseCanvas": "Canvas",
   "inlineEditor.noiseClientRects": "元素尺寸",
+  "inlineEditor.noiseClientRectsNote": "网站能识别这种噪声，建议不要开启",
   "inlineEditor.noiseFonts": "字体",
   "inlineEditor.noiseHeading": "噪声",
   "inlineEditor.noiseReal": "真实",

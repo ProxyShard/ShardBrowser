@@ -885,6 +885,7 @@
   "inlineEditor.noiseAuto": "Автошум",
   "inlineEditor.noiseCanvas": "Canvas",
   "inlineEditor.noiseClientRects": "ClientRects",
+  "inlineEditor.noiseClientRectsNote": "Сайты распознают этот шум — лучше не включать",
   "inlineEditor.noiseFonts": "Шрифты",
   "inlineEditor.noiseHeading": "Шум",
   "inlineEditor.noiseReal": "Как есть",
